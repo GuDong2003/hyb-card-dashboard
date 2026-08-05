@@ -6,6 +6,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "dev": "npm run build && npx wrangler dev",
-    "deploy": "npm run build && npx wrangler deploy"
+    "deploy": "npm run build && npx wrangler deploy",
+    "test": "node --test test/*.test.js"
   }
 }
