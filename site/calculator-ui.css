@@ -1326,8 +1326,10 @@ body {
 .results-column .sp-allocation-grid {
     grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
     min-height: 0;
-    height: 250px;
-    max-height: 250px;
+    height: 225px;
+    max-height: 225px;
+    align-content: start;
+    grid-auto-rows: max-content;
     margin-top: 8px;
     padding-bottom: 12px;
     overflow-y: auto;
@@ -1581,12 +1583,12 @@ body {
 }
 
 .topbar-actions {
-    margin-left: auto;
     display: flex;
     flex: 0 0 auto;
     gap: 4px;
     align-items: center;
-    margin-left: 8px;
+    justify-content: flex-end;
+    margin-left: auto;
 }
 
 .farm-link,
@@ -1802,7 +1804,7 @@ table.simulation-table th:first-child {
 .val-neg { color: var(--profit-neg) !important; }
 
 @media (max-width: 1080px) {
-    .topbar-actions { margin-left: 0; }
+    .topbar-actions { margin-left: auto; }
 }
 
 @media (max-width: 680px) {
