@@ -1880,74 +1880,89 @@ table.simulation-table td {
 /* Compact left workbench */
 .control-column {
     display: grid;
-    grid-template-rows: minmax(0, 16fr) minmax(0, 34fr) minmax(0, 50fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
     align-content: stretch;
     gap: 10px;
-    overflow-x: hidden;
-    overflow-y: auto;
+    overflow: hidden;
 }
 
 .control-column > .probability-strip,
-.control-column > .control-section {
+.control-column > .control-scroll,
+.control-column > .rules-card {
     min-width: 0;
     min-height: 0;
-    height: 100%;
 }
 
 .control-column > .probability-strip {
     margin: 0;
+    height: auto;
     overflow: visible;
 }
 
-.control-column > .control-section {
-    overflow: visible;
-}
-
-.control-column .control-section + .control-section {
-    min-height: 0;
-    margin-top: 0;
-    padding-top: 12px;
-}
-
-.control-column > .control-section:not(.strategy-section) {
-    display: grid;
-    grid-template-rows: minmax(0, 42fr) minmax(0, 58fr);
-    gap: 10px;
-}
-
-.control-column > .control-section:not(.strategy-section) > .input-section {
+.control-column > .control-scroll {
     display: flex;
-    min-width: 0;
     min-height: 0;
     height: 100%;
     flex-direction: column;
-    overflow: hidden;
+    gap: 10px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-color: #34486c transparent;
 }
 
-.control-column > .control-section:not(.strategy-section) > .input-section + .input-section {
+.control-column > .control-scroll > .control-section {
+    flex: 0 0 auto;
+    min-height: 0;
+    height: auto;
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+    overflow: visible;
+}
+
+.control-column > .control-scroll > .control-section + .control-section {
+    padding-top: 12px;
+    border-top: 1px solid var(--border-color);
+}
+
+.control-column > .control-scroll > .control-section:not(.strategy-section) {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.control-column > .control-scroll > .control-section:not(.strategy-section) > .input-section {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    height: auto;
+    flex: 0 0 auto;
+    flex-direction: column;
+    overflow: visible;
+}
+
+.control-column > .control-scroll > .control-section:not(.strategy-section) > .input-section + .input-section {
     margin-top: 0;
     padding-top: 10px;
+    border-top: 1px solid var(--border-color);
 }
 
-.control-column > .control-section:not(.strategy-section) .form-grid {
+.control-column > .control-scroll > .control-section:not(.strategy-section) .form-grid {
     min-height: 0;
 }
 
 .control-column .strategy-section {
-    display: grid;
-    grid-template-rows: minmax(0, 46fr) minmax(0, 54fr);
-    gap: 10px;
-    min-height: 0;
-    height: 100%;
+    display: block;
+    height: auto;
     overflow: visible;
 }
 
 .control-column .strategy-stack {
     display: grid;
-    grid-template-rows: repeat(2, minmax(0, 1fr));
+    grid-template-rows: none;
     min-height: 0;
-    height: 100%;
-    overflow: hidden;
+    height: auto;
+    overflow: visible;
     gap: 10px;
 }
 
@@ -1955,9 +1970,9 @@ table.simulation-table td {
     grid-template-columns: 44px minmax(0, 1fr);
     gap: 10px;
     min-height: 0;
-    height: 100%;
+    height: auto;
     padding: 6px 8px;
-    overflow: hidden;
+    overflow: visible;
 }
 
 .control-column .input-section-title {
@@ -2011,11 +2026,11 @@ table.simulation-table td {
 .control-column .rules-card {
     min-height: 0;
     margin-top: 0;
-    height: 100%;
+    height: auto;
     padding: 9px;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    overflow: visible;
 }
 
 .control-column .rules-card h3 {
@@ -2026,15 +2041,15 @@ table.simulation-table td {
     grid-template-columns: 88px minmax(0, 1fr);
     gap: 7px;
     min-height: 0;
-    height: 100%;
+    height: auto;
     padding: 5px 6px;
 }
 
 .control-column .rule-track {
     grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 0.95fr) minmax(0, 1.2fr) minmax(0, 0.95fr);
+    grid-template-rows: repeat(3, minmax(min-content, auto));
     min-height: 0;
-    flex: 1 1 auto;
+    flex: 0 0 auto;
 }
 
 .control-column .rule-stage b {
@@ -2070,23 +2085,22 @@ table.simulation-table td {
     }
 
     .control-column > .probability-strip,
-    .control-column > .control-section,
-    .control-column > .control-section:not(.strategy-section) > .input-section,
-    .control-column .strategy-section,
+    .control-column > .control-scroll,
+    .control-column > .rules-card,
+    .control-column > .control-scroll > .control-section,
     .control-column .strategy-stack,
     .control-column .strategy-option,
-    .control-column .rules-card,
     .control-column .rule-stage {
         height: auto;
     }
 
-    .control-column > .control-section:not(.strategy-section) {
-        display: block;
-    }
-
-    .control-column .strategy-section {
+    .control-column > .control-scroll {
         display: block;
         overflow: visible;
+    }
+
+    .control-column > .control-scroll > .control-section:not(.strategy-section) {
+        display: block;
     }
 
     .control-column .strategy-stack {
