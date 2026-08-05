@@ -3,10 +3,29 @@
     const DUST_PER_DISSOLVED_HISTORIC = 50;
     const VIP_FEE_PER_DISSOLVED_HISTORIC = 45;
     const MAX_CRAFT_PER_DAY = 5;
+    const SEASON_START_AT = Date.parse('2026-08-02T04:00:00+08:00');
+    const SEASON_DAYS = 90;
+    const DAILY_PULLS = 650;
 
     function clamp(value, min, max) {
         const parsed = Number(value);
         return Math.max(min, Math.min(max, Number.isFinite(parsed) ? parsed : min));
+    }
+
+    function getSeasonDay(now = Date.now()) {
+        const timestamp = Number(now);
+        if (!Number.isFinite(timestamp)) return 1;
+        const elapsedDays = Math.floor((timestamp - SEASON_START_AT) / 86400000);
+        return clamp(elapsedDays + 1, 1, SEASON_DAYS);
+    }
+
+    function getDynamicDefaults(now = Date.now()) {
+        const currentDay = getSeasonDay(now);
+        return {
+            currentDay,
+            currentTotalDraws: currentDay * DAILY_PULLS,
+            dissolveRemaining: 0
+        };
     }
 
     function getDissolveDayState({ day, currentDay, dissolveRemaining }) {
@@ -46,6 +65,11 @@
         DUST_PER_DISSOLVED_HISTORIC,
         VIP_FEE_PER_DISSOLVED_HISTORIC,
         MAX_CRAFT_PER_DAY,
+        SEASON_START_AT,
+        SEASON_DAYS,
+        DAILY_PULLS,
+        getSeasonDay,
+        getDynamicDefaults,
         getDissolveDayState,
         getCraftLimit
     });

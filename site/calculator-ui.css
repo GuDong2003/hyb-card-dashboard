@@ -1769,3 +1769,55 @@ table.simulation-table td:first-child {
     .topbar-actions { gap: 0; }
     .topbar h1 { color: var(--text) !important; }
 }
+
+/* Readability refinements */
+.probability-strip {
+    border-color: var(--line) !important;
+    background: var(--surface) !important;
+}
+
+.probability-item {
+    min-width: 0;
+    border: 1px solid var(--line-soft);
+    border-radius: 8px;
+    background: var(--formula-bg);
+}
+
+.probability-item span {
+    white-space: nowrap;
+}
+
+.probability-item strong {
+    margin-top: 5px;
+    color: var(--blue-strong) !important;
+    font-size: 1.08rem;
+    font-weight: 850;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
+.probability-item strong span {
+    display: inline;
+    white-space: nowrap;
+}
+
+.probability-item:nth-child(2) strong {
+    color: var(--amber) !important;
+}
+
+.probability-item:nth-child(3) strong {
+    color: var(--green) !important;
+}
+
+table.simulation-table {
+    font-size: 0.82rem !important;
+}
+
+table.simulation-table th {
+    font-size: 0.74rem !important;
+}
+
+table.simulation-table th,
+table.simulation-table td {
+    min-height: 38px;
+}
