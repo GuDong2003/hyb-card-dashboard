@@ -1164,16 +1164,33 @@ body {
 }
 
 .control-column .probability-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
     padding: 11px 12px;
+    text-align: center;
 }
 
 .control-column .probability-item span {
-    font-size: 0.76rem;
+    font-size: 0.68rem;
 }
 
 .control-column .probability-item strong {
     margin-top: 2px;
-    font-size: 1.28rem;
+    font-size: 1.08rem;
+}
+
+.control-column .probability-item:nth-child(3) span {
+    font-size: 0.8rem;
+}
+
+.control-column .probability-item:nth-child(3) strong {
+    font-size: 1.38rem;
+}
+
+.control-column .probability-item:nth-child(3) .probability-unit {
+    font-size: 0.9rem;
 }
 
 .control-column .strategy-stack {
@@ -1397,7 +1414,7 @@ body {
 
 @media (max-width: 1500px) {
     .workspace {
-        grid-template-columns: 330px minmax(0, 1fr);
+        grid-template-columns: 360px minmax(0, 1fr);
     }
 
     .results-column .summary-grid {
@@ -1866,22 +1883,24 @@ table.simulation-table td {
     grid-template-rows: minmax(0, 16fr) minmax(0, 34fr) minmax(0, 50fr);
     align-content: stretch;
     gap: 10px;
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
 }
 
 .control-column > .probability-strip,
 .control-column > .control-section {
+    min-width: 0;
     min-height: 0;
+    height: 100%;
 }
 
 .control-column > .probability-strip {
     margin: 0;
-    overflow: hidden;
+    overflow: visible;
 }
 
 .control-column > .control-section {
-    overflow-y: auto;
-    scrollbar-color: var(--control-border) transparent;
+    overflow: visible;
 }
 
 .control-column .control-section + .control-section {
@@ -1890,102 +1909,146 @@ table.simulation-table td {
     padding-top: 12px;
 }
 
-.control-column .strategy-section {
+.control-column > .control-section:not(.strategy-section) {
     display: grid;
     grid-template-rows: minmax(0, 42fr) minmax(0, 58fr);
     gap: 10px;
+}
+
+.control-column > .control-section:not(.strategy-section) > .input-section {
+    display: flex;
+    min-width: 0;
     min-height: 0;
+    height: 100%;
+    flex-direction: column;
     overflow: hidden;
 }
 
-.control-column .strategy-stack {
+.control-column > .control-section:not(.strategy-section) > .input-section + .input-section {
+    margin-top: 0;
+    padding-top: 10px;
+}
+
+.control-column > .control-section:not(.strategy-section) .form-grid {
     min-height: 0;
-    overflow-y: auto;
+}
+
+.control-column .strategy-section {
+    display: grid;
+    grid-template-rows: minmax(0, 46fr) minmax(0, 54fr);
+    gap: 10px;
+    min-height: 0;
+    height: 100%;
+    overflow: visible;
+}
+
+.control-column .strategy-stack {
+    display: grid;
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
     gap: 10px;
 }
 
 .control-column .strategy-option {
-    grid-template-columns: 48px minmax(0, 1fr);
-    gap: 12px;
-    padding: 15px;
+    grid-template-columns: 44px minmax(0, 1fr);
+    gap: 10px;
+    min-height: 0;
+    height: 100%;
+    padding: 6px 8px;
+    overflow: hidden;
 }
 
 .control-column .input-section-title {
-    margin-bottom: 12px;
-    font-size: 0.86rem;
+    margin-bottom: 6px;
+    font-size: 0.76rem;
 }
 
 .control-column .form-group label {
-    margin-bottom: 6px;
-    font-size: 0.8rem;
+    margin-bottom: 4px;
+    font-size: 0.72rem;
 }
 
 .control-column .field-hint {
-    font-size: 0.68rem;
+    font-size: 0.62rem;
 }
 
 .control-column .form-group input,
 .control-column .form-group select {
-    height: 46px;
-    padding: 0 12px;
-    border-radius: 9px;
-    font-size: 0.9rem;
+    height: 37px;
+    padding: 0 10px;
+    border-radius: 8px;
+    font-size: 0.82rem;
 }
 
 .control-column .strategy-option input {
-    width: 48px;
-    height: 28px;
+    width: 44px;
+    height: 24px;
 }
 
 .control-column .strategy-option input::after {
-    width: 18px;
-    height: 18px;
+    width: 16px;
+    height: 16px;
     left: 4px;
     top: 4px;
 }
 
 .control-column .strategy-option input:checked::after {
-    left: 25px;
+    left: 23px;
 }
 
 .control-column .strategy-option strong {
-    font-size: 0.94rem;
+    font-size: 0.8rem;
 }
 
 .control-column .strategy-option small {
-    margin-top: 5px;
-    font-size: 0.76rem;
-    line-height: 1.5;
+    margin-top: 1px;
+    font-size: 0.6rem;
+    line-height: 1.2;
 }
 
 .control-column .rules-card {
     min-height: 0;
     margin-top: 0;
-    padding: 15px;
-    overflow-y: auto;
+    height: 100%;
+    padding: 9px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
 }
 
 .control-column .rules-card h3 {
-    font-size: 0.94rem;
+    font-size: 0.82rem;
 }
 
 .control-column .rule-stage {
-    grid-template-columns: 104px minmax(0, 1fr);
-    gap: 10px;
-    padding: 10px 11px;
+    grid-template-columns: 88px minmax(0, 1fr);
+    gap: 7px;
+    min-height: 0;
+    height: 100%;
+    padding: 5px 6px;
+}
+
+.control-column .rule-track {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 0.95fr) minmax(0, 1.2fr) minmax(0, 0.95fr);
+    min-height: 0;
+    flex: 1 1 auto;
 }
 
 .control-column .rule-stage b {
-    font-size: 0.78rem;
+    font-size: 0.64rem;
 }
 
 .control-column .rule-stage span {
-    font-size: 0.72rem;
+    font-size: 0.58rem;
+    line-height: 1.25;
 }
 
 .control-column .rule-footnote {
-    margin-top: 9px;
-    font-size: 0.68rem;
+    margin-top: 7px;
+    font-size: 0.6rem;
 }
 
 .sp-round.has-points {
@@ -2006,13 +2069,34 @@ table.simulation-table td {
         overflow: visible;
     }
 
+    .control-column > .probability-strip,
+    .control-column > .control-section,
+    .control-column > .control-section:not(.strategy-section) > .input-section,
+    .control-column .strategy-section,
+    .control-column .strategy-stack,
+    .control-column .strategy-option,
+    .control-column .rules-card,
+    .control-column .rule-stage {
+        height: auto;
+    }
+
+    .control-column > .control-section:not(.strategy-section) {
+        display: block;
+    }
+
     .control-column .strategy-section {
         display: block;
         overflow: visible;
     }
 
-    .control-column .strategy-stack,
+    .control-column .strategy-stack {
+        display: grid;
+        grid-template-rows: none;
+        overflow: visible;
+    }
+
     .control-column .rules-card {
+        display: block;
         overflow: visible;
     }
 }
