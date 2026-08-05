@@ -1871,3 +1871,36 @@ table.simulation-table td {
         overflow: visible;
     }
 }
+
+/* Profit semantics: red for gains, green for losses */
+:root {
+    --profit-pos: var(--red);
+    --profit-neg: var(--green);
+    --profit-max: var(--red);
+    --highlight-orange: #fee2e2;
+}
+
+[data-theme="dark"] {
+    --profit-pos: var(--red);
+    --profit-neg: var(--green);
+    --profit-max: var(--red);
+    --highlight-orange: #442326;
+}
+
+.metric-card.loss {
+    border-color: color-mix(in srgb, var(--green) 34%, var(--line)) !important;
+}
+
+.metric-card.peak {
+    border-color: color-mix(in srgb, var(--red) 34%, var(--line)) !important;
+}
+
+.row-breakeven,
+.row-breakeven td:first-child {
+    background: var(--highlight-blue) !important;
+    color: var(--blue-strong) !important;
+}
+
+#sumBreakEven {
+    color: var(--blue-strong) !important;
+}
