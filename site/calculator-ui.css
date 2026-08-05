@@ -1338,20 +1338,30 @@ body {
 }
 
 .results-column .sp-allocation-grid {
+    --sp-row-height: 104px;
     grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+    grid-template-rows: repeat(2, var(--sp-row-height));
     min-height: 0;
-    height: 225px;
-    max-height: 225px;
+    height: calc(var(--sp-row-height) * 2 + 8px);
+    max-height: calc(var(--sp-row-height) * 2 + 8px);
     align-content: start;
-    grid-auto-rows: max-content;
+    grid-auto-rows: var(--sp-row-height);
     margin-top: 8px;
-    padding-bottom: 12px;
+    padding-bottom: 0;
     overflow-y: auto;
-    scroll-padding-bottom: 10px;
+    scroll-padding: 0;
+    scroll-snap-type: y mandatory;
+    scroll-behavior: smooth;
+    overscroll-behavior-y: contain;
+    scrollbar-gutter: stable;
 }
 
 .results-column .sp-round {
+    min-height: 0;
+    height: var(--sp-row-height);
     padding: 7px;
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
 }
 
 .results-column .table-panel {
