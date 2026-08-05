@@ -472,6 +472,22 @@
 
     <main class="workspace">
         <aside class="panel control-column">
+            <div class="probability-strip" id="probabilityBox">
+                <div class="probability-item">
+                    <span>当前累计抽数</span>
+                    <strong id="totalPullsText">1300</strong>
+                </div>
+                <div class="probability-item">
+                    <span>实际传说概率</span>
+                    <strong id="calculatedProbText">0.538%</strong>
+                </div>
+                <div class="probability-item">
+                    <span>预计日均传说</span>
+                    <strong><span id="dailyExpectedText">3.50</span><span class="probability-unit"> 张</span></strong>
+                </div>
+                <span id="dailyPullsText" class="is-hidden">650</span>
+            </div>
+
             <section class="control-section">
                 <div class="input-section">
                     <h3 class="input-section-title">预测基准</h3>
@@ -509,21 +525,6 @@
                     </div>
                 </div>
 
-                <div class="probability-strip" id="probabilityBox">
-                    <div class="probability-item">
-                        <span>当前累计抽数</span>
-                        <strong id="totalPullsText">1300</strong>
-                    </div>
-                    <div class="probability-item">
-                        <span>实际传说概率</span>
-                        <strong id="calculatedProbText">0.538%</strong>
-                    </div>
-                    <div class="probability-item">
-                        <span>预计日均传说</span>
-                        <strong><span id="dailyExpectedText">3.50</span><span class="probability-unit"> 张</span></strong>
-                    </div>
-                    <span id="dailyPullsText" class="is-hidden">650</span>
-                </div>
             </section>
 
             <section class="control-section strategy-section">

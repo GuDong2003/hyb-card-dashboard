@@ -1128,10 +1128,13 @@ body {
     font-size: 0.7rem;
 }
 
-.control-column .form-grid,
-.control-column .form-grid.three {
+.control-column .form-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 9px;
+}
+
+.control-column .form-grid.three {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .control-column .form-group label {
@@ -1154,7 +1157,8 @@ body {
 
 .control-column .probability-strip {
     gap: 3px;
-    margin-top: 13px;
+    margin-top: 0;
+    margin-bottom: 13px;
     padding: 6px;
     border-radius: 10px;
 }
