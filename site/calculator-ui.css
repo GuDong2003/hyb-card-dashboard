@@ -1158,22 +1158,22 @@ body {
 .control-column .probability-strip {
     gap: 3px;
     margin-top: 0;
-    margin-bottom: 13px;
-    padding: 6px;
+    margin-bottom: 0;
+    padding: 8px;
     border-radius: 10px;
 }
 
 .control-column .probability-item {
-    padding: 6px;
+    padding: 11px 12px;
 }
 
 .control-column .probability-item span {
-    font-size: 0.57rem;
+    font-size: 0.76rem;
 }
 
 .control-column .probability-item strong {
     margin-top: 2px;
-    font-size: 0.78rem;
+    font-size: 1.28rem;
 }
 
 .control-column .strategy-stack {
@@ -1862,34 +1862,130 @@ table.simulation-table td {
 
 /* Compact left workbench */
 .control-column {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-rows: minmax(0, 16fr) minmax(0, 34fr) minmax(0, 50fr);
     align-content: stretch;
-    gap: 0;
+    gap: 10px;
+    overflow: hidden;
 }
 
-.control-column .control-section {
+.control-column > .probability-strip,
+.control-column > .control-section {
     min-height: 0;
+}
+
+.control-column > .probability-strip {
+    margin: 0;
+    overflow: hidden;
+}
+
+.control-column > .control-section {
+    overflow-y: auto;
+    scrollbar-color: var(--control-border) transparent;
 }
 
 .control-column .control-section + .control-section {
     min-height: 0;
-    margin-top: 12px;
+    margin-top: 0;
     padding-top: 12px;
 }
 
 .control-column .strategy-section {
-    flex: 1 1 auto;
+    display: grid;
+    grid-template-rows: minmax(0, 42fr) minmax(0, 58fr);
+    gap: 10px;
     min-height: 0;
-    overflow: auto;
+    overflow: hidden;
 }
 
 .control-column .strategy-stack {
-    gap: 7px;
+    min-height: 0;
+    overflow-y: auto;
+    gap: 10px;
 }
 
 .control-column .strategy-option {
-    padding: 10px;
+    grid-template-columns: 48px minmax(0, 1fr);
+    gap: 12px;
+    padding: 15px;
+}
+
+.control-column .input-section-title {
+    margin-bottom: 12px;
+    font-size: 0.86rem;
+}
+
+.control-column .form-group label {
+    margin-bottom: 6px;
+    font-size: 0.8rem;
+}
+
+.control-column .field-hint {
+    font-size: 0.68rem;
+}
+
+.control-column .form-group input,
+.control-column .form-group select {
+    height: 46px;
+    padding: 0 12px;
+    border-radius: 9px;
+    font-size: 0.9rem;
+}
+
+.control-column .strategy-option input {
+    width: 48px;
+    height: 28px;
+}
+
+.control-column .strategy-option input::after {
+    width: 18px;
+    height: 18px;
+    left: 4px;
+    top: 4px;
+}
+
+.control-column .strategy-option input:checked::after {
+    left: 25px;
+}
+
+.control-column .strategy-option strong {
+    font-size: 0.94rem;
+}
+
+.control-column .strategy-option small {
+    margin-top: 5px;
+    font-size: 0.76rem;
+    line-height: 1.5;
+}
+
+.control-column .rules-card {
+    min-height: 0;
+    margin-top: 0;
+    padding: 15px;
+    overflow-y: auto;
+}
+
+.control-column .rules-card h3 {
+    font-size: 0.94rem;
+}
+
+.control-column .rule-stage {
+    grid-template-columns: 104px minmax(0, 1fr);
+    gap: 10px;
+    padding: 10px 11px;
+}
+
+.control-column .rule-stage b {
+    font-size: 0.78rem;
+}
+
+.control-column .rule-stage span {
+    font-size: 0.72rem;
+}
+
+.control-column .rule-footnote {
+    margin-top: 9px;
+    font-size: 0.68rem;
 }
 
 .sp-round.has-points {
@@ -1911,6 +2007,12 @@ table.simulation-table td {
     }
 
     .control-column .strategy-section {
+        display: block;
+        overflow: visible;
+    }
+
+    .control-column .strategy-stack,
+    .control-column .rules-card {
         overflow: visible;
     }
 }
