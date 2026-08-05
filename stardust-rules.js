@@ -28,6 +28,12 @@
         };
     }
 
+    function getPreviousAdditionalCards({ currentCards, currentUsableCards }) {
+        const drawn = Math.max(0, Number(currentCards) || 0);
+        const usable = Math.max(0, Number(currentUsableCards) || 0);
+        return Math.max(0, usable - drawn);
+    }
+
     function getDissolveDayState({ day, currentDay, dissolveRemaining }) {
         if (day < currentDay) {
             return {
@@ -70,6 +76,7 @@
         DAILY_PULLS,
         getSeasonDay,
         getDynamicDefaults,
+        getPreviousAdditionalCards,
         getDissolveDayState,
         getCraftLimit
     });
