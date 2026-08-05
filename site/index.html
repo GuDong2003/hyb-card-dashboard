@@ -517,6 +517,10 @@
                             <input type="number" id="craftRemaining" min="0" max="5" value="5" inputmode="numeric" oninput="calculate()">
                         </div>
                     </div>
+                    <div class="derived-stat" aria-live="polite">
+                        <span>此前额外传说（含之前合成/兑换）</span>
+                        <strong id="previousAdditionalCardsText">0 张</strong>
+                    </div>
                 </div>
 
                 <div class="probability-strip" id="probabilityBox">
@@ -644,8 +648,9 @@
                             <th>天数</th>
                             <th>当日传说</th>
                             <th>累计抽出传说</th>
+                            <th>此前额外传说</th>
                             <th class="forge-column is-hidden">星尘余额</th>
-                            <th class="forge-column is-hidden">模拟合成传说</th>
+                            <th class="forge-column is-hidden">本期模拟合成传说</th>
                             <th class="forge-column is-hidden">合成折算套数</th>
                             <th class="forge-column is-hidden">累计融解成本</th>
                             <th>可用传说总量</th>
@@ -980,6 +985,10 @@
         const currentCards = Math.max(0, Number.parseInt(document.getElementById('currentCards').value, 10) || 0);
         const currentTotalDraws = Math.max(0, Number.parseInt(document.getElementById('currentTotalDraws').value, 10) || 0);
         const currentUsableCards = Math.max(0, Number.parseInt(document.getElementById('currentUsableCards').value, 10) || 0);
+        const previousAdditionalCards = StardustRules.getPreviousAdditionalCards({
+            currentCards,
+            currentUsableCards
+        });
         const startingStardust = Math.max(0, Number.parseInt(document.getElementById('stardustBalance').value, 10) || 0);
         const dissolveRemaining = clampInteger(document.getElementById('dissolveRemaining').value, 0, StardustRules.MAX_DISSOLVE_PER_DAY);
         const craftRemaining = clampInteger(document.getElementById('craftRemaining').value, 0, StardustRules.MAX_CRAFT_PER_DAY);
@@ -998,6 +1007,7 @@
         document.getElementById('totalPullsText').innerText = currentTotalDraws;
         document.getElementById('calculatedProbText').innerText = (actualProb * 100).toFixed(3) + "%";
         document.getElementById('dailyExpectedText').innerText = dailyExpectedCards.toFixed(2);
+        document.getElementById('previousAdditionalCardsText').innerText = `${previousAdditionalCards} 张`;
         document.querySelectorAll('.forge-column').forEach(element => element.classList.toggle('is-hidden', !enableForge));
         document.querySelectorAll('.sp-column').forEach(element => element.classList.toggle('is-hidden', !enableSP));
 
@@ -1063,6 +1073,7 @@
                 day,
                 dayCards,
                 cumulativeDrawn,
+                previousAdditionalCards: day < currentDay ? null : previousAdditionalCards,
                 dustDisplay,
                 craftedCards,
                 craftedSetEquivalent: craftedCards / 6,
@@ -1125,6 +1136,7 @@
                 <td>${row.day}</td>
                 <td>${row.dayCards}</td>
                 <td>${row.cumulativeDrawn}</td>
+                <td>${row.previousAdditionalCards === null ? '—' : row.previousAdditionalCards}</td>
                 <td class="forge-column${forgeHiddenClass}">${row.dustDisplay === null ? '—' : row.dustDisplay}</td>
                 <td class="forge-column${forgeHiddenClass}">${row.craftedCards}</td>
                 <td class="forge-column${forgeHiddenClass}">${row.craftedSetEquivalent.toFixed(2)}</td>

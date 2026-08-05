@@ -1904,3 +1904,23 @@ table.simulation-table td {
 #sumBreakEven {
     color: var(--blue-strong) !important;
 }
+
+.derived-stat {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 8px;
+    padding: 7px 9px;
+    border: 1px dashed var(--blue);
+    border-radius: 8px;
+    background: var(--blue-soft);
+    color: var(--muted);
+    font-size: 0.66rem;
+}
+
+.derived-stat strong {
+    color: var(--blue-strong);
+    font-size: 0.82rem;
+    white-space: nowrap;
+}
