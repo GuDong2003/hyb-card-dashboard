@@ -1,0 +1,16 @@
+{
+  "name": "orange-card-90day-calculator",
+  "main": "./src/index.js",
+  "compatibility_date": "2026-08-03",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS"
+  },
+  "routes": [
+    {
+      "pattern": "card.gudong226.com",
+      "custom_domain": true
+    }
+  ],
+  "workers_dev": true
+}

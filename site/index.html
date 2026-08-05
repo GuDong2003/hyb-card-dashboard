@@ -1,0 +1,1174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>传说卡兑换与90天全收益演算工具</title>
+    <meta name="description" content="手动输入当前抽卡、传说库存与星尘状态，推演90天赛季的兑换收益、最大资金缺口与最终利润。">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="传说卡兑换收益演算台">
+    <meta property="og:description" content="90天赛季收益与现金流模型">
+    <meta property="og:image" content="https://card.gudong226.com/og.png">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="传说卡兑换收益演算台">
+    <meta name="twitter:description" content="90天赛季收益与现金流模型">
+    <meta name="twitter:image" content="https://card.gudong226.com/og.png">
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --bg-color: #f1f5f9;
+            --card-bg: #ffffff;
+            --border-color: #cbd5e1;
+            --text-main: #0f172a;
+            --text-muted: #64748b;
+            --profit-pos: #15803d;
+            --profit-neg: #b91c1c;
+            --highlight-blue: #dbeafe;
+            --highlight-red: #fee2e2;
+            --highlight-orange: #ffedd5;
+            --profit-max: #c2410c;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            padding: 20px;
+            line-height: 1.5;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        header {
+            background: linear-gradient(135deg, #1e3a8a, #3b82f6);
+            color: white;
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        header h1 {
+            font-size: 1.8rem;
+            margin-bottom: 8px;
+        }
+
+        header p {
+            font-size: 0.95rem;
+            opacity: 0.9;
+        }
+
+        .grid-layout {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 20px;
+        }
+
+        @media (max-width: 900px) {
+            .grid-layout {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid var(--border-color);
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }
+
+        .card h2 {
+            font-size: 1.2rem;
+            color: var(--primary-dark);
+            margin-bottom: 16px;
+            padding-bottom: 8px;
+            border-bottom: 2px solid #e2e8f0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .form-group {
+            margin-bottom: 14px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+        }
+
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            font-size: 0.95rem;
+            background-color: #fff;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+        }
+
+        .stats-badge {
+            background-color: #f8fafc;
+            border: 1px dashed var(--primary);
+            border-radius: 8px;
+            padding: 12px;
+            margin-top: 10px;
+        }
+
+        .stats-badge p {
+            font-size: 0.9rem;
+            margin-bottom: 4px;
+        }
+
+        .stats-badge strong {
+            color: var(--primary-dark);
+        }
+
+        /* Rules modal/accordion */
+        .rule-info {
+            font-size: 0.85rem;
+            background: #f8fafc;
+            padding: 10px 12px;
+            border-radius: 6px;
+            color: #475569;
+            margin-bottom: 16px;
+        }
+
+        .rule-info ul {
+            padding-left: 18px;
+            margin-top: 4px;
+        }
+
+        /* Table styles strictly matching Image 1 & 2 */
+        .table-container {
+            max-height: 700px;
+            overflow: auto;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+        }
+
+        table.simulation-table {
+            width: 100%;
+            min-width: 860px;
+            border-collapse: collapse;
+            font-family: "SimSun", "Songti SC", "Courier New", sans-serif; /* Grid look similar to standard spreadsheet */
+            font-size: 13px;
+            text-align: center;
+        }
+
+        table.simulation-table th {
+            position: sticky;
+            top: 0;
+            background-color: #f1f5f9;
+            color: #0f172a;
+            font-weight: bold;
+            border: 1px solid #94a3b8;
+            padding: 6px 4px;
+            z-index: 10;
+        }
+
+        table.simulation-table td {
+            border: 1px solid #cbd5e1;
+            padding: 5px 4px;
+            height: 24px;
+            white-space: nowrap;
+        }
+
+        table.simulation-table tr:nth-child(even) {
+            background-color: #f8fafc;
+        }
+
+        /* Highlight styles like image */
+        .row-breakeven {
+            background-color: var(--highlight-blue) !important;
+            font-weight: bold;
+        }
+
+        .cell-loss-peak {
+            background-color: var(--highlight-red) !important;
+        }
+
+        .row-max-profit {
+            background-color: var(--highlight-orange) !important;
+            font-weight: bold;
+        }
+
+        .cell-max-profit {
+            color: var(--profit-max) !important;
+            font-weight: bold;
+        }
+
+        .val-pos {
+            color: var(--text-main);
+        }
+
+        .val-neg {
+            color: var(--text-main);
+        }
+
+        .btn {
+            display: inline-block;
+            background-color: var(--primary);
+            color: white;
+            padding: 10px 16px;
+            border: none;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            width: 100%;
+            text-align: center;
+            transition: background-color 0.2s;
+        }
+
+        .btn:hover {
+            background-color: var(--primary-dark);
+        }
+
+        .btn-secondary {
+            background-color: #64748b;
+            margin-top: 8px;
+        }
+        .btn-secondary:hover {
+            background-color: #475569;
+        }
+
+        .snapshot-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0 12px;
+        }
+
+        .strategy-options {
+            display: grid;
+            gap: 10px;
+            margin: 16px 0;
+        }
+
+        .strategy-option {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background: #f8fafc;
+            cursor: pointer;
+        }
+
+        .strategy-option input {
+            width: 18px;
+            height: 18px;
+            margin-top: 2px;
+            flex: 0 0 auto;
+        }
+
+        .strategy-option strong,
+        .strategy-option small {
+            display: block;
+        }
+
+        .strategy-option small {
+            margin-top: 2px;
+            color: var(--text-muted);
+        }
+
+        .sp-panel {
+            margin-bottom: 16px;
+            padding: 14px;
+            border: 1px solid #c4b5fd;
+            border-radius: 8px;
+            background: #f5f3ff;
+        }
+
+        .sp-panel h3 {
+            margin-bottom: 10px;
+            color: #5b21b6;
+            font-size: 1rem;
+        }
+
+        .sp-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .sp-toolbar .btn {
+            width: auto;
+            padding: 7px 12px;
+            font-size: 0.82rem;
+        }
+
+        .sp-stats {
+            margin-right: auto;
+            color: #4c1d95;
+            font-size: 0.88rem;
+        }
+
+        .sp-allocation-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
+            gap: 8px;
+            max-height: 310px;
+            overflow-y: auto;
+        }
+
+        .sp-round {
+            padding: 8px;
+            border: 1px solid #ddd6fe;
+            border-radius: 7px;
+            background: #fff;
+        }
+
+        .sp-round-top {
+            display: flex;
+            justify-content: space-between;
+            gap: 6px;
+            color: #4c1d95;
+            font-size: 0.78rem;
+        }
+
+        .sp-stepper {
+            display: grid;
+            grid-template-columns: 28px 1fr 28px;
+            align-items: center;
+            gap: 5px;
+            margin-top: 6px;
+            text-align: center;
+            font-weight: bold;
+        }
+
+        .sp-stepper button {
+            height: 28px;
+            border: 1px solid #a78bfa;
+            border-radius: 5px;
+            background: #ede9fe;
+            color: #5b21b6;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        .sp-stepper button:disabled {
+            cursor: not-allowed;
+            opacity: 0.4;
+        }
+
+        .is-hidden {
+            display: none !important;
+        }
+
+        .summary-cards {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .sum-card {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 12px;
+            text-align: center;
+        }
+
+        .sum-card .label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+        }
+
+        .sum-card .value {
+            font-size: 1.1rem;
+            font-weight: bold;
+            color: var(--primary-dark);
+            margin-top: 4px;
+        }
+
+        .sum-card.max-profit-card {
+            background: var(--highlight-orange);
+            border-color: #fdba74;
+        }
+
+        .sum-card.max-profit-card .value {
+            color: var(--profit-max);
+        }
+
+        .tab-buttons {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .tab-btn {
+            padding: 6px 14px;
+            border: 1px solid var(--border-color);
+            background: #e2e8f0;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+
+        .tab-btn.active {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+        }
+
+        @media (max-width: 700px) {
+            .summary-cards {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .snapshot-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+</style>
+    <link rel="stylesheet" href="/calculator-ui.css">
+</head>
+<body>
+
+<div class="app-shell">
+    <header class="topbar">
+        <div class="topbar-title">
+            <span class="eyebrow">Season 04</span>
+            <h1>传说卡兑换收益演算台</h1>
+        </div>
+        <div class="topbar-rules" aria-label="固定规则">
+            <span>90 天</span>
+            <span>每日 650 抽</span>
+            <span>成本 $6,000/天</span>
+            <span>6 张传说/套</span>
+        </div>
+        <nav class="topbar-actions" aria-label="项目链接与主题">
+            <a class="farm-link" href="https://hyb.gudong226.com/" target="_blank" rel="noreferrer" aria-label="打开 HYB Farm Dashboard" title="HYB Farm Dashboard">
+                <img src="/farm-icon.svg" alt="" width="20" height="20">
+            </a>
+            <button class="theme-toggle" type="button" onclick="toggleTheme()" aria-label="主题：跟随系统" title="主题：跟随系统">◐</button>
+            <a class="github-link" href="https://github.com/GuDong2003/hyb-card-dashboard" target="_blank" rel="noreferrer" aria-label="打开 GitHub 仓库" title="GitHub 仓库">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 .5a12 12 0 0 0-3.79 23.39c.6.11.82-.26.82-.58v-2.04c-3.34.73-4.04-1.42-4.04-1.42-.55-1.39-1.34-1.76-1.34-1.76-1.09-.75.08-.74.08-.74 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49.99.11-.77.42-1.3.76-1.6-2.67-.3-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.12-.3-.54-1.52.12-3.17 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.29-1.55 3.3-1.23 3.3-1.23.66 1.65.24 2.87.12 3.17.77.84 1.24 1.91 1.24 3.22 0 4.6-2.8 5.62-5.48 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.22.7.83.58A12 12 0 0 0 12 .5Z"></path>
+                </svg>
+            </a>
+        </nav>
+    </header>
+
+    <main class="workspace">
+        <aside class="panel control-column">
+            <section class="control-section" aria-labelledby="dataTitle">
+                <div class="panel-header">
+                    <div>
+                        <span class="section-kicker">Manual Snapshot</span>
+                        <h2 id="dataTitle">当前数据</h2>
+                        <p class="panel-subtitle">填写此刻的真实状态，所有结果会立即重新计算。</p>
+                    </div>
+                </div>
+
+                <div class="input-section">
+                    <h3 class="input-section-title">预测基准</h3>
+                    <div class="form-grid three">
+                        <div class="form-group">
+                            <label for="currentDay">当前天数 <span class="field-hint">1～90</span></label>
+                            <input type="number" id="currentDay" min="1" max="90" value="2" inputmode="numeric" oninput="calculate()">
+                        </div>
+                        <div class="form-group">
+                            <label for="currentCards">抽出传说 <span class="field-hint">不含合成</span></label>
+                            <input type="number" id="currentCards" min="0" value="7" inputmode="numeric" oninput="calculate()">
+                        </div>
+                        <div class="form-group">
+                            <label for="currentTotalDraws">累计抽数</label>
+                            <input type="number" id="currentTotalDraws" min="0" value="1300" inputmode="numeric" oninput="calculate()">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="input-section">
+                    <h3 class="input-section-title">库存与星尘</h3>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label for="currentUsableCards">当前可用传说 <span class="field-hint">含合成</span></label>
+                            <input type="number" id="currentUsableCards" min="0" value="7" inputmode="numeric" oninput="calculate()">
+                        </div>
+                        <div class="form-group">
+                            <label for="stardustBalance">当前星尘余额</label>
+                            <input type="number" id="stardustBalance" min="0" value="0" inputmode="numeric" oninput="calculate()">
+                        </div>
+                        <div class="form-group">
+                            <label for="dissolveRemaining">今日剩余融解 <span class="field-hint">0～20</span></label>
+                            <input type="number" id="dissolveRemaining" min="0" max="20" value="20" inputmode="numeric" oninput="calculate()">
+                        </div>
+                        <div class="form-group">
+                            <label for="craftRemaining">今日剩余合成 <span class="field-hint">0～5</span></label>
+                            <input type="number" id="craftRemaining" min="0" max="5" value="5" inputmode="numeric" oninput="calculate()">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="probability-strip" id="probabilityBox">
+                    <div class="probability-item">
+                        <span>当前累计抽数</span>
+                        <strong id="totalPullsText">1300</strong>
+                    </div>
+                    <div class="probability-item">
+                        <span>实际传说概率</span>
+                        <strong id="calculatedProbText">0.538%</strong>
+                    </div>
+                    <div class="probability-item">
+                        <span>预计日均传说</span>
+                        <strong><span id="dailyExpectedText">3.50</span> 张</strong>
+                    </div>
+                    <span id="dailyPullsText" class="is-hidden">650</span>
+                </div>
+            </section>
+
+            <section class="control-section strategy-section" aria-labelledby="strategyTitle">
+                <div class="panel-header">
+                    <div>
+                        <span class="section-kicker">Strategy Layer</span>
+                        <h2 id="strategyTitle">计算策略</h2>
+                        <p class="panel-subtitle">按你实际准备执行的操作打开对应模型，额外成本会自动计入现金流。</p>
+                    </div>
+                </div>
+
+                <div class="strategy-stack">
+                    <label class="strategy-option" for="enableSP">
+                        <input type="checkbox" id="enableSP" onchange="calculate()">
+                        <span>
+                            <strong>计入 SP 兑换加成</strong>
+                            <small>每抽出 10 张传说预计产生 1 个 SP 点；每轮最多使用 3 点，每点增加该轮基础奖励的 10%。</small>
+                        </span>
+                    </label>
+                    <label class="strategy-option" for="enableForge">
+                        <input type="checkbox" id="enableForge" onchange="calculate()">
+                        <span>
+                            <strong>每日融解 20 张史实并合成传说</strong>
+                            <small>每日最多获得 1,000 星尘并支出 $900 手续费；传说合成消耗 1,600 星尘，受每日 5 次额度限制。</small>
+                        </span>
+                    </label>
+                </div>
+
+                <div class="rules-card">
+                    <h3>兑换奖励曲线</h3>
+                    <div class="rule-track">
+                        <div class="rule-stage">
+                            <b>第 1～48 轮</b>
+                            <span>从 $2,000 开始，每轮增长 5%。</span>
+                        </div>
+                        <div class="rule-stage">
+                            <b>第 49～54 轮</b>
+                            <span>进入峰值区间，基础奖励固定 $20,000。</span>
+                        </div>
+                        <div class="rule-stage">
+                            <b>第 55 轮以后</b>
+                            <span>每轮衰减 2.5%，最低保持 $1,000。</span>
+                        </div>
+                    </div>
+                    <p class="rule-footnote">所有轮次均按 6 张可用传说兑换 1 套计算；不处理卡名与图鉴差异。</p>
+                </div>
+            </section>
+        </aside>
+
+        <section class="results-column">
+            <section class="summary-grid" aria-label="赛季收益摘要">
+                <article class="metric-card featured">
+                    <span class="metric-label">90 天最终净利润</span>
+                    <strong class="metric-value" id="sumProfit">0</strong>
+                </article>
+                <article class="metric-card">
+                    <span class="metric-label">可用传说总量</span>
+                    <strong class="metric-value" id="sumCards">0 张</strong>
+                </article>
+                <article class="metric-card">
+                    <span class="metric-label">预计兑换总套数</span>
+                    <strong class="metric-value" id="sumSets">0 套</strong>
+                </article>
+                <article class="metric-card">
+                    <span class="metric-label">首次回本</span>
+                    <strong class="metric-value" id="sumBreakEven">—</strong>
+                </article>
+                <article class="metric-card loss">
+                    <span class="metric-label">最大资金缺口</span>
+                    <strong class="metric-value" id="sumDrawdown">—</strong>
+                </article>
+                <article class="metric-card peak">
+                    <span class="metric-label">最高利润点</span>
+                    <strong class="metric-value" id="sumMaxProfit">0</strong>
+                </article>
+            </section>
+
+            <section class="panel sp-panel is-hidden" id="spPanel" aria-labelledby="spPanelTitle">
+            <div class="panel-header">
+                <div>
+                    <span class="section-kicker">SP Allocation</span>
+                    <h2 id="spPanelTitle">SP 点数分配</h2>
+                    <p class="panel-subtitle">琥珀色轮次为第 49～54 轮峰值区；系统会限制每轮上限和当时可获得的 SP 数量。</p>
+                </div>
+            </div>
+            <div class="sp-toolbar">
+                <div class="sp-stats" id="spStats">预计 0 点 · 已分配 0 点</div>
+                <button class="btn" type="button" onclick="autoAllocateSP()">一键最优分配</button>
+                <button class="btn btn-secondary" type="button" onclick="clearSPAllocation()">清空分配</button>
+            </div>
+            <div class="sp-allocation-grid" id="spAllocationGrid"></div>
+            </section>
+
+            <section class="panel table-panel" aria-labelledby="tableTitle">
+            <div class="table-toolbar">
+                <div class="panel-header">
+                    <div>
+                        <span class="section-kicker">Full Projection</span>
+                        <h2 id="tableTitle">90 天现金流演算</h2>
+                        <p class="panel-subtitle">从第 1 天到赛季结束，完整列出传说产出、兑换收益、成本与净利润。</p>
+                    </div>
+                </div>
+                <div class="table-actions">
+                    <div class="legend-list" aria-label="表格高亮说明">
+                        <span class="legend-item"><i class="legend-dot blue"></i>首次回本</span>
+                        <span class="legend-item"><i class="legend-dot red"></i>最大亏损</span>
+                        <span class="legend-item"><i class="legend-dot orange"></i>最高利润</span>
+                    </div>
+                    <button class="btn btn-secondary" type="button" onclick="exportCSV()">导出 CSV</button>
+                </div>
+            </div>
+            <div class="table-container">
+                <table class="simulation-table">
+                    <thead>
+                        <tr>
+                            <th>天数</th>
+                            <th>当日传说</th>
+                            <th>累计抽出传说</th>
+                            <th class="forge-column is-hidden">星尘余额</th>
+                            <th class="forge-column is-hidden">模拟合成传说</th>
+                            <th class="forge-column is-hidden">合成折算套数</th>
+                            <th class="forge-column is-hidden">累计融解成本</th>
+                            <th>可用传说总量</th>
+                            <th>累计成套</th>
+                            <th class="sp-column is-hidden">累计 SP 加成</th>
+                            <th>累计收益</th>
+                            <th>累计成本</th>
+                            <th>净利润</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tableBody"></tbody>
+                </table>
+            </div>
+            </section>
+        </section>
+    </main>
+</div>
+
+<script src="/stardust-rules.js"></script>
+<script>
+    const SNAPSHOT_STORAGE_KEY = 'legend-card-calculator-snapshot-v1';
+    const SNAPSHOT_VALUE_FIELDS = [
+        'currentDay',
+        'currentCards',
+        'currentTotalDraws',
+        'currentUsableCards',
+        'stardustBalance',
+        'dissolveRemaining',
+        'craftRemaining'
+    ];
+    const SNAPSHOT_CHECKBOX_FIELDS = ['enableSP', 'enableForge'];
+    let themeModeState = 'system';
+
+    function getThemeMode() {
+        return ['system', 'dark', 'light'].includes(themeModeState) ? themeModeState : 'system';
+    }
+
+    function getResolvedTheme() {
+        const mode = getThemeMode();
+        if (mode === 'dark' || mode === 'light') return mode;
+        return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+
+    function applyTheme() {
+        document.documentElement.setAttribute('data-theme', getResolvedTheme());
+        const button = document.querySelector('.theme-toggle');
+        if (!button) return;
+        const mode = getThemeMode();
+        const icon = mode === 'system' ? '◐' : mode === 'dark' ? '☾' : '☀';
+        const label = mode === 'system' ? '主题：跟随系统' : mode === 'dark' ? '主题：暗色' : '主题：亮色';
+        button.textContent = icon;
+        button.setAttribute('aria-label', label);
+        button.setAttribute('title', label);
+    }
+
+    function installThemeListener() {
+        if (!window.matchMedia) return;
+        const media = window.matchMedia('(prefers-color-scheme: dark)');
+        const handleChange = () => {
+            if (getThemeMode() !== 'system') return;
+            applyTheme();
+        };
+        if (media.addEventListener) media.addEventListener('change', handleChange);
+        else if (media.addListener) media.addListener(handleChange);
+    }
+
+    function toggleTheme() {
+        const mode = getThemeMode();
+        themeModeState = mode === 'system' ? 'dark' : mode === 'dark' ? 'light' : 'system';
+        applyTheme();
+        saveSnapshot();
+    }
+
+    function saveSnapshot() {
+        try {
+            const values = {};
+            SNAPSHOT_VALUE_FIELDS.forEach(id => {
+                values[id] = document.getElementById(id).value;
+            });
+            SNAPSHOT_CHECKBOX_FIELDS.forEach(id => {
+                values[id] = document.getElementById(id).checked;
+            });
+            values.theme = getThemeMode();
+            localStorage.setItem(SNAPSHOT_STORAGE_KEY, JSON.stringify({ values }));
+        } catch (error) {
+            // 无痕模式或浏览器禁用本地存储时，保持计算功能正常。
+        }
+    }
+
+    function restoreSnapshot() {
+        try {
+            const saved = JSON.parse(localStorage.getItem(SNAPSHOT_STORAGE_KEY));
+            if (!saved || typeof saved.values !== 'object') return;
+
+            SNAPSHOT_VALUE_FIELDS.forEach(id => {
+                if (saved.values[id] !== undefined) {
+                    document.getElementById(id).value = saved.values[id];
+                }
+            });
+            SNAPSHOT_CHECKBOX_FIELDS.forEach(id => {
+                if (typeof saved.values[id] === 'boolean') {
+                    document.getElementById(id).checked = saved.values[id];
+                }
+            });
+            if (['system', 'dark', 'light'].includes(saved.values.theme)) {
+                themeModeState = saved.values.theme;
+            }
+        } catch (error) {
+            // 缓存损坏时使用页面默认值。
+        }
+    }
+
+    // 单轮兑换收益计算
+    function getRoundReward(round) {
+        if (round <= 0) return 0;
+        const BASE = 2000;
+        const CAP = 20000;
+        if (round <= 48) {
+            return BASE * Math.pow(1.05, round - 1);
+        }
+        if (round <= 54) {
+            return CAP;
+        }
+        const decreased = CAP * Math.pow(1 - 0.025, round - 54);
+        return Math.max(1000, decreased);
+    }
+
+    const spAllocation = new Map();
+    let latestProjection = {
+        totalSets: 0,
+        earnedSP: 0,
+        spAvailableByRound: []
+    };
+
+    function clampInteger(value, min, max) {
+        const parsed = Number.parseInt(value, 10);
+        return Math.max(min, Math.min(max, Number.isFinite(parsed) ? parsed : min));
+    }
+
+    function formatMoney(value) {
+        return Number.isInteger(value) ? value.toString() : value.toFixed(2);
+    }
+
+    function getAllocatedSP(totalSets = Infinity) {
+        let total = 0;
+        spAllocation.forEach((points, round) => {
+            if (round <= totalSets) total += points;
+        });
+        return total;
+    }
+
+    function getSPBonus(totalSets) {
+        let bonus = 0;
+        spAllocation.forEach((points, round) => {
+            if (round <= totalSets) bonus += getRoundReward(round) * points * 0.1;
+        });
+        return bonus;
+    }
+
+    // 计算累计前 N 套的基础奖励和SP加成。
+    function getCumRewardDetails(totalSets, includeSP = true) {
+        let base = 0;
+        for (let round = 1; round <= totalSets; round++) {
+            base += getRoundReward(round);
+        }
+        const spBonus = includeSP ? getSPBonus(totalSets) : 0;
+        return { base, spBonus, total: base + spBonus };
+    }
+
+    function normalizeSPAllocation(totalSets, spAvailableByRound) {
+        const normalized = new Map();
+        let used = 0;
+        for (let round = 1; round <= totalSets; round++) {
+            const available = spAvailableByRound[round] || 0;
+            const requested = clampInteger(spAllocation.get(round) || 0, 0, 3);
+            const points = Math.min(requested, Math.max(0, available - used));
+            if (points > 0) normalized.set(round, points);
+            used += points;
+        }
+        spAllocation.clear();
+        normalized.forEach((points, round) => spAllocation.set(round, points));
+    }
+
+    function isSPAllocationFeasible(candidate, totalSets, spAvailableByRound) {
+        let used = 0;
+        for (let round = 1; round <= totalSets; round++) {
+            used += candidate.get(round) || 0;
+            if (used > (spAvailableByRound[round] || 0)) return false;
+        }
+        return true;
+    }
+
+    function getOptimalSPAllocation(totalSets, spAvailableByRound) {
+        const layers = [new Map([[0, { value: 0, previous: -1, points: 0 }]])];
+
+        for (let round = 1; round <= totalSets; round++) {
+            const previousLayer = layers[round - 1];
+            const layer = new Map();
+            const available = spAvailableByRound[round] || 0;
+            previousLayer.forEach((state, used) => {
+                for (let points = 0; points <= 3 && used + points <= available; points++) {
+                    const nextUsed = used + points;
+                    const value = state.value + getRoundReward(round) * points * 0.1;
+                    const existing = layer.get(nextUsed);
+                    if (!existing || value > existing.value) {
+                        layer.set(nextUsed, { value, previous: used, points });
+                    }
+                }
+            });
+            layers.push(layer);
+        }
+
+        const finalLayer = layers[totalSets] || new Map();
+        let bestUsed = 0;
+        let bestValue = -Infinity;
+        finalLayer.forEach((state, used) => {
+            if (state.value > bestValue) {
+                bestValue = state.value;
+                bestUsed = used;
+            }
+        });
+
+        const result = new Map();
+        for (let round = totalSets; round >= 1; round--) {
+            const state = layers[round].get(bestUsed);
+            if (!state) break;
+            if (state.points > 0) result.set(round, state.points);
+            bestUsed = state.previous;
+        }
+        return result;
+    }
+
+    function adjustSP(round, delta) {
+        const { totalSets, spAvailableByRound } = latestProjection;
+        if (round < 1 || round > totalSets) return;
+
+        const candidate = new Map(spAllocation);
+        const nextPoints = clampInteger((candidate.get(round) || 0) + delta, 0, 3);
+        if (nextPoints > 0) candidate.set(round, nextPoints);
+        else candidate.delete(round);
+
+        if (!isSPAllocationFeasible(candidate, totalSets, spAvailableByRound)) return;
+        spAllocation.clear();
+        candidate.forEach((points, targetRound) => spAllocation.set(targetRound, points));
+        calculate();
+    }
+
+    function autoAllocateSP() {
+        const optimal = getOptimalSPAllocation(latestProjection.totalSets, latestProjection.spAvailableByRound);
+        spAllocation.clear();
+        optimal.forEach((points, round) => spAllocation.set(round, points));
+        calculate();
+    }
+
+    function clearSPAllocation() {
+        spAllocation.clear();
+        calculate();
+    }
+
+    function renderSPPanel(enabled, totalSets, earnedSP, spAvailableByRound) {
+        const panel = document.getElementById('spPanel');
+        panel.classList.toggle('is-hidden', !enabled);
+        if (!enabled) return;
+
+        const allocated = getAllocatedSP(totalSets);
+        const usableByLastRound = totalSets > 0 ? (spAvailableByRound[totalSets] || 0) : 0;
+        const bonus = getSPBonus(totalSets);
+        document.getElementById('spStats').innerText =
+            `预计获得${earnedSP}点 · 兑换前可用${usableByLastRound}点 · 已分配${allocated}点 · 加成$${formatMoney(bonus)}`;
+
+        const grid = document.getElementById('spAllocationGrid');
+        grid.innerHTML = '';
+        for (let round = 1; round <= totalSets; round++) {
+            const points = spAllocation.get(round) || 0;
+            const candidate = new Map(spAllocation);
+            candidate.set(round, points + 1);
+            const canIncrease = points < 3 && isSPAllocationFeasible(candidate, totalSets, spAvailableByRound);
+            const card = document.createElement('div');
+            card.className = [
+                'sp-round',
+                round >= 49 && round <= 54 ? 'is-peak' : '',
+                points > 0 ? 'has-points' : ''
+            ].filter(Boolean).join(' ');
+            card.innerHTML = `
+                <strong>第${round}轮</strong>
+                <small>基础 $${formatMoney(getRoundReward(round))} · 截至本轮可得${spAvailableByRound[round] || 0}点</small>
+                <div class="sp-stepper">
+                    <button type="button" aria-label="第${round}轮减少SP" onclick="adjustSP(${round}, -1)" ${points === 0 ? 'disabled' : ''}>−</button>
+                    <span>${points} SP · +${points * 10}%</span>
+                    <button type="button" aria-label="第${round}轮增加SP" onclick="adjustSP(${round}, 1)" ${canIncrease ? '' : 'disabled'}>＋</button>
+                </div>
+            `;
+            grid.appendChild(card);
+        }
+    }
+
+    function calculate() {
+        const currentDay = clampInteger(document.getElementById('currentDay').value, 1, 90);
+        const currentCards = Math.max(0, Number.parseInt(document.getElementById('currentCards').value, 10) || 0);
+        const currentTotalDraws = Math.max(0, Number.parseInt(document.getElementById('currentTotalDraws').value, 10) || 0);
+        const currentUsableCards = Math.max(0, Number.parseInt(document.getElementById('currentUsableCards').value, 10) || 0);
+        const startingStardust = Math.max(0, Number.parseInt(document.getElementById('stardustBalance').value, 10) || 0);
+        const dissolveRemaining = clampInteger(document.getElementById('dissolveRemaining').value, 0, StardustRules.MAX_DISSOLVE_PER_DAY);
+        const craftRemaining = clampInteger(document.getElementById('craftRemaining').value, 0, StardustRules.MAX_CRAFT_PER_DAY);
+        const enableSP = document.getElementById('enableSP').checked;
+        const enableForge = document.getElementById('enableForge').checked;
+        saveSnapshot();
+
+        const pullsPerDay = 650;
+        const dailyCost = 6000;
+
+        // 只有实际抽出的传说参与抽卡概率和SP期望；合成传说只进入可用卡总量。
+        const actualProb = currentTotalDraws > 0 ? currentCards / currentTotalDraws : 0;
+        const dailyExpectedCards = actualProb * pullsPerDay;
+
+        document.getElementById('dailyPullsText').innerText = pullsPerDay;
+        document.getElementById('totalPullsText').innerText = currentTotalDraws;
+        document.getElementById('calculatedProbText').innerText = (actualProb * 100).toFixed(3) + "%";
+        document.getElementById('dailyExpectedText').innerText = dailyExpectedCards.toFixed(2);
+        document.querySelectorAll('.forge-column').forEach(element => element.classList.toggle('is-hidden', !enableForge));
+        document.querySelectorAll('.sp-column').forEach(element => element.classList.toggle('is-hidden', !enableSP));
+
+        const dailyCards = new Array(90);
+        let cardAccumulator = 0;
+        for (let day = 1; day <= 90; day++) {
+            const targetTotal = day <= currentDay
+                ? Math.round((currentCards / currentDay) * day)
+                : Math.round(currentCards + dailyExpectedCards * (day - currentDay));
+            dailyCards[day - 1] = targetTotal - cardAccumulator;
+            cardAccumulator = targetTotal;
+        }
+
+        const tableData = [];
+        const spAvailableByRound = [];
+        let cumulativeDrawn = 0;
+        let previousSets = 0;
+        let stardust = startingStardust;
+        let craftedCards = 0;
+        let cumulativeDissolveCost = 0;
+
+        for (let day = 1; day <= 90; day++) {
+            const dayCards = dailyCards[day - 1];
+            cumulativeDrawn += dayCards;
+
+            const baseUsableCards = day <= currentDay
+                ? Math.round((currentUsableCards / currentDay) * day)
+                : Math.round(currentUsableCards + dailyExpectedCards * (day - currentDay));
+
+            let dustDisplay = startingStardust;
+            if (enableForge) {
+                const dissolveState = StardustRules.getDissolveDayState({
+                    day,
+                    currentDay,
+                    dissolveRemaining
+                });
+                cumulativeDissolveCost += dissolveState.cashCost;
+                if (day < currentDay) {
+                    dustDisplay = null;
+                } else {
+                    const dailyCraftLimit = StardustRules.getCraftLimit({
+                        day,
+                        currentDay,
+                        craftRemaining
+                    });
+                    stardust += dissolveState.dustAdded;
+                    const craftedToday = Math.min(dailyCraftLimit, Math.floor(stardust / 1600));
+                    stardust -= craftedToday * 1600;
+                    craftedCards += craftedToday;
+                    dustDisplay = stardust;
+                }
+            }
+
+            const usableCards = baseUsableCards + craftedCards;
+            const cumulativeSets = Math.floor(usableCards / 6);
+            const earnedSP = Math.floor(cumulativeDrawn * 0.1);
+            for (let round = previousSets + 1; round <= cumulativeSets; round++) {
+                spAvailableByRound[round] = earnedSP;
+            }
+            previousSets = cumulativeSets;
+
+            tableData.push({
+                day,
+                dayCards,
+                cumulativeDrawn,
+                dustDisplay,
+                craftedCards,
+                craftedSetEquivalent: craftedCards / 6,
+                cumulativeDissolveCost,
+                usableCards,
+                cumulativeSets,
+                earnedSP
+            });
+        }
+
+        const lastPreliminaryRow = tableData[tableData.length - 1];
+        latestProjection = {
+            totalSets: lastPreliminaryRow.cumulativeSets,
+            earnedSP: lastPreliminaryRow.earnedSP,
+            spAvailableByRound
+        };
+        normalizeSPAllocation(latestProjection.totalSets, spAvailableByRound);
+        renderSPPanel(enableSP, latestProjection.totalSets, latestProjection.earnedSP, spAvailableByRound);
+
+        let minProfit = Infinity;
+        let minProfitDay = -1;
+        let maxProfit = -Infinity;
+        let maxProfitDay = -1;
+        let breakevenDay = -1;
+
+        tableData.forEach(row => {
+            const rewards = getCumRewardDetails(row.cumulativeSets, enableSP);
+            row.spBonus = rewards.spBonus;
+            row.totalRevenue = rewards.total;
+            row.cumulativeCost = row.day * dailyCost + row.cumulativeDissolveCost;
+            row.netProfit = row.totalRevenue - row.cumulativeCost;
+
+            if (row.netProfit < minProfit) {
+                minProfit = row.netProfit;
+                minProfitDay = row.day;
+            }
+            if (row.netProfit > maxProfit) {
+                maxProfit = row.netProfit;
+                maxProfitDay = row.day;
+            }
+            if (row.netProfit >= 0 && breakevenDay === -1) breakevenDay = row.day;
+        });
+
+        const tbody = document.getElementById('tableBody');
+        tbody.innerHTML = '';
+        tableData.forEach(row => {
+            const tr = document.createElement('tr');
+            if (row.day === breakevenDay) tr.classList.add('row-breakeven');
+            if (row.day === maxProfitDay) tr.classList.add('row-max-profit');
+
+            const profitCellClass = row.day === minProfitDay
+                ? 'cell-loss-peak'
+                : row.day === maxProfitDay
+                    ? 'cell-max-profit'
+                    : (row.netProfit >= 0 ? 'val-pos' : 'val-neg');
+            const forgeHiddenClass = enableForge ? '' : ' is-hidden';
+            const spHiddenClass = enableSP ? '' : ' is-hidden';
+
+            tr.innerHTML = `
+                <td>${row.day}</td>
+                <td>${row.dayCards}</td>
+                <td>${row.cumulativeDrawn}</td>
+                <td class="forge-column${forgeHiddenClass}">${row.dustDisplay === null ? '—' : row.dustDisplay}</td>
+                <td class="forge-column${forgeHiddenClass}">${row.craftedCards}</td>
+                <td class="forge-column${forgeHiddenClass}">${row.craftedSetEquivalent.toFixed(2)}</td>
+                <td class="forge-column${forgeHiddenClass}">${row.cumulativeDissolveCost}</td>
+                <td>${row.usableCards}</td>
+                <td>${row.cumulativeSets}</td>
+                <td class="sp-column${spHiddenClass}">${formatMoney(row.spBonus)}</td>
+                <td>${formatMoney(row.totalRevenue)}</td>
+                <td>${row.cumulativeCost}</td>
+                <td class="${profitCellClass}">${formatMoney(row.netProfit)}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        const lastRow = tableData[tableData.length - 1];
+        document.getElementById('sumCards').innerText = lastRow.usableCards + " 张";
+        document.getElementById('sumSets').innerText = lastRow.cumulativeSets + " 套";
+        document.getElementById('sumProfit').innerText = `${lastRow.netProfit >= 0 ? "+" : "−"}$${Math.abs(lastRow.netProfit).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+        document.getElementById('sumProfit').style.color = lastRow.netProfit >= 0 ? "var(--profit-pos)" : "var(--profit-neg)";
+
+        const breakEvenElement = document.getElementById('sumBreakEven');
+        breakEvenElement.innerText = breakevenDay === -1 ? "赛季内未回本" : `第 ${breakevenDay} 天`;
+        breakEvenElement.style.color = breakevenDay === -1 ? "var(--text-muted)" : "var(--cyan)";
+
+        const drawdownElement = document.getElementById('sumDrawdown');
+        drawdownElement.innerText = `第${minProfitDay}天 · −$${Math.abs(minProfit).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+        drawdownElement.style.color = "var(--profit-neg)";
+
+        document.getElementById('sumMaxProfit').innerText =
+            `第${maxProfitDay}天 · ${maxProfit >= 0 ? "+" : "−"}$${Math.abs(maxProfit).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+        document.getElementById('sumMaxProfit').style.color = "var(--profit-max)";
+    }
+
+    function exportCSV() {
+        const rows = document.querySelectorAll('table.simulation-table tr');
+        let csv = [];
+        rows.forEach(row => {
+            const cols = row.querySelectorAll('th, td');
+            let rowData = [];
+            cols.forEach(col => {
+                if (col.classList.contains('is-hidden')) return;
+                rowData.push('"' + col.innerText.replace(/"/g, '""') + '"');
+            });
+            csv.push(rowData.join(','));
+        });
+        const csvFile = new Blob(["\ufeff" + csv.join('\n')], { type: 'text/csv;charset=utf-8;' });
+        const downloadLink = document.createElement('a');
+        downloadLink.download = '传说卡兑换90天收益演算表.csv';
+        downloadLink.href = window.URL.createObjectURL(csvFile);
+        downloadLink.style.display = 'none';
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        document.body.removeChild(downloadLink);
+    }
+
+    // 优先恢复上次填写的数据，再初始化计算。
+    restoreSnapshot();
+    applyTheme();
+    installThemeListener();
+    calculate();
+</script>
+
+</body>
+</html>
