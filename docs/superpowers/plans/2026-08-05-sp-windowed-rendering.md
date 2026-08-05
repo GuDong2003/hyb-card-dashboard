@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the SP allocation panel keep a two-row viewport with one buffered row before and after it, preserve full scrolling, and automatically jump to the row with the most allocated SP after optimal allocation.
+**Goal:** Make the SP allocation panel keep a two-row viewport with one buffered row before and after it, preserve full scrolling, and automatically jump to the first row that contains an SP allocation after optimal allocation.
 
 **Architecture:** Keep the existing reward, projection, and SP allocation algorithms unchanged. Replace the full-card DOM loop with a window renderer that uses explicit CSS grid row tracks and places only the viewport plus one-row buffers into those tracks; scroll position determines which four-row window is materialized. Add a focus guard so smooth auto-navigation is not reset by intermediate scroll events, plus a finite-value guard for invalid projections.
 
@@ -124,14 +124,14 @@ For `totalSets === null`, clear the grid, reset its inline row styles, and appen
 
 Add styles in `site/calculator-ui.css` for `.sp-window-message` so it spans the grid width, is centered, and uses the existing muted text variables. Add `contain: layout paint` to the scroll grid without changing its two-row height or existing theme colors.
 
-### Task 4: Focus the most-used row after optimal allocation
+### Task 4: Focus the first allocated row after optimal allocation
 
 **Files:**
 - Modify: `site/index.html` in `autoAllocateSP` and new focus helpers.
 
 - [ ] **Step 1: Select the focus row from the resulting allocation.**
 
-Implement `getBestSPFocusRound(allocation)` by summing points per grid row using the current column count. Sort candidates by descending row point total, then ascending first round. Return `null` when the allocation is empty.
+Implement `getFirstSPFocusRound(allocation)` by finding the smallest round number whose allocated SP is greater than zero. Return `null` when the allocation is empty.
 
 - [ ] **Step 2: Add smooth row focusing.**
 
@@ -143,7 +143,7 @@ grid.scrollTo({ top: targetRow * windowState.rowStep, behavior: 'smooth' });
 
 - [ ] **Step 3: Call focus after `calculate()`.**
 
-In `autoAllocateSP`, compute the optimal Map as today, capture the best focus round, call `calculate()`, and then call `focusSPRound(focusRound)`. If no points are allocated, skip focusing. Manual +/- actions and `clearSPAllocation` must not call the focus helper.
+In `autoAllocateSP`, compute the optimal Map as today, capture the first allocated focus round, call `calculate()`, and then call `focusSPRound(focusRound)`. If no points are allocated, skip focusing. Manual +/- actions and `clearSPAllocation` must not call the focus helper.
 
 ### Task 5: Build and browser smoke verification
 
@@ -173,7 +173,7 @@ In a temporary browser state, set the usable legend count high enough to produce
 
 - [ ] **Step 4: Verify scrolling and focus behavior.**
 
-Scroll the SP panel and confirm it settles on complete rows. Click “一键最优分配” and confirm the panel scrolls to the row with the greatest allocated SP, with highlighted cards visible. Verify manual +/- and clearing do not cause an unexpected jump.
+Scroll the SP panel and confirm it settles on complete rows. Click “一键最优分配” and confirm the panel scrolls to the first row containing an allocated SP, with the earliest highlighted card inside the viewport. Verify manual +/- and clearing do not cause an unexpected jump.
 
 - [ ] **Step 5: Review the final diff.**
 

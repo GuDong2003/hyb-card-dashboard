@@ -967,7 +967,7 @@
         spAllocation.clear();
         optimal.forEach((points, round) => spAllocation.set(round, points));
         calculate();
-        const focusRound = getBestSPFocusRound(spAllocation);
+        const focusRound = getFirstSPFocusRound(spAllocation);
         if (focusRound !== null) focusSPRound(focusRound);
     }
 
@@ -1081,26 +1081,16 @@
         }, { passive: true });
     }
 
-    function getBestSPFocusRound(allocation) {
-        if (!allocation || allocation.size === 0 || spWindowState.columns < 1) return null;
-        const rows = new Map();
+    function getFirstSPFocusRound(allocation) {
+        if (!allocation || allocation.size === 0) return null;
+        let firstRound = null;
         allocation.forEach((points, round) => {
             const parsedRound = Number.parseInt(round, 10);
             const parsedPoints = Number.parseInt(points, 10);
             if (!Number.isFinite(parsedRound) || !Number.isFinite(parsedPoints) || parsedPoints <= 0) return;
-            const row = Math.floor((parsedRound - 1) / spWindowState.columns);
-            const current = rows.get(row) || { points: 0, firstRound: row * spWindowState.columns + 1 };
-            current.points += parsedPoints;
-            rows.set(row, current);
+            if (firstRound === null || parsedRound < firstRound) firstRound = parsedRound;
         });
-
-        let best = null;
-        rows.forEach((candidate) => {
-            if (!best || candidate.points > best.points || (candidate.points === best.points && candidate.firstRound < best.firstRound)) {
-                best = candidate;
-            }
-        });
-        return best ? best.firstRound : null;
+        return firstRound;
     }
 
     function focusSPRound(round) {
