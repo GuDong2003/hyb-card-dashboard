@@ -6,7 +6,8 @@ import {
   computeSnapshotSignature,
   estimatePullsFromSpend,
   estimateLegendProbability,
-  diffBoardRows
+  diffBoardRows,
+  parseCapturedAt
 } from '../src/rankings-core.js';
 
 const row = (overrides = {}) => ({
@@ -34,6 +35,13 @@ test('rejects unknown boards and future captures', () => {
   };
   assert.equal(normalizeLeaderboardSnapshot({ ...base, capturedAt: 1000, leaderboards: { bad: [] } }, 1000).reason, 'unknown_board');
   assert.equal(normalizeLeaderboardSnapshot(base, 1000).reason, 'future_captured_at');
+});
+
+test('parses numeric and ISO capture timestamps while rejecting invalid values', () => {
+  const iso = '2026-08-05T09:40:17.863Z';
+  assert.equal(parseCapturedAt(1785922892568), 1785922892568);
+  assert.equal(parseCapturedAt(iso), Date.parse(iso));
+  assert.equal(parseCapturedAt('not-a-date'), null);
 });
 
 test('signature is stable when object key order changes', async () => {

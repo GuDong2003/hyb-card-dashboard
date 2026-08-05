@@ -47,9 +47,8 @@
         bridgeReady: false,
         bridgeRequest: null,
         rows: [],
-        events: [],
         partialRows: [],
-        selectedUserId: '',
+        userQuery: '',
         status: '等待榜单数据'
     };
 
@@ -97,7 +96,7 @@
         const button = $('#rankingsRefreshButton');
         if (button) {
             button.disabled = state.busy;
-            button.textContent = state.busy ? '同步中…' : '检查更新';
+            button.textContent = state.busy ? '↻ 同步中…' : '↻ 立即刷新';
         }
         renderUploadControls();
     }
@@ -108,7 +107,7 @@
         const uploadButton = $('#rankingsUploadButton');
         if (uploadButton) {
             uploadButton.disabled = state.busy || !state.localSnapshot;
-            uploadButton.textContent = state.localSnapshot ? '上传本次快照' : '暂无待上传快照';
+            uploadButton.textContent = '上传云端';
         }
         const localStatus = $('#rankingsUploadStatus');
         if (localStatus) {
@@ -161,6 +160,30 @@
         if (!snapshot || typeof snapshot !== 'object') return null;
         if (snapshot.data && snapshot.data.leaderboards) return snapshot.data;
         return snapshot;
+    }
+
+    function normalizeCapturedAt(value, fallback = Date.now()) {
+        const numeric = Number(value);
+        if (Number.isFinite(numeric) && numeric > 0) return Math.floor(numeric);
+        if (value != null && value !== '') {
+            const parsed = Date.parse(String(value));
+            if (Number.isFinite(parsed) && parsed > 0) return parsed;
+        }
+        const fallbackNumeric = Number(fallback);
+        return Number.isFinite(fallbackNumeric) && fallbackNumeric > 0
+            ? Math.floor(fallbackNumeric)
+            : null;
+    }
+
+    function normalizeSnapshotForUpload(snapshot) {
+        const source = snapshotSource(snapshot);
+        if (!source || typeof source !== 'object') return snapshot;
+        return {
+            ...source,
+            capturedAt: normalizeCapturedAt(source.capturedAt, null)
+                || normalizeCapturedAt(source.lastUpdatedAt, null)
+                || Date.now()
+        };
     }
 
     function rowUserId(row) {
@@ -404,7 +427,9 @@
                     seasonId: String(source.season && source.season.id || ''),
                     seasonName: String(source.season && source.season.name || ''),
                     scope: String(source.scope || 'global'),
-                    capturedAt: Number(source.capturedAt) || Date.now(),
+                    capturedAt: normalizeCapturedAt(source.capturedAt, null)
+                        || normalizeCapturedAt(source.lastUpdatedAt, null)
+                        || Date.now(),
                     source: 'local-unsent'
                 },
                 previousSnapshot: null,
@@ -435,7 +460,9 @@
                 seasonId: String(source.season && source.season.id || ''),
                 seasonName: String(source.season && source.season.name || ''),
                 scope: String(source.scope || 'global'),
-                capturedAt: Number(source.capturedAt) || Date.now(),
+                capturedAt: normalizeCapturedAt(source.capturedAt, null)
+                    || normalizeCapturedAt(source.lastUpdatedAt, null)
+                    || Date.now(),
                 source: 'local-unsent'
             },
             previousSnapshot: null,
@@ -501,7 +528,11 @@
     }
 
     async function uploadSnapshot(snapshot) {
-        return apiPost('/api/rankings/snapshots', { snapshot, source: 'card-dashboard-userscript' });
+        const normalized = normalizeSnapshotForUpload(snapshot);
+        if (!normalized || !Number.isInteger(normalized.capturedAt) || normalized.capturedAt <= 0) {
+            throw new Error('榜单快照缺少有效抓取时间');
+        }
+        return apiPost('/api/rankings/snapshots', { snapshot: normalized, source: 'card-dashboard-userscript' });
     }
 
     async function ensureFreshSnapshot(force = false) {
@@ -519,7 +550,7 @@
         try {
             const snapshot = await requestBridgeSnapshot();
             state.bridgeReady = true;
-            state.localSnapshot = snapshot;
+            state.localSnapshot = normalizeSnapshotForUpload(snapshot);
             if (!state.settings.autoUpload) {
                 setStatus('已抓取本地榜单，未上传云端');
                 renderUploadControls();
@@ -543,7 +574,6 @@
         const leaderboard = await apiGet(query);
         state.rows = Array.isArray(leaderboard.rows) ? leaderboard.rows : [];
         state.partialRows = Array.isArray(leaderboard.partialRows) ? leaderboard.partialRows : [];
-        state.events = [];
         renderLeaderboard(leaderboard);
     }
 
@@ -556,7 +586,6 @@
                 const payload = localLeaderboardPayload(source.snapshot);
                 state.rows = payload ? payload.rows : [];
                 state.partialRows = payload ? payload.partialRows : [];
-                state.events = [];
                 renderLeaderboard(payload || { rows: [] });
             } else {
                 await loadLeaderboard();
@@ -601,17 +630,17 @@
 
         const body = $('#rankingsTableBody');
         if (!body) return;
-        const visibleRows = state.rows;
+        const visibleRows = filterUserRows(state.rows);
         const partialNotice = $('#rankingsPartialNotice');
         if (partialNotice) {
-            const incompleteCount = state.rows.filter((row) => row.isPartial).length;
+            const incompleteCount = visibleRows.filter((row) => row.isPartial).length;
             partialNotice.textContent = incompleteCount
                 ? `当前表格中有 ${formatNumber(incompleteCount)} 位用户的估算数据不完整，缺失项保持空白。`
                 : '';
             partialNotice.classList.toggle('is-hidden', !incompleteCount);
         }
         if (!visibleRows.length) {
-            body.innerHTML = '<tr><td class="rankings-empty" colspan="8">暂无榜单数据</td></tr>';
+            body.innerHTML = `<tr><td class="rankings-empty" colspan="9">${state.userQuery ? '没有匹配的用户' : '暂无榜单数据'}</td></tr>`;
         } else {
             body.innerHTML = visibleRows.map((row) => {
                 const rowClass = [
@@ -623,8 +652,9 @@
                 const status = formatEstimateStatus(row.estimateStatus, row.isPartial);
                 return `<tr class="${rowClass}" data-user-id="${escapeHtml(row.userId)}">
                     <td class="rank-number">${row.rank == null ? '—' : formatNumber(row.rank)}</td>
-                    <td class="rank-user-cell"><button class="rank-user-button" type="button" data-user-id="${escapeHtml(row.userId)}">${avatar}<span>${escapeHtml(row.userName || row.userId)}</span></button></td>
+                    <td class="rank-user-cell"><span class="rank-user-button">${avatar}<span>${escapeHtml(row.userName || row.userId)}</span></span></td>
                     <td>${row.isVip ? '<span class="rank-vip">VIP</span>' : ''}</td>
+                    <td class="rank-legend">${formatOptionalNumber(row.epicTotal)}</td>
                     <td class="rank-spend">${formatOptionalUsd(row.spendUsd)}</td>
                     <td class="rank-pulls">${formatOptionalNumber(row.estimatedPulls)}</td>
                     <td class="rank-sets">${formatOptionalNumber(row.exchangeCount)}</td>
@@ -633,9 +663,6 @@
                 </tr>`;
             }).join('');
         }
-        body.querySelectorAll('[data-user-id]').forEach((element) => {
-            element.addEventListener('click', () => loadUserHistory(element.dataset.userId));
-        });
         body.querySelectorAll('img.rank-avatar').forEach((image) => {
             image.addEventListener('error', () => {
                 const fallback = document.createElement('span');
@@ -644,8 +671,14 @@
                 image.replaceWith(fallback);
             }, { once: true });
         });
-        renderSummary();
-        renderEvents();
+        renderSummary(visibleRows);
+    }
+
+    function filterUserRows(rows = []) {
+        const query = String(state.userQuery || '').trim().toLowerCase();
+        if (!query) return rows;
+        return rows.filter((row) => [row.userName, row.userId]
+            .some((value) => String(value || '').toLowerCase().includes(query)));
     }
 
     function formatEstimateStatus(status, isPartial) {
@@ -677,77 +710,19 @@
         return delta > 0 ? `↑ ${delta}` : `↓ ${Math.abs(delta)}`;
     }
 
-    function renderSummary() {
-        const spends = state.rows.map((row) => row.spendUsd).filter((value) => value != null && Number.isFinite(Number(value))).map(Number);
-        const pulls = state.rows.map((row) => row.estimatedPulls).filter((value) => value != null && Number.isFinite(Number(value))).map(Number);
-        const probabilities = state.rows.map((row) => row.estimatedLegendProbability).filter((value) => value != null && Number.isFinite(Number(value))).map(Number);
+    function renderSummary(rows = state.rows) {
+        const spends = rows.map((row) => row.spendUsd).filter((value) => value != null && Number.isFinite(Number(value))).map(Number);
+        const pulls = rows.map((row) => row.estimatedPulls).filter((value) => value != null && Number.isFinite(Number(value))).map(Number);
+        const probabilities = rows.map((row) => row.estimatedLegendProbability).filter((value) => value != null && Number.isFinite(Number(value))).map(Number);
         const summary = $('#rankingsSummary');
         if (!summary) return;
         const cards = [
-            ['用户数', formatNumber(state.rows.length)],
+            ['用户数', formatNumber(rows.length)],
             ['总消费 USD', spends.length ? formatUsd(spends.reduce((a, b) => a + b, 0)) : '—'],
             ['平均估算抽数', pulls.length ? formatDecimal(pulls.reduce((a, b) => a + b, 0) / pulls.length) : '—'],
             ['平均出卡率', probabilities.length ? formatProbability(probabilities.reduce((a, b) => a + b, 0) / probabilities.length) : '—']
         ];
         summary.innerHTML = cards.map(([label, value]) => `<article class="rankings-summary-card"><span>${label}</span><strong>${value}</strong></article>`).join('');
-    }
-
-    function renderEvents() {
-        const container = $('#rankingsEvents');
-        if (!container) return;
-        if (state.board === 'users') {
-            container.innerHTML = '';
-            return;
-        }
-        const recent = state.events.slice(-8).reverse();
-        if (!recent.length) {
-            container.innerHTML = '<div class="rankings-empty">暂无入榜/出榜事件</div>';
-            return;
-        }
-        container.innerHTML = `<h3>最近变化</h3>${recent.map((event) => {
-            const label = event.event === 'entered' ? '入榜' : event.event === 'left' ? '出榜' : '排名变化';
-            return `<div class="rank-event-row"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(event.userName || event.userId || '')}</span><time>${formatDate(event.capturedAt)}</time></div>`;
-        }).join('')}`;
-    }
-
-    async function searchUsers() {
-        const input = $('#rankingsUserSearch');
-        const target = $('#rankingsSearchResults');
-        if (!input || !target) return;
-        const query = input.value.trim();
-        if (!query) {
-            target.innerHTML = '';
-            return;
-        }
-        target.innerHTML = '<div class="rankings-loading">搜索中…</div>';
-        try {
-            const result = await apiGet(`/api/rankings/users?query=${encodeURIComponent(query)}`);
-            const users = Array.isArray(result.users) ? result.users : [];
-            target.innerHTML = users.length ? users.map((user) => `<button type="button" class="rank-search-result" data-user-id="${escapeHtml(user.userId)}"><span class="rank-avatar-fallback">${initials(user.userName)}</span><span><strong>${escapeHtml(user.userName || user.userId)}</strong><small>${escapeHtml(user.userId)}</small></span></button>`).join('') : '<div class="rankings-empty">没有找到历史用户</div>';
-            target.querySelectorAll('[data-user-id]').forEach((element) => element.addEventListener('click', () => loadUserHistory(element.dataset.userId)));
-        } catch (error) {
-            target.innerHTML = `<div class="rankings-error">${escapeHtml(error.message || error)}</div>`;
-        }
-    }
-
-    async function loadUserHistory(userId) {
-        if (!userId) return;
-        state.selectedUserId = userId;
-        const target = $('#rankingsUserDetail');
-        if (!target) return;
-        target.innerHTML = '<div class="rankings-loading">加载历史中…</div>';
-        try {
-            const result = await apiGet(`/api/rankings/history?userId=${encodeURIComponent(userId)}`);
-            const rows = Array.isArray(result.rows) ? result.rows.slice().reverse() : [];
-            if (!rows.length) {
-                target.innerHTML = '<div class="rankings-empty">暂无历史记录</div>';
-                return;
-            }
-            const latest = rows[0];
-            target.innerHTML = `<div class="rankings-user-summary"><strong>${escapeHtml(latest.userName || latest.userId)}</strong><span>${latest.isVip ? 'VIP' : '普通用户'} · ${escapeHtml(latest.userId)}</span></div><div class="rank-history-list">${rows.slice(0, 40).map((row) => `<div class="rank-history-row"><span>${escapeHtml(row.boardKey)}</span><strong>#${formatNumber(row.rank)}</strong><span>${row.boardKey.startsWith('spend_') ? formatUsd(Number(row.value) / SPEND_VALUE_PER_USD) : formatNumber(row.value)}</span><time>${formatDate(row.capturedAt)}</time></div>`).join('')}</div>`;
-        } catch (error) {
-            target.innerHTML = `<div class="rankings-error">${escapeHtml(error.message || error)}</div>`;
-        }
     }
 
     function bindControls() {
@@ -791,9 +766,9 @@
                 : '已关闭自动上传；只有手动点击上传才会提交云端。');
             renderUploadControls();
         });
-        $('#rankingsSearchButton')?.addEventListener('click', searchUsers);
-        $('#rankingsUserSearch')?.addEventListener('keydown', (event) => {
-            if (event.key === 'Enter') searchUsers();
+        $('#rankingsUserSearch')?.addEventListener('input', (event) => {
+            state.userQuery = String(event.target.value || '');
+            renderLeaderboard({ snapshot: state.latest && state.latest.snapshot });
         });
     }
 

@@ -15,6 +15,14 @@ export const ORDINARY_DAILY_PULLS = 430;
 
 const BOARD_KEY_SET = new Set(BOARD_KEYS);
 
+export function parseCapturedAt(value) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) return Math.floor(numeric);
+  if (value == null || value === '') return null;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
 export function normalizeLeaderboardSnapshot(payload, now = Date.now()) {
   const source = payload && payload.data && payload.data.leaderboards
     ? payload.data
@@ -27,8 +35,8 @@ export function normalizeLeaderboardSnapshot(payload, now = Date.now()) {
   if (!seasonId || !seasonName) return rejected('missing_season');
   if (source.scope !== 'global') return rejected('invalid_scope');
 
-  const capturedAt = Number(source.capturedAt);
-  if (!Number.isInteger(capturedAt) || capturedAt <= 0) return rejected('invalid_captured_at');
+  const capturedAt = parseCapturedAt(source.capturedAt);
+  if (capturedAt == null) return rejected('invalid_captured_at');
   if (capturedAt > now + FUTURE_TOLERANCE_MS) return rejected('future_captured_at');
 
   const leaderboards = source.leaderboards;

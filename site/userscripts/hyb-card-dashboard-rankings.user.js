@@ -47,6 +47,32 @@
     return String(error && error.message || error || '榜单请求失败');
   }
 
+  function normalizeCapturedAt(value, fallback = Date.now()) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric > 0) return Math.floor(numeric);
+    if (value != null && value !== '') {
+      const parsed = Date.parse(String(value));
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+    const fallbackNumeric = Number(fallback);
+    return Number.isFinite(fallbackNumeric) && fallbackNumeric > 0
+      ? Math.floor(fallbackNumeric)
+      : null;
+  }
+
+  function normalizeSnapshot(snapshot) {
+    const source = snapshot && snapshot.data && snapshot.data.leaderboards
+      ? snapshot.data
+      : snapshot;
+    if (!source || typeof source !== 'object') return snapshot;
+    return {
+      ...source,
+      capturedAt: normalizeCapturedAt(source.capturedAt, null)
+        || normalizeCapturedAt(source.lastUpdatedAt, null)
+        || Date.now()
+    };
+  }
+
   function requestWithGm() {
     if (typeof GM_xmlhttpRequest !== 'function') return null;
     return new Promise((resolve, reject) => {
@@ -72,7 +98,7 @@
             return;
           }
           try {
-            finish(resolve, response.response || JSON.parse(response.responseText || '{}'));
+            finish(resolve, normalizeSnapshot(response.response || JSON.parse(response.responseText || '{}')));
           } catch (error) {
             finish(reject, error);
           }
@@ -101,7 +127,7 @@
       error.status = response.status;
       throw error;
     }
-    return response.json();
+    return normalizeSnapshot(await response.json());
   }
 
   function setupRelayResponseListener() {
@@ -145,8 +171,8 @@
     if (inFlight) return inFlight;
     inFlight = (async () => {
       const relay = requestWithCdkRelay();
-      if (relay) return relay;
-      return requestWithGm() || requestWithFetch();
+      if (relay) return relay.then(normalizeSnapshot);
+      return (requestWithGm() || requestWithFetch()).then(normalizeSnapshot);
     })().finally(() => {
       inFlight = null;
     });
@@ -189,7 +215,7 @@
       const confirmedClaim = typeof GM_getValue === 'function' ? GM_getValue(RELAY_CLAIM_KEY, null) : null;
       if (confirmedClaim && confirmedClaim.requestId === value.requestId && confirmedClaim.ownerId !== RELAY_OWNER_ID) return;
       try {
-        const snapshot = await requestWithFetch();
+        const snapshot = normalizeSnapshot(await requestWithFetch());
         GM_setValue(RELAY_RESPONSE_KEY, {
           requestId: value.requestId,
           ok: true,

@@ -458,9 +458,11 @@
         <div class="topbar-title">
             <h1>HYB Card Dashboard</h1>
         </div>
-        <nav class="topbar-actions" aria-label="项目链接与主题">
+        <nav class="topbar-nav" aria-label="页面切换">
             <button class="topbar-view-btn" type="button" data-view="calculator" onclick="setDashboardView('calculator')" aria-pressed="true">收益表</button>
             <button class="topbar-view-btn" type="button" data-view="rankings" onclick="setDashboardView('rankings')" aria-pressed="false">榜单统计</button>
+        </nav>
+        <nav class="topbar-actions" aria-label="项目链接与主题">
             <a class="farm-link" href="https://hyb.gudong226.com/" target="_blank" rel="noreferrer" aria-label="打开 HYB Farm Dashboard" title="HYB Farm Dashboard">
                 <img src="/farm-icon.svg" alt="" width="20" height="20">
             </a>
@@ -663,29 +665,21 @@
         </section>
     </main>
 
-        <section id="rankingsView" class="rankings-view dashboard-view is-hidden" aria-labelledby="rankingsTitle">
-            <section class="panel rankings-toolbar">
-                <div>
-                    <h2 id="rankingsTitle">榜单统计</h2>
-                </div>
-            <div class="rankings-toolbar-actions">
-                <div class="rankings-source-status" id="rankingsStatus" aria-live="polite">等待榜单数据</div>
-                <button class="btn" type="button" id="rankingsRefreshButton">检查更新</button>
-            </div>
-        </section>
-
+        <section id="rankingsView" class="rankings-view dashboard-view is-hidden" aria-label="榜单统计">
         <section class="panel rankings-setup" id="rankingsSetup" aria-label="榜单同步设置">
-            <div class="rankings-setup-actions">
-                <a class="btn" id="rankingsInstallLink" href="/userscripts/hyb-card-dashboard-rankings.user.js" target="_blank" rel="noreferrer">安装同步脚本</a>
-                <a class="btn btn-secondary" href="https://cdk.hybgzs.com/" target="_blank" rel="noreferrer">打开 CDK</a>
+            <div class="rankings-primary-actions">
+                <button class="btn" type="button" id="rankingsRefreshButton" title="通过用户脚本立即获取榜单">↻ 立即刷新</button>
+                <button class="btn" type="button" id="rankingsUploadButton" disabled>上传云端</button>
+                <div class="rankings-source-status" id="rankingsStatus" aria-live="polite">等待榜单数据</div>
+                <span class="rankings-upload-status" id="rankingsUploadStatus">尚无待上传的本地快照</span>
             </div>
-            <label class="rankings-upload-toggle">
-                <span class="rankings-toggle-copy"><strong>自动上传</strong><small>抓取后写入共享榜单</small></span>
-                <span class="rankings-toggle-control"><input id="rankingsAutoUpload" type="checkbox"><span class="rankings-toggle-track"></span></span>
-            </label>
-            <div class="rankings-manual-upload">
-                <button class="btn btn-secondary" type="button" id="rankingsUploadButton" disabled>暂无待上传快照</button>
-                <span id="rankingsUploadStatus">未抓取</span>
+            <div class="rankings-secondary-actions">
+                <label class="rankings-upload-toggle">
+                    <span class="rankings-toggle-copy"><strong>自动上传</strong><small>抓取后写入共享榜单</small></span>
+                    <span class="rankings-toggle-control"><input id="rankingsAutoUpload" type="checkbox"><span class="rankings-toggle-track"></span></span>
+                </label>
+                <a class="btn btn-secondary" id="rankingsInstallLink" href="/userscripts/hyb-card-dashboard-rankings.user.js" target="_blank" rel="noreferrer">安装用户脚本</a>
+                <a class="btn btn-secondary" href="https://cdk.hybgzs.com/" target="_blank" rel="noreferrer">打开 CDK</a>
             </div>
         </section>
 
@@ -719,6 +713,10 @@
 
         <section class="rankings-grid">
             <section class="panel rankings-table-panel">
+                <div class="rankings-overview-search">
+                    <label for="rankingsUserSearch">搜索用户名或用户 ID</label>
+                    <input id="rankingsUserSearch" type="search" placeholder="输入关键词筛选用户总览" autocomplete="off">
+                </div>
                 <div class="panel-header rankings-panel-header">
                     <div>
                         <span class="section-kicker" id="rankingsBoardKicker">users · total</span>
@@ -733,6 +731,7 @@
                                 <th>排名</th>
                                 <th>用户</th>
                                 <th>VIP</th>
+                                <th>传说卡数量</th>
                                 <th>消费金额</th>
                                 <th>抽卡次数</th>
                                 <th>兑换次数</th>
@@ -741,32 +740,12 @@
                             </tr>
                         </thead>
                         <tbody id="rankingsTableBody">
-                            <tr><td class="rankings-empty" colspan="8">暂无榜单数据</td></tr>
+                            <tr><td class="rankings-empty" colspan="9">暂无榜单数据</td></tr>
                         </tbody>
                     </table>
                 </div>
                 <div class="rankings-notice is-hidden" id="rankingsPartialNotice" aria-live="polite"></div>
             </section>
-
-            <aside class="panel rankings-user-panel" aria-labelledby="rankingsUserTitle">
-                <div class="panel-header rankings-panel-header">
-                    <div>
-                        <span class="section-kicker">User History</span>
-                        <h2 id="rankingsUserTitle">用户历史</h2>
-                    </div>
-                </div>
-                <div class="rankings-search">
-                    <label for="rankingsUserSearch">搜索用户名或用户 ID</label>
-                    <div class="rankings-search-row">
-                        <input id="rankingsUserSearch" type="search" placeholder="输入后搜索历史用户">
-                        <button class="btn" type="button" id="rankingsSearchButton">搜索</button>
-                    </div>
-                </div>
-                <div class="rankings-search-results" id="rankingsSearchResults"></div>
-                <div class="rankings-user-detail" id="rankingsUserDetail">
-                    <p class="rankings-empty">点击榜单用户或搜索结果查看赛季历史。</p>
-                </div>
-            </aside>
         </section>
 
     </section>

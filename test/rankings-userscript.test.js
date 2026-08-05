@@ -17,4 +17,6 @@ test('userscript matches Card and CDK while keeping the bridge UI on Card', asyn
   assert.match(source, /HYB_CARD_RANKINGS_REQUEST/);
   assert.match(source, /HYB_CARD_RANKINGS_RESPONSE/);
   assert.match(source, /hyb-card-rankings-relay-claim-v1/);
+  assert.match(source, /function normalizeCapturedAt/);
+  assert.match(source, /lastUpdatedAt/);
 });
