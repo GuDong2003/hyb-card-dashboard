@@ -10,6 +10,10 @@ test('index contains an in-page rankings view without a new URL route', async ()
   assert.match(html, /rankings\.js/);
   assert.match(html, /rankings\.css/);
   assert.doesNotMatch(html, /href="\/rankings"/);
+  assert.match(html, /id="rankingsPeriodSelect"/);
+  assert.match(html, /id="rankingsSortSelect"/);
+  assert.match(html, /消费金额/);
+  assert.match(html, /id="rankingsPartialNotice"/);
 });
 
 test('rankings view keeps script setup and upload consent controls visible', async () => {
@@ -29,7 +33,13 @@ test('rankings client uses same-origin Worker APIs and the Card bridge events', 
   assert.match(source, /HYB_CARD_RANKINGS_REQUEST/);
   assert.match(source, /HYB_CARD_RANKINGS_RESPONSE/);
   assert.match(source, /HYB_CARD_RANKINGS_BRIDGE_READY/);
-  assert.match(source, /估算传说概率/);
+  assert.match(source, /用户总览/);
+  assert.match(source, /formatOptionalUsd/);
+  assert.match(source, /rankingsPeriodSelect/);
+  assert.match(source, /rankingsSortSelect/);
+  assert.match(source, /SPEND_VALUE_PER_USD\s*=\s*500000/);
+  assert.match(source, /运气榜/);
+  assert.match(source, /partialRows/);
 });
 
 test('rankings client persists upload consent and gates snapshot uploads', async () => {

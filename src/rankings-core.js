@@ -6,7 +6,12 @@ export const BOARD_KEYS = Object.freeze([
 
 export const REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 export const FUTURE_TOLERANCE_MS = 10 * 60 * 1000;
-export const MAX_ROWS_PER_BOARD = 100;
+export const MAX_ROWS_PER_BOARD = 1000;
+export const SPEND_VALUE_PER_USD = 500000;
+export const VIP_DAILY_SPEND_USD = 6000;
+export const VIP_DAILY_PULLS = 650;
+export const ORDINARY_DAILY_SPEND_USD = 4000;
+export const ORDINARY_DAILY_PULLS = 430;
 
 const BOARD_KEY_SET = new Set(BOARD_KEYS);
 
@@ -40,7 +45,7 @@ export function normalizeLeaderboardSnapshot(payload, now = Date.now()) {
   const entries = [];
   for (const boardKey of boardKeys) {
     const rows = Array.isArray(leaderboards[boardKey]) ? leaderboards[boardKey] : [];
-    for (const rawRow of rows.slice(0, MAX_ROWS_PER_BOARD)) {
+    for (const rawRow of rows) {
       const normalized = normalizeRow(rawRow);
       if (!normalized) continue;
       entries.push({ boardKey, ...normalized });
@@ -114,10 +119,60 @@ function stableValue(value) {
   return value;
 }
 
-export function estimateLegendProbability({ epicTotal, spendTotal, elapsedDays, isVip }) {
-  const pulls = Number(spendTotal || 0) / 10
-    + Math.max(0, Number(elapsedDays || 0)) * (isVip ? 50 : 30);
-  return pulls > 0 ? Number(epicTotal || 0) / pulls : null;
+export function estimatePullsFromSpend(spendValue, isVip) {
+  if (spendValue == null || spendValue === '') {
+    return {
+      spendUsd: null,
+      estimatedDays: null,
+      estimatedPulls: null,
+      estimateStatus: 'missing_spend'
+    };
+  }
+  const rawValue = Number(spendValue);
+  if (!Number.isFinite(rawValue) || rawValue < 0) {
+    return {
+      spendUsd: null,
+      estimatedDays: null,
+      estimatedPulls: null,
+      estimateStatus: 'missing_spend'
+    };
+  }
+  const spendUsd = rawValue / SPEND_VALUE_PER_USD;
+  const dailySpendUsd = isVip ? VIP_DAILY_SPEND_USD : ORDINARY_DAILY_SPEND_USD;
+  const dailyPulls = isVip ? VIP_DAILY_PULLS : ORDINARY_DAILY_PULLS;
+  const estimatedDays = spendUsd / dailySpendUsd;
+  const estimatedPulls = estimatedDays * dailyPulls;
+  const completeDays = Math.abs(estimatedDays - Math.round(estimatedDays)) < 1e-9;
+  return {
+    spendUsd,
+    estimatedDays,
+    estimatedPulls,
+    estimateStatus: completeDays ? 'complete_days' : 'partial_day'
+  };
+}
+
+export function estimateLegendProbability({ epicTotal, spendValue, isVip }) {
+  const estimate = estimatePullsFromSpend(spendValue, isVip);
+  return estimate.estimatedPulls > 0 && Number.isFinite(epicTotal)
+    ? Number(epicTotal) / estimate.estimatedPulls
+    : null;
+}
+
+export function pairLeaderboardRows(epicRows = [], spendRows = []) {
+  const users = new Map();
+  const merge = (rawRow, kind) => {
+    if (!rawRow || typeof rawRow !== 'object') return;
+    const userId = String(rawRow.userId ?? rawRow.user_id ?? '').trim();
+    if (!userId) return;
+    const current = users.get(userId) || { userId, epicRow: null, spendRow: null };
+    current[`${kind}Row`] = rawRow;
+    current[`${kind}Value`] = Number(rawRow.value);
+    current.isVip = current.isVip || Boolean(rawRow.isVip ?? rawRow.is_vip);
+    users.set(userId, current);
+  };
+  for (const row of epicRows) merge(row, 'epic');
+  for (const row of spendRows) merge(row, 'spend');
+  return Array.from(users.values());
 }
 
 export function diffBoardRows(previousRows = [], currentRows = []) {

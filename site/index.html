@@ -696,16 +696,28 @@
         </section>
 
         <section class="rankings-switcher panel" aria-label="榜单和周期选择">
-            <div class="rankings-tab-group" role="tablist" aria-label="榜单类型">
-                <button type="button" class="rankings-tab is-active" data-rank-board="epic" role="tab" aria-selected="true">欧皇榜</button>
-                <button type="button" class="rankings-tab" data-rank-board="spend" role="tab" aria-selected="false">消费榜</button>
-                <button type="button" class="rankings-tab" data-rank-board="sets" role="tab" aria-selected="false">兑换榜</button>
+            <div class="rankings-table-intro">
+                <strong>用户总览</strong>
+                <span>按 userId 合并欧皇榜、消费榜和兑换榜；缺失数据保持空白。</span>
             </div>
-            <div class="rankings-tab-group rankings-period-tabs" role="tablist" aria-label="榜单周期">
-                <button type="button" class="rankings-tab is-active" data-rank-period="today" role="tab" aria-selected="true">今日</button>
-                <button type="button" class="rankings-tab" data-rank-period="week" role="tab" aria-selected="false">本周</button>
-                <button type="button" class="rankings-tab" data-rank-period="month" role="tab" aria-selected="false">本月</button>
-                <button type="button" class="rankings-tab" data-rank-period="total" role="tab" aria-selected="false">赛季</button>
+            <div class="rankings-selectors">
+                <label>显示周期
+                    <select id="rankingsPeriodSelect">
+                        <option value="total" selected>整个赛季</option>
+                        <option value="today">今日</option>
+                        <option value="week">本周</option>
+                        <option value="month">本月</option>
+                    </select>
+                </label>
+                <label>排序方式
+                    <select id="rankingsSortSelect">
+                        <option value="probability" selected>出卡率</option>
+                        <option value="spend">消费金额</option>
+                        <option value="pulls">抽卡次数</option>
+                        <option value="sets">兑换次数</option>
+                        <option value="user">用户</option>
+                    </select>
+                </label>
             </div>
         </section>
 
@@ -715,8 +727,8 @@
             <section class="panel rankings-table-panel">
                 <div class="panel-header rankings-panel-header">
                     <div>
-                        <span class="section-kicker" id="rankingsBoardKicker">Epic Today</span>
-                        <h2 id="rankingsBoardTitle">欧皇榜 · 今日</h2>
+                        <span class="section-kicker" id="rankingsBoardKicker">users · total</span>
+                        <h2 id="rankingsBoardTitle">用户总览 · 整个赛季</h2>
                     </div>
                     <span class="rankings-updated" id="rankingsUpdatedAt">—</span>
                 </div>
@@ -727,17 +739,19 @@
                                 <th>排名</th>
                                 <th>用户</th>
                                 <th>VIP</th>
-                                <th>当前值</th>
-                                <th>变化</th>
-                                <th>估算传说概率</th>
+                                <th>消费金额</th>
+                                <th>抽卡次数</th>
+                                <th>兑换次数</th>
+                                <th>出卡率</th>
+                                <th>状态</th>
                             </tr>
                         </thead>
                         <tbody id="rankingsTableBody">
-                            <tr><td class="rankings-empty" colspan="6">暂无榜单数据</td></tr>
+                            <tr><td class="rankings-empty" colspan="8">暂无榜单数据</td></tr>
                         </tbody>
                     </table>
                 </div>
-                <div class="rankings-events" id="rankingsEvents"></div>
+                <div class="rankings-notice is-hidden" id="rankingsPartialNotice" aria-live="polite"></div>
             </section>
 
             <aside class="panel rankings-user-panel" aria-labelledby="rankingsUserTitle">

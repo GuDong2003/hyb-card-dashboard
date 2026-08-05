@@ -12,7 +12,7 @@
 - 按 90 天逐日计算抽卡支出、融解/合成支出、兑换收入、累计现金流、首次回本日、最大资金缺口和最高利润点。
 - 支持 SP 兑换加成：每张有效 SP 提高 10%，单次最多计入 3 张；SP 点数可手动设置上限并自动按收益最高的轮次分配。
 - 顶栏提供 Farm Dashboard、三态主题切换和 GitHub 仓库入口。
-- 增加同地址“榜单统计”视图：欧皇榜、消费榜、兑换榜均支持今日、本周、本月和赛季周期。
+- 增加同地址“榜单统计”视图：按用户合并欧皇榜、消费榜和兑换榜，支持今日、本周、本月和整个赛季周期，并可按出卡率、消费金额、抽卡次数、兑换次数或用户排序。
 - 榜单快照按当前赛季写入 Cloudflare D1，服务器约一小时刷新一次；同一小时重复快照自动去重。
 - 可查看排名变化、入榜/出榜事件、用户历史和估算传说概率。
 - 页面输入会缓存在浏览器本地，刷新后可继续上次的计算快照。
@@ -99,16 +99,25 @@ https://cdk.hybgzs.com/api/cards/leaderboard?scope=global
 
 榜单页默认关闭“抓取后自动上传”：关闭时只在当前页面显示本次抓到的公开榜单，不会提交 D1；需要共享本次快照时，点击“上传本次快照”，或在设置中开启自动上传。上传开关只保存在当前浏览器。
 
-油猴脚本只匹配 `card.gudong226.com`，通过 `GM_xmlhttpRequest` 请求 CDK 接口并将结果桥接回 Card Dashboard。`cdk.hybgzs.com` 页面不会显示榜单按钮、统计视图或 Card Dashboard 入口。
+油猴脚本匹配 `card.gudong226.com` 和 `cdk.hybgzs.com`。打开 CDK 榜单页时，脚本通过 GM relay 代 Card Dashboard 读取同源接口；如果没有打开 CDK 页面，再回退到 `GM_xmlhttpRequest`。`cdk.hybgzs.com` 页面不会显示榜单按钮、统计视图或 Card Dashboard 入口。
 
-榜单页的“估算传说概率”使用赛季累计榜单值估算：
+消费榜原始 `value` 会先换算成美元：
 
 ```text
-estimatedPulls = spend_total / 10 + elapsedDays × (VIP ? 50 : 30)
-estimatedLegendProbability = epic_total / estimatedPulls
+spendUsd = spend.value / 500000
 ```
 
-该概率只用于跨用户比较，不能视为服务器标注的真实抽卡概率。
+用户总览表按同一周期、同一 `userId` 合并三类榜单后估算传说概率：
+
+```text
+VIP：dailySpend = 6000 USD，dailyPulls = 650
+普通：dailySpend = 4000 USD，dailyPulls = 430
+estimatedDays = spendUsd / dailySpend
+estimatedPulls = estimatedDays × dailyPulls
+estimatedLegendProbability = epic_period / estimatedPulls
+```
+
+消费金额不是完整日成本倍数时，页面标记“非完整天数 / 估算”；缺少同周期榜单时，对应单元格留空，不把缺失值当成 0。默认显示整个赛季，切换周期后会重新计算并排序。该概率只用于跨用户比较，不能视为服务器标注的真实抽卡概率。
 
 ## 项目结构
 

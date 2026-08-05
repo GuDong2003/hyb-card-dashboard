@@ -3,15 +3,17 @@ import {
   REFRESH_INTERVAL_MS,
   computeSnapshotSignature,
   diffBoardRows,
+  estimatePullsFromSpend,
   estimateLegendProbability,
-  normalizeLeaderboardSnapshot
+  normalizeLeaderboardSnapshot,
+  pairLeaderboardRows
 } from './rankings-core.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_SEASON_START_AT = Date.parse('2026-08-02T04:00:00+08:00');
-const BOARD_GROUPS = new Set(['epic', 'spend', 'sets']);
+const BOARD_GROUPS = new Set(['users', 'epic', 'spend', 'sets', 'luck']);
 const PERIODS = new Set(['today', 'week', 'month', 'total']);
-const MAX_LIMIT = 100;
+const MAX_LIMIT = 1000;
 const MAX_EVENT_ROWS = 200;
 
 export async function handleRankingsRequest(request, env) {
@@ -165,7 +167,7 @@ async function postSnapshot(request, env) {
 }
 
 async function getLeaderboard(url, env) {
-  const board = String(url.searchParams.get('board') || 'epic');
+  const board = String(url.searchParams.get('board') || 'users');
   const period = String(url.searchParams.get('period') || 'total');
   if (!BOARD_GROUPS.has(board) || !PERIODS.has(period)) {
     return jsonResponse({ ok: false, error: 'invalid_board_or_period' }, 400);
@@ -173,37 +175,46 @@ async function getLeaderboard(url, env) {
   const latest = await latestSnapshot(env);
   if (!latest) return jsonResponse({ ok: true, snapshot: null, rows: [], board, period });
 
+  if (board === 'users') return getUsersLeaderboard(url, env, latest);
+
   const limit = normalizeLimit(url.searchParams.get('limit'));
   const boardKey = `${board}_${period}`;
   const previous = await previousSnapshot(env, latest);
-  const [currentRows, previousRows, totals] = await Promise.all([
-    entriesForSnapshot(env, latest.id, boardKey, limit),
-    previous ? entriesForSnapshot(env, previous.id, boardKey, MAX_LIMIT) : Promise.resolve([]),
-    totalEntries(env, latest.id)
+  const [currentRowsRaw, previousRowsRaw, currentEpicRows, currentSpendRows, previousEpicRows, previousSpendRows] = await Promise.all([
+    board === 'luck' ? Promise.resolve([]) : entriesForSnapshot(env, latest.id, boardKey, limit),
+    previous && board !== 'luck' ? entriesForSnapshot(env, previous.id, boardKey, MAX_LIMIT) : Promise.resolve([]),
+    entriesForSnapshot(env, latest.id, `epic_${period}`, MAX_LIMIT),
+    entriesForSnapshot(env, latest.id, `spend_${period}`, MAX_LIMIT),
+    previous ? entriesForSnapshot(env, previous.id, `epic_${period}`, MAX_LIMIT) : Promise.resolve([]),
+    previous ? entriesForSnapshot(env, previous.id, `spend_${period}`, MAX_LIMIT) : Promise.resolve([])
   ]);
-  const previousById = new Map(previousRows.map((row) => [row.user_id, row]));
-  const totalById = totalsByUser(totals);
-  const elapsedDays = elapsedSeasonDays(Date.now());
-  const rows = currentRows.map((row) => {
-    const previousRow = previousById.get(row.user_id);
-    const epicTotal = totalById.get(row.user_id)?.epicTotal ?? (boardKey === 'epic_total' ? row.value : null);
-    const spendTotal = totalById.get(row.user_id)?.spendTotal ?? (boardKey === 'spend_total' ? row.value : null);
-    const probability = epicTotal == null && spendTotal == null
-      ? null
-      : estimateLegendProbability({ epicTotal, spendTotal, elapsedDays, isVip: Boolean(row.is_vip) });
+
+  const currentPairs = pairLeaderboardRows(currentEpicRows, currentSpendRows);
+  const previousPairs = pairLeaderboardRows(previousEpicRows, previousSpendRows);
+  const currentPairById = new Map(currentPairs.map((pair) => [pair.userId, pair]));
+  const previousPairById = new Map(previousPairs.map((pair) => [pair.userId, pair]));
+  const currentViews = board === 'luck'
+    ? luckViews(currentPairs, limit).complete
+    : currentRowsRaw.map((row) => ({ row, pair: currentPairById.get(row.user_id) || null }));
+  const previousViews = board === 'luck'
+    ? luckViews(previousPairs, MAX_LIMIT).complete
+    : previousRowsRaw.map((row) => ({ row, pair: previousPairById.get(row.user_id) || null }));
+  const previousById = new Map(previousViews.map((view) => [view.row.user_id, view.row]));
+  const rows = currentViews.map((view) => {
+    const row = buildEnrichedEntry(view.row, view.pair, board, view.rankOverride);
+    const previousRow = previousById.get(row.userId);
     return {
-      ...serializeEntry(row),
+      ...row,
       previousRank: previousRow ? Number(previousRow.rank) : null,
       previousValue: previousRow ? Number(previousRow.value) : null,
       rankDelta: previousRow ? Number(previousRow.rank) - Number(row.rank) : null,
       valueDelta: previousRow ? Number(row.value) - Number(previousRow.value) : null,
-      event: previousRow ? (Number(previousRow.rank) === Number(row.rank) ? '' : 'moved') : 'entered',
-      epicTotal,
-      spendTotal,
-      estimatedPulls: probability == null ? null : estimatedPulls(spendTotal, elapsedDays, Boolean(row.is_vip)),
-      estimatedLegendProbability: probability
+      event: previousRow ? (Number(previousRow.rank) === Number(row.rank) ? '' : 'moved') : 'entered'
     };
   });
+  const partialRows = board === 'luck'
+    ? luckViews(currentPairs, MAX_LIMIT).partial.map((view) => buildEnrichedEntry(view.row, view.pair, board, null))
+    : rows.filter((row) => row.isPartial);
 
   return jsonResponse({
     ok: true,
@@ -212,10 +223,143 @@ async function getLeaderboard(url, env) {
     boardKey,
     snapshot: serializeSnapshot(latest),
     previousSnapshot: previous ? serializeSnapshot(previous) : null,
-    elapsedDays,
     estimated: true,
-    rows
+    rows,
+    partialRows
   });
+}
+
+async function getUsersLeaderboard(url, env, latest) {
+  const period = String(url.searchParams.get('period') || 'total');
+  const sort = normalizeUserSort(url.searchParams.get('sort'));
+  const limitValue = url.searchParams.get('limit');
+  const limit = limitValue == null || limitValue === '' ? null : normalizeLimit(limitValue);
+  const previous = await previousSnapshot(env, latest);
+  const [currentEpicRows, currentSpendRows, currentSetsRows, previousEpicRows, previousSpendRows, previousSetsRows] = await Promise.all([
+    entriesForSnapshot(env, latest.id, `epic_${period}`, null),
+    entriesForSnapshot(env, latest.id, `spend_${period}`, null),
+    entriesForSnapshot(env, latest.id, `sets_${period}`, null),
+    previous ? entriesForSnapshot(env, previous.id, `epic_${period}`, null) : Promise.resolve([]),
+    previous ? entriesForSnapshot(env, previous.id, `spend_${period}`, null) : Promise.resolve([]),
+    previous ? entriesForSnapshot(env, previous.id, `sets_${period}`, null) : Promise.resolve([])
+  ]);
+  const currentUsers = summarizeUsers(currentEpicRows, currentSpendRows, currentSetsRows, sort)
+    .map((row) => ({ ...row, boardKey: `users_${period}` }));
+  const previousUsers = summarizeUsers(previousEpicRows, previousSpendRows, previousSetsRows, sort)
+    .map((row) => ({ ...row, boardKey: `users_${period}` }))
+    .map((row, index) => ({ ...row, rank: index + 1 }));
+  const previousById = new Map(previousUsers.map((row) => [row.userId, row]));
+  const rows = (limit == null ? currentUsers : currentUsers.slice(0, limit)).map((row, index) => {
+    const previousRow = previousById.get(row.userId);
+    return {
+      ...row,
+      rank: index + 1,
+      previousRank: previousRow ? previousRow.rank : null,
+      rankDelta: previousRow ? previousRow.rank - (index + 1) : null,
+      event: previousRow ? (previousRow.rank === index + 1 ? '' : 'moved') : 'entered'
+    };
+  });
+  return jsonResponse({
+    ok: true,
+    board: 'users',
+    period,
+    sort,
+    boardKey: `users_${period}`,
+    snapshot: serializeSnapshot(latest),
+    previousSnapshot: previous ? serializeSnapshot(previous) : null,
+    estimated: true,
+    rows,
+    partialRows: []
+  });
+}
+
+function summarizeUsers(epicRows = [], spendRows = [], setsRows = [], sort = 'probability') {
+  const users = new Map();
+  const merge = (rawRow, kind) => {
+    if (!rawRow || typeof rawRow !== 'object') return;
+    const userId = String(rawRow.user_id || rawRow.userId || '').trim();
+    if (!userId) return;
+    const current = users.get(userId) || {
+      userId,
+      epicRow: null,
+      spendRow: null,
+      setsRow: null,
+      userName: '',
+      avatar: '',
+      isVip: false
+    };
+    current[`${kind}Row`] = rawRow;
+    current.userName = current.userName || String(rawRow.user_name || rawRow.userName || '').trim();
+    current.avatar = current.avatar || String(rawRow.avatar_url || rawRow.avatar || '').trim();
+    current.isVip = current.isVip || Boolean(rawRow.is_vip ?? rawRow.isVip);
+    users.set(userId, current);
+  };
+  epicRows.forEach((row) => merge(row, 'epic'));
+  spendRows.forEach((row) => merge(row, 'spend'));
+  setsRows.forEach((row) => merge(row, 'sets'));
+  return Array.from(users.values()).map((user) => buildUserSummary(user)).sort((left, right) => compareUserRows(left, right, sort));
+}
+
+function buildUserSummary(user) {
+  const source = user.epicRow || user.spendRow || user.setsRow;
+  const epicTotal = user.epicRow ? Number(user.epicRow.value) : null;
+  const spendValue = user.spendRow ? Number(user.spendRow.value) : null;
+  const exchangeCount = user.setsRow ? Number(user.setsRow.value) : null;
+  const isVip = Boolean(user.isVip);
+  const estimate = estimatePullsFromSpend(spendValue, isVip);
+  let estimateStatus = estimate.estimateStatus;
+  if (epicTotal == null && spendValue == null) estimateStatus = 'missing_pair';
+  else if (epicTotal == null) estimateStatus = 'missing_epic';
+  else if (spendValue == null) estimateStatus = 'missing_spend';
+  const probability = estimateStatus === 'missing_pair' || estimateStatus === 'missing_epic' || estimateStatus === 'missing_spend'
+    ? null
+    : estimateLegendProbability({ epicTotal, spendValue, isVip });
+  return {
+    snapshotId: source ? Number(source.snapshot_id) : null,
+    boardKey: 'users',
+    userId: user.userId,
+    userName: user.userName || String(source && source.user_name || user.userId),
+    avatar: user.avatar,
+    value: spendValue ?? epicTotal ?? exchangeCount,
+    rank: null,
+    isVip,
+    epicTotal,
+    spendValue,
+    spendTotal: spendValue,
+    spendUsd: estimate.spendUsd,
+    estimatedDays: estimate.estimatedDays,
+    estimatedPulls: estimate.estimatedPulls,
+    exchangeCount,
+    estimateStatus,
+    isPartial: estimateStatus !== 'complete_days' || probability == null,
+    estimatedLegendProbability: probability,
+    previousRank: null,
+    rankDelta: null,
+    event: ''
+  };
+}
+
+function compareUserRows(left, right, sort) {
+  if (sort === 'user') return String(left.userName || left.userId).localeCompare(String(right.userName || right.userId)) || left.userId.localeCompare(right.userId);
+  const leftValue = userSortValue(left, sort);
+  const rightValue = userSortValue(right, sort);
+  if (leftValue == null && rightValue == null) return left.userId.localeCompare(right.userId);
+  if (leftValue == null) return 1;
+  if (rightValue == null) return -1;
+  return rightValue - leftValue || left.userId.localeCompare(right.userId);
+}
+
+function userSortValue(row, sort) {
+  if (sort === 'spend') return row.spendUsd;
+  if (sort === 'pulls') return row.estimatedPulls;
+  if (sort === 'sets') return row.exchangeCount;
+  return row.estimatedLegendProbability;
+}
+
+function normalizeUserSort(value) {
+  return new Set(['probability', 'spend', 'pulls', 'sets', 'user']).has(value)
+    ? value
+    : 'probability';
 }
 
 async function getHistory(url, env) {
@@ -356,35 +500,92 @@ async function distinctBoards(env, snapshotId) {
 }
 
 async function entriesForSnapshot(env, snapshotId, boardKey, limit = MAX_LIMIT) {
-  const result = await env.RANKINGS_DB.prepare(`
+  const baseSql = `
     SELECT snapshot_id, board_key, user_id, user_name, avatar_url, value, rank,
       is_vip, active_name_decoration, name_display_preference, raw_json
     FROM rank_entries
     WHERE snapshot_id = ? AND board_key = ?
-    ORDER BY rank ASC
-    LIMIT ?
-  `).bind(snapshotId, boardKey, normalizeLimit(limit)).all();
+    ORDER BY rank ASC`;
+  const statement = limit == null
+    ? env.RANKINGS_DB.prepare(baseSql).bind(snapshotId, boardKey)
+    : env.RANKINGS_DB.prepare(`${baseSql} LIMIT ?`).bind(snapshotId, boardKey, normalizeLimit(limit));
+  const result = await statement.all();
   return result.results || [];
 }
 
-async function totalEntries(env, snapshotId) {
-  const result = await env.RANKINGS_DB.prepare(`
-    SELECT board_key, user_id, value, is_vip
-    FROM rank_entries
-    WHERE snapshot_id = ? AND board_key IN ('epic_total', 'spend_total')
-  `).bind(snapshotId).all();
-  return result.results || [];
-}
-
-function totalsByUser(rows) {
-  const map = new Map();
-  for (const row of rows) {
-    const value = map.get(row.user_id) || {};
-    if (row.board_key === 'epic_total') value.epicTotal = Number(row.value);
-    if (row.board_key === 'spend_total') value.spendTotal = Number(row.value);
-    map.set(row.user_id, value);
+function luckViews(pairs, limit) {
+  const complete = [];
+  const partial = [];
+  for (const pair of pairs) {
+    const sourceRow = pair.epicRow || pair.spendRow;
+    if (!sourceRow) continue;
+    const view = { row: sourceRow, pair, rankOverride: null };
+    if (pair.epicRow && pair.spendRow) complete.push(view);
+    else partial.push(view);
   }
-  return map;
+
+  complete.sort((left, right) => {
+    const leftProbability = pairProbability(left.pair);
+    const rightProbability = pairProbability(right.pair);
+    if (leftProbability == null && rightProbability == null) return left.pair.userId.localeCompare(right.pair.userId);
+    if (leftProbability == null) return 1;
+    if (rightProbability == null) return -1;
+    return rightProbability - leftProbability
+      || Number(right.pair.epicValue || 0) - Number(left.pair.epicValue || 0)
+      || left.pair.userId.localeCompare(right.pair.userId);
+  });
+  const ranked = complete.slice(0, limit).map((view, index) => ({ ...view, rankOverride: index + 1 }));
+  return {
+    complete: ranked,
+    partial: partial.slice(0, MAX_LIMIT)
+  };
+}
+
+function pairProbability(pair) {
+  if (!pair || !pair.epicRow || !pair.spendRow) return null;
+  const isVip = Boolean(pair.epicRow.is_vip || pair.spendRow.is_vip);
+  return estimateLegendProbability({
+    epicTotal: Number(pair.epicValue),
+    spendValue: Number(pair.spendValue),
+    isVip
+  });
+}
+
+function buildEnrichedEntry(row, pair, board, rankOverride = undefined) {
+  const entry = serializeEntry(row);
+  const epicTotal = pair && pair.epicRow
+    ? Number(pair.epicValue)
+    : board === 'epic' ? Number(row.value) : null;
+  const spendValue = pair && pair.spendRow
+    ? Number(pair.spendValue)
+    : board === 'spend' ? Number(row.value) : null;
+  const isVip = Boolean(
+    row.is_vip
+      || (pair && pair.epicRow && pair.epicRow.is_vip)
+      || (pair && pair.spendRow && pair.spendRow.is_vip)
+  );
+  const estimate = estimatePullsFromSpend(spendValue, isVip);
+  let estimateStatus = estimate.estimateStatus;
+  if (epicTotal == null || !Number.isFinite(epicTotal)) estimateStatus = 'missing_epic';
+  else if (spendValue == null || !Number.isFinite(spendValue)) estimateStatus = 'missing_spend';
+  const probability = estimateStatus === 'missing_epic' || estimateStatus === 'missing_spend'
+    ? null
+    : estimateLegendProbability({ epicTotal, spendValue, isVip });
+  const isPartial = estimateStatus !== 'complete_days' || probability == null;
+  return {
+    ...entry,
+    rank: rankOverride === undefined ? entry.rank : rankOverride,
+    isVip,
+    epicTotal,
+    spendValue,
+    spendTotal: spendValue,
+    spendUsd: estimate.spendUsd,
+    estimatedDays: estimate.estimatedDays,
+    estimatedPulls: estimate.estimatedPulls,
+    estimateStatus,
+    isPartial,
+    estimatedLegendProbability: probability
+  };
 }
 
 function serializeSnapshot(row) {
@@ -449,6 +650,7 @@ function estimatedPulls(spendTotal, elapsedDays, isVip) {
 }
 
 function normalizeLimit(value) {
+  if (value == null || value === '') return MAX_LIMIT;
   const number = Number(value);
   return Number.isFinite(number) ? Math.max(1, Math.min(MAX_LIMIT, Math.floor(number))) : MAX_LIMIT;
 }

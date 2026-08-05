@@ -4,6 +4,7 @@ import {
   BOARD_KEYS,
   normalizeLeaderboardSnapshot,
   computeSnapshotSignature,
+  estimatePullsFromSpend,
   estimateLegendProbability,
   diffBoardRows
 } from '../src/rankings-core.js';
@@ -14,15 +15,16 @@ const row = (overrides = {}) => ({
   nameDisplayPreference: 'auto', ...overrides
 });
 
-test('accepts all server leaderboard keys and keeps at most 100 rows', () => {
+test('accepts all server leaderboard keys and keeps dynamic row counts', () => {
   const leaderboards = Object.fromEntries(BOARD_KEYS.map((key) => [key, [row()]]));
+  leaderboards.epic_total = Array.from({ length: 101 }, (_, index) => row({ userId: `u-${index}`, rank: index + 1 }));
   const result = normalizeLeaderboardSnapshot({
     season: { id: 'season-1', name: '第四赛季-周年庆' },
     scope: 'global', leaderboards, capturedAt: 1785922892568
   }, 1785922892568);
   assert.equal(result.ok, true);
   assert.deepEqual(result.boardKeys, BOARD_KEYS);
-  assert.equal(result.entries.length, 12);
+  assert.equal(result.entries.length, 112);
 });
 
 test('rejects unknown boards and future captures', () => {
@@ -40,8 +42,30 @@ test('signature is stable when object key order changes', async () => {
   assert.equal(await computeSnapshotSignature(left), await computeSnapshotSignature(right));
 });
 
-test('estimates pull count with VIP free pulls and returns a percentage', () => {
-  assert.equal(estimateLegendProbability({ epicTotal: 12, spendTotal: 6000, elapsedDays: 2, isVip: true }), 12 / 700);
+test('estimates pull count from raw spend with VIP and ordinary quotas', () => {
+  const vip = estimatePullsFromSpend(12_000_000_000, true);
+  assert.equal(vip.spendUsd, 24_000);
+  assert.equal(vip.estimatedDays, 4);
+  assert.equal(vip.estimatedPulls, 2_600);
+  assert.equal(vip.estimateStatus, 'complete_days');
+
+  const ordinary = estimatePullsFromSpend(2_000_000_000, false);
+  assert.equal(ordinary.spendUsd, 4_000);
+  assert.equal(ordinary.estimatedDays, 1);
+  assert.equal(ordinary.estimatedPulls, 430);
+  assert.equal(ordinary.estimateStatus, 'complete_days');
+
+  const missing = estimatePullsFromSpend(null, true);
+  assert.equal(missing.spendUsd, null);
+  assert.equal(missing.estimatedPulls, null);
+  assert.equal(missing.estimateStatus, 'missing_spend');
+});
+
+test('computes probability from same-period raw spend', () => {
+  assert.equal(
+    estimateLegendProbability({ epicTotal: 36, spendValue: 12_000_000_000, isVip: true }),
+    36 / 2_600
+  );
 });
 
 test('diffs rank movement and enter/leave events', () => {

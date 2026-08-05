@@ -213,6 +213,49 @@
     gap: 6px;
 }
 
+.rankings-table-intro {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+}
+
+.rankings-table-intro strong {
+    color: var(--text);
+    font-size: .86rem;
+}
+
+.rankings-table-intro span {
+    color: var(--muted);
+    font-size: .7rem;
+}
+
+.rankings-selectors {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.rankings-selectors label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted);
+    font-size: .7rem;
+    font-weight: 750;
+}
+
+.rankings-selectors select {
+    min-height: 32px;
+    padding: 0 28px 0 9px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--control-bg);
+    color: var(--text);
+    font: inherit;
+}
+
 .rankings-tab {
     min-height: 32px;
     padding: 0 12px;
@@ -311,7 +354,7 @@
 
 .rankings-table {
     width: 100%;
-    min-width: 670px;
+    min-width: 820px;
     border-collapse: separate;
     border-spacing: 0;
     font-size: .78rem;
@@ -350,6 +393,10 @@
 
 .rankings-table tbody tr.is-left {
     opacity: .68;
+}
+
+.rankings-table tbody tr.is-partial {
+    box-shadow: inset 3px 0 0 var(--amber);
 }
 
 .rank-number {
@@ -414,6 +461,23 @@
 .rank-value {
     color: var(--text);
     font-weight: 800;
+}
+
+.rank-spend,
+.rank-pulls,
+.rank-sets {
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+}
+
+.rank-status {
+    color: var(--green);
+    font-size: .7rem;
+    font-weight: 750;
+}
+
+.rank-status.is-partial {
+    color: var(--amber);
 }
 
 .rank-change.is-positive {

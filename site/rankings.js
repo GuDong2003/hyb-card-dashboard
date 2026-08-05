@@ -4,13 +4,16 @@
     const BRIDGE_READY = 'HYB_CARD_RANKINGS_BRIDGE_READY';
     const BRIDGE_REQUEST = 'HYB_CARD_RANKINGS_REQUEST';
     const BRIDGE_RESPONSE = 'HYB_CARD_RANKINGS_RESPONSE';
-    const BRIDGE_TIMEOUT_MS = 9000;
+    const BRIDGE_TIMEOUT_MS = 22000;
     const SETTINGS_STORAGE_KEY = 'hyb-card-rankings-settings-v1';
-    const DAY_MS = 24 * 60 * 60 * 1000;
-    const DEFAULT_SEASON_START_AT = Date.parse('2026-08-02T04:00:00+08:00');
+    const SPEND_VALUE_PER_USD = 500000;
+    const VIP_DAILY_SPEND_USD = 6000;
+    const VIP_DAILY_PULLS = 650;
+    const ORDINARY_DAILY_SPEND_USD = 4000;
+    const ORDINARY_DAILY_PULLS = 430;
 
-    const BOARD_LABELS = Object.freeze({ epic: '欧皇榜', spend: '消费榜', sets: '兑换榜' });
-    const PERIOD_LABELS = Object.freeze({ today: '今日', week: '本周', month: '本月', total: '赛季' });
+    const BOARD_LABELS = Object.freeze({ epic: '欧皇榜', spend: '消费榜', sets: '兑换榜', luck: '运气榜' });
+    const PERIOD_LABELS = Object.freeze({ today: '今日', week: '本周', month: '本月', total: '整个赛季' });
 
     function loadSettings() {
         try {
@@ -33,8 +36,9 @@
 
     const state = {
         view: 'calculator',
-        board: 'epic',
-        period: 'today',
+        board: 'users',
+        period: 'total',
+        sort: 'probability',
         settings: loadSettings(),
         latest: null,
         localSnapshot: null,
@@ -44,6 +48,7 @@
         bridgeRequest: null,
         rows: [],
         events: [],
+        partialRows: [],
         selectedUserId: '',
         status: '等待榜单数据'
     };
@@ -118,6 +123,18 @@
         return Number.isFinite(number) ? Math.round(number).toLocaleString('zh-CN') : '—';
     }
 
+    function formatDecimal(value) {
+        const number = Number(value);
+        return Number.isFinite(number) ? number.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) : '—';
+    }
+
+    function formatUsd(value) {
+        const number = Number(value);
+        return Number.isFinite(number)
+            ? `$${number.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+            : '—';
+    }
+
     function formatProbability(value) {
         const number = Number(value);
         return Number.isFinite(number) ? `${(number * 100).toFixed(3)}%` : '—';
@@ -155,6 +172,7 @@
     }
 
     function rowValue(row) {
+        if (!row || typeof row !== 'object') return null;
         const value = Number(row && (row.value ?? row.total ?? row.count));
         return Number.isFinite(value) && value >= 0 ? Math.floor(value) : null;
     }
@@ -172,13 +190,195 @@
         return Boolean(row && (row.isVip ?? row.is_vip ?? row.vip));
     }
 
-    function elapsedSeasonDays() {
-        return Math.max(1, Math.min(90, Math.floor((Date.now() - DEFAULT_SEASON_START_AT) / DAY_MS) + 1));
+    function estimateFromSpend(spendValue, isVip) {
+        if (spendValue == null || spendValue === '') {
+            return { spendUsd: null, estimatedDays: null, estimatedPulls: null, estimateStatus: 'missing_spend' };
+        }
+        const rawValue = Number(spendValue);
+        if (!Number.isFinite(rawValue) || rawValue < 0) {
+            return { spendUsd: null, estimatedDays: null, estimatedPulls: null, estimateStatus: 'missing_spend' };
+        }
+        const spendUsd = rawValue / SPEND_VALUE_PER_USD;
+        const dailySpendUsd = isVip ? VIP_DAILY_SPEND_USD : ORDINARY_DAILY_SPEND_USD;
+        const dailyPulls = isVip ? VIP_DAILY_PULLS : ORDINARY_DAILY_PULLS;
+        const estimatedDays = spendUsd / dailySpendUsd;
+        const estimatedPulls = estimatedDays * dailyPulls;
+        const completeDays = Math.abs(estimatedDays - Math.round(estimatedDays)) < 1e-9;
+        return {
+            spendUsd,
+            estimatedDays,
+            estimatedPulls,
+            estimateStatus: completeDays ? 'complete_days' : 'partial_day'
+        };
     }
 
-    function estimatedProbability(epicTotal, spendTotal, isVip) {
-        const pulls = Number(spendTotal || 0) / 10 + elapsedSeasonDays() * (isVip ? 50 : 30);
-        return pulls > 0 && Number.isFinite(epicTotal) ? Number(epicTotal) / pulls : null;
+    function estimatedProbability(epicTotal, spendValue, isVip) {
+        const estimate = estimateFromSpend(spendValue, isVip);
+        return estimate.estimatedPulls > 0 && Number.isFinite(epicTotal)
+            ? Number(epicTotal) / estimate.estimatedPulls
+            : null;
+    }
+
+    function pairLocalRows(epicRows = [], spendRows = []) {
+        const users = new Map();
+        const merge = (rawRow, kind) => {
+            const userId = rowUserId(rawRow);
+            if (!userId) return;
+            const current = users.get(userId) || { userId, epicRow: null, spendRow: null, isVip: false };
+            current[`${kind}Row`] = rawRow;
+            current.isVip = current.isVip || rowIsVip(rawRow);
+            users.set(userId, current);
+        };
+        epicRows.forEach((row) => merge(row, 'epic'));
+        spendRows.forEach((row) => merge(row, 'spend'));
+        return Array.from(users.values());
+    }
+
+    function localPairViews(pairs, limit = 100) {
+        const complete = [];
+        const partial = [];
+        pairs.forEach((pair) => {
+            const row = pair.epicRow || pair.spendRow;
+            if (!row) return;
+            const view = { row, pair, rankOverride: null };
+            if (pair.epicRow && pair.spendRow) complete.push(view);
+            else partial.push(view);
+        });
+        complete.sort((left, right) => {
+            const leftProbability = estimatedProbability(
+                rowValue(left.pair.epicRow), rowValue(left.pair.spendRow), left.pair.isVip
+            );
+            const rightProbability = estimatedProbability(
+                rowValue(right.pair.epicRow), rowValue(right.pair.spendRow), right.pair.isVip
+            );
+            if (leftProbability == null && rightProbability == null) return left.pair.userId.localeCompare(right.pair.userId);
+            if (leftProbability == null) return 1;
+            if (rightProbability == null) return -1;
+            return rightProbability - leftProbability
+                || rowValue(right.pair.epicRow) - rowValue(left.pair.epicRow)
+                || left.pair.userId.localeCompare(right.pair.userId);
+        });
+        return {
+            complete: complete.slice(0, limit).map((view, index) => ({ ...view, rankOverride: index + 1 })),
+            partial: partial.slice(0, 100)
+        };
+    }
+
+    function localEnrichedRow(rawRow, pair, board, rankOverride) {
+        const userId = rowUserId(rawRow);
+        const epicTotal = pair && pair.epicRow
+            ? rowValue(pair.epicRow)
+            : board === 'epic' ? rowValue(rawRow) : null;
+        const spendValue = pair && pair.spendRow
+            ? rowValue(pair.spendRow)
+            : board === 'spend' ? rowValue(rawRow) : null;
+        const isVip = rowIsVip(rawRow) || Boolean(pair && pair.isVip);
+        const estimate = estimateFromSpend(spendValue, isVip);
+        let estimateStatus = estimate.estimateStatus;
+        if (epicTotal == null) estimateStatus = 'missing_epic';
+        else if (spendValue == null) estimateStatus = 'missing_spend';
+        const probability = estimateStatus === 'missing_epic' || estimateStatus === 'missing_spend'
+            ? null
+            : estimatedProbability(epicTotal, spendValue, isVip);
+        return {
+            snapshotId: null,
+            boardKey: `${board}_${state.period}`,
+            userId,
+            userName: rowName(rawRow, userId),
+            avatar: rowAvatar(rawRow),
+            value: rowValue(rawRow) ?? 0,
+            rank: rankOverride === undefined ? rowRank(rawRow, null) : rankOverride,
+            isVip,
+            previousRank: null,
+            previousValue: null,
+            rankDelta: null,
+            valueDelta: null,
+            event: '',
+            epicTotal,
+            spendValue,
+            spendTotal: spendValue,
+            spendUsd: estimate.spendUsd,
+            estimatedDays: estimate.estimatedDays,
+            estimatedPulls: estimate.estimatedPulls,
+            estimateStatus,
+            isPartial: estimateStatus !== 'complete_days' || probability == null,
+            estimatedLegendProbability: probability
+        };
+    }
+
+    function summarizeLocalUsers(epicRows = [], spendRows = [], setsRows = [], sort = 'probability') {
+        const users = new Map();
+        const merge = (rawRow, kind) => {
+            const userId = rowUserId(rawRow);
+            if (!userId) return;
+            const current = users.get(userId) || {
+                userId,
+                epicRow: null,
+                spendRow: null,
+                setsRow: null,
+                userName: '',
+                avatar: '',
+                isVip: false
+            };
+            current[`${kind}Row`] = rawRow;
+            const rawName = String(rawRow && (rawRow.userName ?? rawRow.user_name ?? rawRow.name) || '').trim();
+            current.userName = current.userName || rawName;
+            current.avatar = current.avatar || rowAvatar(rawRow);
+            current.isVip = current.isVip || rowIsVip(rawRow);
+            users.set(userId, current);
+        };
+        epicRows.forEach((row) => merge(row, 'epic'));
+        spendRows.forEach((row) => merge(row, 'spend'));
+        setsRows.forEach((row) => merge(row, 'sets'));
+        return Array.from(users.values()).map((user) => {
+            const epicTotal = rowValue(user.epicRow);
+            const spendValue = rowValue(user.spendRow);
+            const exchangeCount = rowValue(user.setsRow);
+            const estimate = estimateFromSpend(spendValue, user.isVip);
+            let estimateStatus = estimate.estimateStatus;
+            if (epicTotal == null && spendValue == null) estimateStatus = 'missing_pair';
+            else if (epicTotal == null) estimateStatus = 'missing_epic';
+            else if (spendValue == null) estimateStatus = 'missing_spend';
+            const probability = estimateStatus === 'missing_pair' || estimateStatus === 'missing_epic' || estimateStatus === 'missing_spend'
+                ? null
+                : estimatedProbability(epicTotal, spendValue, user.isVip);
+            return {
+                snapshotId: null,
+                boardKey: `users_${state.period}`,
+                userId: user.userId,
+                userName: user.userName || user.userId,
+                avatar: user.avatar,
+                value: spendValue ?? epicTotal ?? exchangeCount,
+                rank: null,
+                isVip: user.isVip,
+                previousRank: null,
+                previousValue: null,
+                rankDelta: null,
+                valueDelta: null,
+                event: '',
+                epicTotal,
+                spendValue,
+                spendTotal: spendValue,
+                spendUsd: estimate.spendUsd,
+                estimatedDays: estimate.estimatedDays,
+                estimatedPulls: estimate.estimatedPulls,
+                exchangeCount,
+                estimateStatus,
+                isPartial: estimateStatus !== 'complete_days' || probability == null,
+                estimatedLegendProbability: probability
+            };
+        }).sort((left, right) => compareLocalUsers(left, right, sort));
+    }
+
+    function compareLocalUsers(left, right, sort) {
+        if (sort === 'user') return String(left.userName || left.userId).localeCompare(String(right.userName || right.userId)) || left.userId.localeCompare(right.userId);
+        const value = (row) => sort === 'spend' ? row.spendUsd : sort === 'pulls' ? row.estimatedPulls : sort === 'sets' ? row.exchangeCount : row.estimatedLegendProbability;
+        const leftValue = value(left);
+        const rightValue = value(right);
+        if (leftValue == null && rightValue == null) return left.userId.localeCompare(right.userId);
+        if (leftValue == null) return 1;
+        if (rightValue == null) return -1;
+        return rightValue - leftValue || left.userId.localeCompare(right.userId);
     }
 
     function localLeaderboardPayload(snapshot) {
@@ -187,38 +387,44 @@
         if (!source || !leaderboards || typeof leaderboards !== 'object') return null;
         const boardKey = `${state.board}_${state.period}`;
         const rawRows = Array.isArray(leaderboards[boardKey]) ? leaderboards[boardKey] : [];
-        const epicRows = Array.isArray(leaderboards.epic_total) ? leaderboards.epic_total : [];
-        const spendRows = Array.isArray(leaderboards.spend_total) ? leaderboards.spend_total : [];
-        const epicByUser = new Map(epicRows.map((row) => [rowUserId(row), rowValue(row)]));
-        const spendByUser = new Map(spendRows.map((row) => [rowUserId(row), rowValue(row)]));
-        const rows = rawRows.slice(0, 100).map((rawRow, index) => {
-            const userId = rowUserId(rawRow);
-            const userName = rowName(rawRow, userId);
-            const isVip = rowIsVip(rawRow);
-            const epicTotal = epicByUser.get(userId) ?? (state.board === 'epic' && state.period === 'total' ? rowValue(rawRow) : null);
-            const spendTotal = spendByUser.get(userId) ?? (state.board === 'spend' && state.period === 'total' ? rowValue(rawRow) : null);
+        const epicRows = Array.isArray(leaderboards[`epic_${state.period}`]) ? leaderboards[`epic_${state.period}`] : [];
+        const spendRows = Array.isArray(leaderboards[`spend_${state.period}`]) ? leaderboards[`spend_${state.period}`] : [];
+        const setsRows = Array.isArray(leaderboards[`sets_${state.period}`]) ? leaderboards[`sets_${state.period}`] : [];
+        if (state.board === 'users') {
+            const sort = state.sort || 'probability';
+            const rows = summarizeLocalUsers(epicRows, spendRows, setsRows, sort).map((row, index) => ({ ...row, rank: index + 1 }));
             return {
-                snapshotId: null,
+                ok: true,
+                board: 'users',
+                period: state.period,
+                sort,
                 boardKey,
-                userId,
-                userName,
-                avatar: rowAvatar(rawRow),
-                value: rowValue(rawRow) ?? 0,
-                rank: rowRank(rawRow, index + 1),
-                isVip,
-                previousRank: null,
-                previousValue: null,
-                rankDelta: null,
-                valueDelta: null,
-                event: '',
-                epicTotal,
-                spendTotal,
-                estimatedPulls: epicTotal == null && spendTotal == null
-                    ? null
-                    : Number(spendTotal || 0) / 10 + elapsedSeasonDays() * (isVip ? 50 : 30),
-                estimatedLegendProbability: estimatedProbability(epicTotal, spendTotal, isVip)
+                snapshot: {
+                    id: null,
+                    seasonId: String(source.season && source.season.id || ''),
+                    seasonName: String(source.season && source.season.name || ''),
+                    scope: String(source.scope || 'global'),
+                    capturedAt: Number(source.capturedAt) || Date.now(),
+                    source: 'local-unsent'
+                },
+                previousSnapshot: null,
+                estimated: true,
+                localOnly: true,
+                rows,
+                partialRows: []
             };
-        }).filter((row) => row.userId && Number.isFinite(row.value));
+        }
+        const pairs = pairLocalRows(epicRows, spendRows);
+        const pairByUser = new Map(pairs.map((pair) => [pair.userId, pair]));
+        const luck = state.board === 'luck' ? localPairViews(pairs, 100) : null;
+        const views = state.board === 'luck'
+            ? luck.complete
+            : rawRows.slice(0, 100).map((rawRow) => ({ row: rawRow, pair: pairByUser.get(rowUserId(rawRow)) || null }));
+        const rows = views.map((view) => localEnrichedRow(view.row, view.pair, state.board, view.rankOverride === null ? undefined : view.rankOverride))
+            .filter((row) => row.userId && Number.isFinite(row.value));
+        const partialRows = state.board === 'luck'
+            ? luck.partial.map((view) => localEnrichedRow(view.row, view.pair, state.board, null))
+            : rows.filter((row) => row.isPartial);
         return {
             ok: true,
             board: state.board,
@@ -233,10 +439,10 @@
                 source: 'local-unsent'
             },
             previousSnapshot: null,
-            elapsedDays: elapsedSeasonDays(),
             estimated: true,
             localOnly: true,
-            rows
+            rows,
+            partialRows
         };
     }
 
@@ -333,13 +539,11 @@
     }
 
     async function loadLeaderboard() {
-        const query = `/api/rankings/leaderboard?board=${encodeURIComponent(state.board)}&period=${encodeURIComponent(state.period)}&limit=100`;
-        const [leaderboard, events] = await Promise.all([
-            apiGet(query),
-            apiGet(`/api/rankings/events?board=${encodeURIComponent(state.board)}`).catch(() => ({ events: [] }))
-        ]);
+        const query = `/api/rankings/leaderboard?board=users&period=${encodeURIComponent(state.period)}&sort=${encodeURIComponent(state.sort)}`;
+        const leaderboard = await apiGet(query);
         state.rows = Array.isArray(leaderboard.rows) ? leaderboard.rows : [];
-        state.events = Array.isArray(events.events) ? events.events : [];
+        state.partialRows = Array.isArray(leaderboard.partialRows) ? leaderboard.partialRows : [];
+        state.events = [];
         renderLeaderboard(leaderboard);
     }
 
@@ -351,6 +555,7 @@
             if (source && source.localOnly) {
                 const payload = localLeaderboardPayload(source.snapshot);
                 state.rows = payload ? payload.rows : [];
+                state.partialRows = payload ? payload.partialRows : [];
                 state.events = [];
                 renderLeaderboard(payload || { rows: [] });
             } else {
@@ -359,6 +564,7 @@
             state.loaded = true;
         } catch (error) {
             setStatus(String(error && error.message || error), true);
+            state.partialRows = [];
             renderLeaderboard({ rows: [] });
         } finally {
             setBusy(false);
@@ -384,33 +590,46 @@
     }
 
     function renderLeaderboard(payload) {
-        const boardLabel = BOARD_LABELS[state.board];
+        const boardLabel = '用户总览';
         const periodLabel = PERIOD_LABELS[state.period];
         const kicker = $('#rankingsBoardKicker');
         const title = $('#rankingsBoardTitle');
         const updated = $('#rankingsUpdatedAt');
-        if (kicker) kicker.textContent = `${state.board} · ${state.period}`;
+        if (kicker) kicker.textContent = `users · ${state.period}`;
         if (title) title.textContent = `${boardLabel} · ${periodLabel}`;
         if (updated && payload.snapshot) updated.textContent = `更新于 ${formatDate(payload.snapshot.capturedAt)}`;
 
         const body = $('#rankingsTableBody');
         if (!body) return;
-        if (!state.rows.length) {
-            body.innerHTML = '<tr><td class="rankings-empty" colspan="6">暂无榜单数据</td></tr>';
+        const visibleRows = state.rows;
+        const partialNotice = $('#rankingsPartialNotice');
+        if (partialNotice) {
+            const incompleteCount = state.rows.filter((row) => row.isPartial).length;
+            partialNotice.textContent = incompleteCount
+                ? `当前表格中有 ${formatNumber(incompleteCount)} 位用户的估算数据不完整，缺失项保持空白。`
+                : '';
+            partialNotice.classList.toggle('is-hidden', !incompleteCount);
+        }
+        if (!visibleRows.length) {
+            body.innerHTML = '<tr><td class="rankings-empty" colspan="8">暂无榜单数据</td></tr>';
         } else {
-            body.innerHTML = state.rows.map((row) => {
-                const changeClass = Number(row.rankDelta) > 0 ? 'is-positive' : Number(row.rankDelta) < 0 ? 'is-negative' : '';
-                const rowClass = row.event === 'entered' ? 'is-entered' : row.event === 'left' ? 'is-left' : '';
+            body.innerHTML = visibleRows.map((row) => {
+                const rowClass = [
+                    row.isPartial ? 'is-partial' : ''
+                ].filter(Boolean).join(' ');
                 const avatar = row.avatar
                     ? `<img class="rank-avatar" data-initials="${initials(row.userName)}" src="${escapeHtml(row.avatar)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
                     : `<span class="rank-avatar-fallback">${initials(row.userName)}</span>`;
+                const status = formatEstimateStatus(row.estimateStatus, row.isPartial);
                 return `<tr class="${rowClass}" data-user-id="${escapeHtml(row.userId)}">
-                    <td class="rank-number">${formatNumber(row.rank)}</td>
+                    <td class="rank-number">${row.rank == null ? '—' : formatNumber(row.rank)}</td>
                     <td class="rank-user-cell"><button class="rank-user-button" type="button" data-user-id="${escapeHtml(row.userId)}">${avatar}<span>${escapeHtml(row.userName || row.userId)}</span></button></td>
-                    <td>${row.isVip ? '<span class="rank-vip">VIP</span>' : '—'}</td>
-                    <td class="rank-value">${formatNumber(row.value)}</td>
-                    <td class="rank-change ${changeClass}">${formatRankChange(row)}</td>
-                    <td class="rank-probability">${formatProbability(row.estimatedLegendProbability)}</td>
+                    <td>${row.isVip ? '<span class="rank-vip">VIP</span>' : ''}</td>
+                    <td class="rank-spend">${formatOptionalUsd(row.spendUsd)}</td>
+                    <td class="rank-pulls">${formatOptionalNumber(row.estimatedPulls)}</td>
+                    <td class="rank-sets">${formatOptionalNumber(row.exchangeCount)}</td>
+                    <td class="rank-probability">${formatOptionalProbability(row.estimatedLegendProbability)}</td>
+                    <td class="rank-status ${row.isPartial ? 'is-partial' : ''}">${status}</td>
                 </tr>`;
             }).join('');
         }
@@ -429,6 +648,27 @@
         renderEvents();
     }
 
+    function formatEstimateStatus(status, isPartial) {
+        if (status === 'missing_pair') return '缺少欧皇榜与消费榜';
+        if (status === 'missing_spend') return '缺少消费榜';
+        if (status === 'missing_epic') return '缺少欧皇榜';
+        if (status === 'partial_day') return '非完整天数 / 估算';
+        if (isPartial) return '数据不完整';
+        return '完整天数';
+    }
+
+    function formatOptionalNumber(value) {
+        return value == null || value === '' || !Number.isFinite(Number(value)) ? '' : formatDecimal(value);
+    }
+
+    function formatOptionalUsd(value) {
+        return value == null || value === '' || !Number.isFinite(Number(value)) ? '' : formatUsd(value);
+    }
+
+    function formatOptionalProbability(value) {
+        return value == null || value === '' || !Number.isFinite(Number(value)) ? '' : formatProbability(value);
+    }
+
     function formatRankChange(row) {
         if (row.event === 'entered') return '<span class="rank-event">入榜</span>';
         if (row.event === 'left') return '<span class="rank-event is-left">出榜</span>';
@@ -438,16 +678,16 @@
     }
 
     function renderSummary() {
-        const values = state.rows.map((row) => Number(row.value)).filter(Number.isFinite);
-        const probabilities = state.rows.map((row) => Number(row.estimatedLegendProbability)).filter(Number.isFinite);
-        const rising = state.rows.filter((row) => Number(row.rankDelta) > 0).length;
+        const spends = state.rows.map((row) => row.spendUsd).filter((value) => value != null && Number.isFinite(Number(value))).map(Number);
+        const pulls = state.rows.map((row) => row.estimatedPulls).filter((value) => value != null && Number.isFinite(Number(value))).map(Number);
+        const probabilities = state.rows.map((row) => row.estimatedLegendProbability).filter((value) => value != null && Number.isFinite(Number(value))).map(Number);
         const summary = $('#rankingsSummary');
         if (!summary) return;
         const cards = [
-            ['当前榜单人数', formatNumber(state.rows.length)],
-            ['榜首当前值', values.length ? formatNumber(Math.max(...values)) : '—'],
-            ['平均估算传说概率', probabilities.length ? formatProbability(probabilities.reduce((a, b) => a + b, 0) / probabilities.length) : '—'],
-            ['较上次上升', formatNumber(rising)]
+            ['用户数', formatNumber(state.rows.length)],
+            ['总消费 USD', spends.length ? formatUsd(spends.reduce((a, b) => a + b, 0)) : '—'],
+            ['平均估算抽数', pulls.length ? formatDecimal(pulls.reduce((a, b) => a + b, 0) / pulls.length) : '—'],
+            ['平均出卡率', probabilities.length ? formatProbability(probabilities.reduce((a, b) => a + b, 0) / probabilities.length) : '—']
         ];
         summary.innerHTML = cards.map(([label, value]) => `<article class="rankings-summary-card"><span>${label}</span><strong>${value}</strong></article>`).join('');
     }
@@ -455,6 +695,10 @@
     function renderEvents() {
         const container = $('#rankingsEvents');
         if (!container) return;
+        if (state.board === 'users') {
+            container.innerHTML = '';
+            return;
+        }
         const recent = state.events.slice(-8).reverse();
         if (!recent.length) {
             container.innerHTML = '<div class="rankings-empty">暂无入榜/出榜事件</div>';
@@ -500,7 +744,7 @@
                 return;
             }
             const latest = rows[0];
-            target.innerHTML = `<div class="rankings-user-summary"><strong>${escapeHtml(latest.userName || latest.userId)}</strong><span>${latest.isVip ? 'VIP' : '普通用户'} · ${escapeHtml(latest.userId)}</span></div><div class="rank-history-list">${rows.slice(0, 40).map((row) => `<div class="rank-history-row"><span>${escapeHtml(row.boardKey)}</span><strong>#${formatNumber(row.rank)}</strong><span>${formatNumber(row.value)}</span><time>${formatDate(row.capturedAt)}</time></div>`).join('')}</div>`;
+            target.innerHTML = `<div class="rankings-user-summary"><strong>${escapeHtml(latest.userName || latest.userId)}</strong><span>${latest.isVip ? 'VIP' : '普通用户'} · ${escapeHtml(latest.userId)}</span></div><div class="rank-history-list">${rows.slice(0, 40).map((row) => `<div class="rank-history-row"><span>${escapeHtml(row.boardKey)}</span><strong>#${formatNumber(row.rank)}</strong><span>${row.boardKey.startsWith('spend_') ? formatUsd(Number(row.value) / SPEND_VALUE_PER_USD) : formatNumber(row.value)}</span><time>${formatDate(row.capturedAt)}</time></div>`).join('')}</div>`;
         } catch (error) {
             target.innerHTML = `<div class="rankings-error">${escapeHtml(error.message || error)}</div>`;
         }
@@ -528,6 +772,14 @@
                 });
                 if (state.view === 'rankings') loadRankingsView();
             });
+        });
+        $('#rankingsPeriodSelect')?.addEventListener('change', (event) => {
+            state.period = event.target.value || 'total';
+            if (state.view === 'rankings') loadRankingsView();
+        });
+        $('#rankingsSortSelect')?.addEventListener('change', (event) => {
+            state.sort = event.target.value || 'probability';
+            if (state.view === 'rankings') loadRankingsView();
         });
         $('#rankingsRefreshButton')?.addEventListener('click', () => loadRankingsView(true));
         $('#rankingsUploadButton')?.addEventListener('click', uploadPendingSnapshot);

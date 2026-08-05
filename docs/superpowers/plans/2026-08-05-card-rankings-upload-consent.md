@@ -2,9 +2,9 @@
 
 > **For agentic workers:** Inline execution is selected for this task; execute the steps in this session with verification checkpoints.
 
-**Goal:** 在榜单统计页增加常驻脚本安装入口，并复刻 Farm Dashboard 的自动上传授权与手动上传逻辑。
+**Goal:** 在榜单统计页增加常驻脚本安装入口，复刻 Farm Dashboard 的自动上传授权逻辑，并按同周期 userId 合并欧皇、消费、兑换榜，生成默认赛季用户总览表。
 
-**Architecture:** `site/rankings.js` 负责本地上传偏好、桥接抓取、未上传快照的临时展示和受控 POST；`site/index.html` 与 `site/rankings.css` 提供安装/授权/手动上传 UI。D1 API、油猴脚本和 URL 路由保持不变。
+**Architecture:** `site/rankings.js` 负责本地上传偏好、桥接抓取、未上传快照的临时展示和用户总览表；`src/rankings-core.js` 与 `src/rankings-worker.js` 负责同周期 `userId` 合并、VIP 抽数反推、消费 USD 换算和不完整数据标记；油猴脚本在 Card/CDK 双域运行但只在 Card 页面提供桥接 UI。`site/index.html` 与 `site/rankings.css` 提供安装/授权/手动上传及周期/排序选择，URL 路由保持不变。
 
 **Tech Stack:** 原生 JavaScript、HTML、CSS、localStorage、现有 Node test runner、Cloudflare Worker/D1。
 
@@ -50,3 +50,42 @@
 - [ ] Run `node --check site/rankings.js`, `git diff --check`, and `npm test`.
 - [ ] Run `npm run build` and verify the install script is still copied to the published assets.
 - [ ] Deploy only after local checks pass, then verify the production page contains the setup card and `/api/rankings/latest` remains healthy.
+
+### Task 5: Add full-period paired probability estimation
+
+**Files:**
+- Modify: `src/rankings-core.js`
+- Modify: `src/rankings-worker.js`
+- Modify: `site/rankings.js`
+- Modify: `test/rankings-core.test.js`
+- Modify: `test/rankings-worker.test.js`
+
+- [ ] Add failing tests for raw spend-to-USD conversion, VIP/ordinary daily pull formulas, same-period pair selection, non-integer-day status, and missing paired rows.
+- [ ] Replace total-only joins with `${board}_${period}` pair maps keyed by `userId`; never convert an absent top-100 row to zero.
+- [ ] Return `estimatedDays`, `estimatedPulls`, `spendUsd`, `estimateStatus`, and `isPartial` in leaderboard rows.
+- [ ] Mirror the same-period calculation for local unsent snapshots in `site/rankings.js`.
+
+### Task 6: Make the userscript Farm-compatible without CDK UI
+
+**Files:**
+- Modify: `site/userscripts/hyb-card-dashboard-rankings.user.js`
+- Modify: `test/rankings-userscript.test.js`
+
+- [ ] Add the CDK `@match` and shared GM storage grants while keeping the Card-only visible bridge behavior.
+- [ ] Ensure CDK pages do not inject buttons, alerts, or dashboard elements; retain one request per bridge cycle.
+- [ ] Verify both metadata matches and the Card/CDK origin guard with `node --check` and tests.
+
+### Task 7: Replace multi-board tabs with a user summary table
+
+**Files:**
+- Modify: `src/rankings-worker.js`
+- Modify: `site/rankings.js`
+- Modify: `site/index.html`
+- Modify: `site/rankings.css`
+- Modify: `test/rankings-worker.test.js`
+- Modify: `test/rankings-view.test.js`
+
+- [x] Merge `epic_${period}`, `spend_${period}` and `sets_${period}` by `userId`.
+- [x] Return USD spend, estimated pulls, exchange count and estimated output probability in one row.
+- [x] Keep missing values null in the API and blank in the table; default to the whole season.
+- [x] Add period and sort selectors; omit the default user limit so new users can appear dynamically.
