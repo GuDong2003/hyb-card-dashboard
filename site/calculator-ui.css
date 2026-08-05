@@ -572,17 +572,19 @@ select {
 }
 
 .sp-cap-field {
-    display: grid;
-    gap: 3px;
-    min-width: 118px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
     color: var(--text-muted);
     font-size: 0.68rem;
     font-weight: 750;
+    white-space: nowrap;
 }
 
 .sp-cap-field input {
-    width: 96px;
-    min-height: 34px;
+    width: 72px;
+    min-height: 30px;
     padding: 0 9px;
     border: 1px solid var(--border-bright);
     border-radius: 8px;
@@ -1304,10 +1306,10 @@ body {
 
 .results-column .sp-panel {
     min-height: 0;
-    max-height: 270px;
+    max-height: none;
     margin: 0;
     padding: 12px 14px;
-    overflow: hidden;
+    overflow: visible;
     border-radius: 12px;
 }
 
@@ -1337,8 +1339,11 @@ body {
 .results-column .sp-allocation-grid {
     grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
     min-height: 0;
+    height: 210px;
     max-height: 210px;
     margin-top: 8px;
+    padding-bottom: 8px;
+    overflow-y: auto;
 }
 
 .results-column .sp-round {
@@ -2010,4 +2015,13 @@ table.simulation-table td {
     color: var(--blue-strong);
     font-size: 0.82rem;
     white-space: nowrap;
+}
+
+/* Keep the summary amounts visible over the theme's shared metric color rule. */
+.results-column .metric-value.profit-value {
+    color: var(--profit-pos) !important;
+}
+
+.results-column .metric-value.profit-value.is-negative {
+    color: var(--profit-neg) !important;
 }
