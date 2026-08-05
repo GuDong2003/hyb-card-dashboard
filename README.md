@@ -12,6 +12,9 @@
 - 按 90 天逐日计算抽卡支出、融解/合成支出、兑换收入、累计现金流、首次回本日、最大资金缺口和最高利润点。
 - 支持 SP 兑换加成：每张有效 SP 提高 10%，单次最多计入 3 张；SP 点数可手动设置上限并自动按收益最高的轮次分配。
 - 顶栏提供 Farm Dashboard、三态主题切换和 GitHub 仓库入口。
+- 增加同地址“榜单统计”视图：欧皇榜、消费榜、兑换榜均支持今日、本周、本月和赛季周期。
+- 榜单快照按当前赛季写入 Cloudflare D1，服务器约一小时刷新一次；同一小时重复快照自动去重。
+- 可查看排名变化、入榜/出榜事件、用户历史和估算传说概率。
 - 页面输入会缓存在浏览器本地，刷新后可继续上次的计算快照。
 
 ## 页面输入说明
@@ -78,6 +81,33 @@ SP 卡可以积攒到后期统一使用，日常普通兑换不消耗 SP。点�
 - 主题图标：跟随系统 → 暗色 → 亮色 → 跟随系统
 - GitHub 图标：[GuDong2003/hyb-card-dashboard](https://github.com/GuDong2003/hyb-card-dashboard)
 
+## 榜单统计
+
+榜单统计入口和主动获取按钮只在 [HYB Card Dashboard](https://card.gudong226.com/) 中显示，地址不会改变，只在收益计算与榜单统计两个视图之间切换。
+
+榜单数据来源为 [CDK 卡牌排行榜](https://cdk.hybgzs.com/entertainment/cards/leaderboard)，对应接口为：
+
+```text
+https://cdk.hybgzs.com/api/cards/leaderboard?scope=global
+```
+
+### 安装同步脚本
+
+1. 在 Card Dashboard 页面安装 [`hyb-card-dashboard-rankings.user.js`](https://card.gudong226.com/userscripts/hyb-card-dashboard-rankings.user.js)。
+2. 登录 `cdk.hybgzs.com`，回到 Card Dashboard 的“榜单统计”视图。
+3. 页面没有快照或快照超过 1 小时时，点击“检查更新”主动获取一次；新鲜快照不会重复请求 CDK。
+
+油猴脚本只匹配 `card.gudong226.com`，通过 `GM_xmlhttpRequest` 请求 CDK 接口并将结果桥接回 Card Dashboard。`cdk.hybgzs.com` 页面不会显示榜单按钮、统计视图或 Card Dashboard 入口。
+
+榜单页的“估算传说概率”使用赛季累计榜单值估算：
+
+```text
+estimatedPulls = spend_total / 10 + elapsedDays × (VIP ? 50 : 30)
+estimatedLegendProbability = epic_total / estimatedPulls
+```
+
+该概率只用于跨用户比较，不能视为服务器标注的真实抽卡概率。
+
 ## 项目结构
 
 ```text
@@ -85,11 +115,18 @@ card-dashboard/
 ├── site/
 │   ├── index.html             # 页面结构、计算交互和本地缓存
 │   ├── calculator-ui.css      # 页面布局、主题和响应式样式
+│   ├── rankings.css           # 榜单统计视图样式
+│   ├── rankings.js            # 榜单视图、D1 API 和油猴桥接交互
+│   ├── userscripts/            # Card Dashboard 专用油猴脚本
 │   ├── stardust-rules.js      # 星尘、融解和合成规则
 │   ├── legend-card-icon.svg   # 传说卡品牌图标
 │   └── farm-icon.svg          # Farm 导航图标
 ├── scripts/build.mjs          # 静态资源构建脚本
 ├── src/index.js               # Cloudflare Worker 入口
+├── src/rankings-core.js        # 榜单规范化、签名、概率和差异计算
+├── src/rankings-worker.js      # 榜单 D1 API
+├── migrations/0001_rankings.sql # 榜单 D1 表结构
+├── test/                       # Node.js 内置测试
 ├── wrangler.jsonc             # Cloudflare 配置
 └── package.json
 ```
@@ -100,6 +137,7 @@ card-dashboard/
 
 ```bash
 npm install
+npm test
 npm run build
 npm run dev
 ```
@@ -111,6 +149,15 @@ npm run dev
 ```bash
 npm run deploy
 ```
+
+首次配置榜单 D1 时，在本地应用 migration：
+
+```bash
+npx wrangler d1 migrations apply hyb-card-rankings-db --local
+npx wrangler d1 execute hyb-card-rankings-db --local --command="SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+```
+
+远程 D1 migration 和生产部署需要先确认 `wrangler.jsonc` 中的 D1 数据库绑定，再单独执行；不要把登录凭据或用户榜单原始数据提交到仓库。
 
 部署前请确认 Wrangler 已登录，并在 `wrangler.jsonc` 中配置正确的 Worker 与自定义域名。当前线上地址为 [card.gudong226.com](https://card.gudong226.com/)。
 
