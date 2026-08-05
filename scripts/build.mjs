@@ -29,5 +29,9 @@ await copyFile(
     resolve(siteDirectory, 'farm-icon.svg'),
     resolve(outputDirectory, 'farm-icon.svg')
 );
+await copyFile(
+    resolve(siteDirectory, 'legend-card-icon.svg'),
+    resolve(outputDirectory, 'legend-card-icon.svg')
+);
 
 console.log('Built static assets in card-dashboard/dist');

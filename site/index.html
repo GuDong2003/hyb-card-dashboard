@@ -3,14 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>传说卡兑换与90天全收益演算工具</title>
+    <link rel="icon" type="image/svg+xml" href="/legend-card-icon.svg">
+    <title>传说卡收益计算</title>
     <meta name="description" content="手动输入当前抽卡、传说库存与星尘状态，推演90天赛季的兑换收益、最大资金缺口与最终利润。">
     <meta property="og:type" content="website">
-    <meta property="og:title" content="传说卡兑换收益演算台">
+    <meta property="og:title" content="传说卡收益计算">
     <meta property="og:description" content="90天赛季收益与现金流模型">
     <meta property="og:image" content="https://card.gudong226.com/og.png">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="传说卡兑换收益演算台">
+    <meta name="twitter:title" content="传说卡收益计算">
     <meta name="twitter:description" content="90天赛季收益与现金流模型">
     <meta name="twitter:image" content="https://card.gudong226.com/og.png">
     <style>
@@ -609,7 +610,7 @@
                 <div class="sp-toolbar">
                     <label class="sp-cap-field" for="spPointCap">
                         <span>SP 点数上限</span>
-                        <input id="spPointCap" type="number" min="0" step="1" inputmode="numeric" placeholder="自动估算" oninput="calculate()">
+                        <input id="spPointCap" type="number" min="0" step="1" inputmode="numeric" placeholder="自动估算" oninput="handleSPPointCapInput()">
                     </label>
                     <div class="sp-stats" id="spStats">预计 0 点 · 使用上限 0 点 · 已分配 0 点</div>
                     <button class="btn" type="button" onclick="autoAllocateSP()">一键最优分配</button>
@@ -924,6 +925,11 @@
         calculate();
     }
 
+    function handleSPPointCapInput() {
+        spAllocation.clear();
+        calculate(true);
+    }
+
     function clearSPAllocation() {
         spAllocation.clear();
         calculate();
@@ -965,7 +971,7 @@
         }
     }
 
-    function calculate() {
+    function calculate(autoAllocateSPPoints = false) {
         const currentDay = clampInteger(document.getElementById('currentDay').value, 1, 90);
         const currentCards = Math.max(0, Number.parseInt(document.getElementById('currentCards').value, 10) || 0);
         const currentTotalDraws = Math.max(0, Number.parseInt(document.getElementById('currentTotalDraws').value, 10) || 0);
@@ -1073,7 +1079,13 @@
             earnedSP: lastPreliminaryRow.earnedSP,
             spPointCap
         };
-        normalizeSPAllocation(latestProjection.totalSets, latestProjection.spPointCap);
+        if (autoAllocateSPPoints) {
+            const optimal = getOptimalSPAllocation(latestProjection.totalSets, latestProjection.spPointCap);
+            spAllocation.clear();
+            optimal.forEach((points, round) => spAllocation.set(round, points));
+        } else {
+            normalizeSPAllocation(latestProjection.totalSets, latestProjection.spPointCap);
+        }
         renderSPPanel(enableSP, latestProjection.totalSets, latestProjection.earnedSP, latestProjection.spPointCap);
 
         let minProfit = Infinity;
