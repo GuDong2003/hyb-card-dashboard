@@ -449,6 +449,7 @@
         }
 </style>
     <link rel="stylesheet" href="/calculator-ui.css">
+    <link rel="stylesheet" href="/rankings.css">
 </head>
 <body>
 
@@ -458,6 +459,7 @@
             <h1>HYB Card Dashboard</h1>
         </div>
         <nav class="topbar-actions" aria-label="项目链接与主题">
+            <button class="topbar-view-btn" type="button" data-view="rankings" onclick="setDashboardView('rankings')" aria-pressed="false">榜单统计</button>
             <a class="farm-link" href="https://hyb.gudong226.com/" target="_blank" rel="noreferrer" aria-label="打开 HYB Farm Dashboard" title="HYB Farm Dashboard">
                 <img src="/farm-icon.svg" alt="" width="20" height="20">
             </a>
@@ -470,7 +472,7 @@
         </nav>
     </header>
 
-    <main class="workspace">
+    <main id="calculatorView" class="workspace dashboard-view">
         <aside class="panel control-column">
             <div class="probability-strip" id="probabilityBox">
                 <div class="probability-item">
@@ -659,6 +661,92 @@
             </section>
         </section>
     </main>
+
+    <section id="rankingsView" class="rankings-view dashboard-view is-hidden" aria-labelledby="rankingsTitle">
+        <section class="panel rankings-toolbar">
+            <div>
+                <span class="section-kicker">Global Rankings</span>
+                <h2 id="rankingsTitle">榜单统计</h2>
+                <p class="panel-subtitle">数据来源：CDK 卡牌榜单；历史记录按当前赛季保存。传说概率为估算值。</p>
+            </div>
+            <div class="rankings-toolbar-actions">
+                <div class="rankings-source-status" id="rankingsStatus" aria-live="polite">等待榜单数据</div>
+                <button class="btn" type="button" id="rankingsRefreshButton">检查更新</button>
+            </div>
+        </section>
+
+        <section class="rankings-switcher panel" aria-label="榜单和周期选择">
+            <div class="rankings-tab-group" role="tablist" aria-label="榜单类型">
+                <button type="button" class="rankings-tab is-active" data-rank-board="epic" role="tab" aria-selected="true">欧皇榜</button>
+                <button type="button" class="rankings-tab" data-rank-board="spend" role="tab" aria-selected="false">消费榜</button>
+                <button type="button" class="rankings-tab" data-rank-board="sets" role="tab" aria-selected="false">兑换榜</button>
+            </div>
+            <div class="rankings-tab-group rankings-period-tabs" role="tablist" aria-label="榜单周期">
+                <button type="button" class="rankings-tab is-active" data-rank-period="today" role="tab" aria-selected="true">今日</button>
+                <button type="button" class="rankings-tab" data-rank-period="week" role="tab" aria-selected="false">本周</button>
+                <button type="button" class="rankings-tab" data-rank-period="month" role="tab" aria-selected="false">本月</button>
+                <button type="button" class="rankings-tab" data-rank-period="total" role="tab" aria-selected="false">赛季</button>
+            </div>
+        </section>
+
+        <section class="rankings-summary" id="rankingsSummary" aria-label="榜单摘要"></section>
+
+        <section class="rankings-grid">
+            <section class="panel rankings-table-panel">
+                <div class="panel-header rankings-panel-header">
+                    <div>
+                        <span class="section-kicker" id="rankingsBoardKicker">Epic Today</span>
+                        <h2 id="rankingsBoardTitle">欧皇榜 · 今日</h2>
+                    </div>
+                    <span class="rankings-updated" id="rankingsUpdatedAt">—</span>
+                </div>
+                <div class="rankings-table-wrap">
+                    <table class="rankings-table">
+                        <thead>
+                            <tr>
+                                <th>排名</th>
+                                <th>用户</th>
+                                <th>VIP</th>
+                                <th>当前值</th>
+                                <th>变化</th>
+                                <th>估算传说概率</th>
+                            </tr>
+                        </thead>
+                        <tbody id="rankingsTableBody">
+                            <tr><td class="rankings-empty" colspan="6">暂无榜单数据</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="rankings-events" id="rankingsEvents"></div>
+            </section>
+
+            <aside class="panel rankings-user-panel" aria-labelledby="rankingsUserTitle">
+                <div class="panel-header rankings-panel-header">
+                    <div>
+                        <span class="section-kicker">User History</span>
+                        <h2 id="rankingsUserTitle">用户历史</h2>
+                    </div>
+                </div>
+                <div class="rankings-search">
+                    <label for="rankingsUserSearch">搜索用户名或用户 ID</label>
+                    <div class="rankings-search-row">
+                        <input id="rankingsUserSearch" type="search" placeholder="输入后搜索历史用户">
+                        <button class="btn" type="button" id="rankingsSearchButton">搜索</button>
+                    </div>
+                </div>
+                <div class="rankings-search-results" id="rankingsSearchResults"></div>
+                <div class="rankings-user-detail" id="rankingsUserDetail">
+                    <p class="rankings-empty">点击榜单用户或搜索结果查看赛季历史。</p>
+                </div>
+            </aside>
+        </section>
+
+        <div class="rankings-notice is-hidden" id="rankingsInstallHint" role="status">
+            <strong>未检测到榜单同步脚本。</strong>
+            <span>请先安装油猴脚本并登录 cdk.hybgzs.com，再点击“检查更新”。</span>
+            <a href="/userscripts/hyb-card-dashboard-rankings.user.js" target="_blank" rel="noreferrer">安装同步脚本</a>
+        </div>
+    </section>
 </div>
 
 <script src="/stardust-rules.js"></script>
@@ -1372,6 +1460,7 @@
     installThemeListener();
     calculate();
 </script>
+<script src="/rankings.js"></script>
 
 </body>
 </html>

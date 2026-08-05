@@ -19,10 +19,13 @@ await mkdir(outputDirectory, { recursive: true });
 await Promise.all([
     copyAsset('index.html'),
     copyAsset('calculator-ui.css'),
+    copyAsset('rankings.css'),
+    copyAsset('rankings.js'),
     copyAsset('stardust-rules.js'),
     copyAsset('og.png'),
     copyAsset('farm-icon.svg'),
-    copyAsset('legend-card-icon.svg')
+    copyAsset('legend-card-icon.svg'),
+    copyAsset('userscripts/hyb-card-dashboard-rankings.user.js')
 ]);
 
 console.log('Built static assets in card-dashboard/dist');
