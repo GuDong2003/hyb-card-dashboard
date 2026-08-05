@@ -1821,3 +1821,53 @@ table.simulation-table th,
 table.simulation-table td {
     min-height: 38px;
 }
+
+/* Compact left workbench */
+.control-column {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    align-content: start;
+    gap: 0;
+}
+
+.control-column .control-section + .control-section {
+    min-height: 0;
+    margin-top: 12px;
+    padding-top: 12px;
+}
+
+.control-column .strategy-section {
+    min-height: 0;
+    overflow: auto;
+}
+
+.control-column .strategy-stack {
+    gap: 7px;
+}
+
+.control-column .strategy-option {
+    padding: 10px;
+}
+
+.sp-round.has-points {
+    border-color: var(--blue) !important;
+    background: var(--blue-soft) !important;
+    box-shadow: inset 0 0 0 1px var(--blue), 0 4px 12px color-mix(in srgb, var(--blue) 18%, transparent) !important;
+}
+
+.sp-round.has-points strong,
+.sp-round.has-points small,
+.sp-round.has-points .sp-stepper span {
+    color: var(--blue-strong) !important;
+}
+
+@media (max-width: 1080px) {
+    .control-column {
+        display: block;
+        overflow: visible;
+    }
+
+    .control-column .strategy-section {
+        overflow: visible;
+    }
+}

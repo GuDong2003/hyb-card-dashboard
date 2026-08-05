@@ -478,15 +478,7 @@
 
     <main class="workspace">
         <aside class="panel control-column">
-            <section class="control-section" aria-labelledby="dataTitle">
-                <div class="panel-header">
-                    <div>
-                        <span class="section-kicker">Manual Snapshot</span>
-                        <h2 id="dataTitle">当前数据</h2>
-                        <p class="panel-subtitle">填写此刻的真实状态，所有结果会立即重新计算。</p>
-                    </div>
-                </div>
-
+            <section class="control-section">
                 <div class="input-section">
                     <h3 class="input-section-title">预测基准</h3>
                     <div class="form-grid three">
@@ -544,28 +536,20 @@
                 </div>
             </section>
 
-            <section class="control-section strategy-section" aria-labelledby="strategyTitle">
-                <div class="panel-header">
-                    <div>
-                        <span class="section-kicker">Strategy Layer</span>
-                        <h2 id="strategyTitle">计算策略</h2>
-                        <p class="panel-subtitle">按你实际准备执行的操作打开对应模型，额外成本会自动计入现金流。</p>
-                    </div>
-                </div>
-
+            <section class="control-section strategy-section">
                 <div class="strategy-stack">
+                    <label class="strategy-option" for="enableForge">
+                        <input type="checkbox" id="enableForge" onchange="calculate()">
+                        <span>
+                            <strong>每日融解 20 张史实卡并合成传说</strong>
+                            <small>每日最多获得 1,000 星尘并支出 $900 手续费；传说合成消耗 1,600 星尘，受每日 5 次额度限制。</small>
+                        </span>
+                    </label>
                     <label class="strategy-option" for="enableSP">
                         <input type="checkbox" id="enableSP" onchange="calculate()">
                         <span>
                             <strong>计入 SP 兑换加成</strong>
                             <small>每抽出 10 张传说预计产生 1 个 SP 点；每轮最多使用 3 点，每点增加该轮基础奖励的 10%。</small>
-                        </span>
-                    </label>
-                    <label class="strategy-option" for="enableForge">
-                        <input type="checkbox" id="enableForge" onchange="calculate()">
-                        <span>
-                            <strong>每日融解 20 张史实并合成传说</strong>
-                            <small>每日最多获得 1,000 星尘并支出 $900 手续费；传说合成消耗 1,600 星尘，受每日 5 次额度限制。</small>
                         </span>
                     </label>
                 </div>
