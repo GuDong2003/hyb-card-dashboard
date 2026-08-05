@@ -591,11 +591,11 @@
                 </article>
                 <article class="metric-card loss">
                     <span class="metric-label">最大资金缺口</span>
-                    <strong class="metric-value" id="sumDrawdown">—</strong>
+                    <strong class="metric-value profit-value" id="sumDrawdown">—</strong>
                 </article>
                 <article class="metric-card peak">
                     <span class="metric-label">最高利润点</span>
-                    <strong class="metric-value" id="sumMaxProfit">0</strong>
+                    <strong class="metric-value profit-value" id="sumMaxProfit">0</strong>
                 </article>
             </section>
 
@@ -604,7 +604,7 @@
                 <div class="sp-heading">
                     <span class="section-kicker">SP Allocation</span>
                     <h2 id="spPanelTitle">SP 点数分配</h2>
-                    <p class="panel-subtitle">按收益最高且可实际执行的轮次分配；后续获得的 SP 不能追溯到之前的轮次。</p>
+                    <p class="panel-subtitle">SP 可以积攒到后续轮次统一使用；平时兑换默认不消耗 SP，系统按收益最高的轮次分配。</p>
                 </div>
                 <div class="sp-toolbar">
                     <label class="sp-cap-field" for="spPointCap">
@@ -809,8 +809,7 @@
     let latestProjection = {
         totalSets: 0,
         earnedSP: 0,
-        spPointCap: 0,
-        spAvailableByRound: []
+        spPointCap: 0
     };
 
     function clampInteger(value, min, max) {
@@ -820,6 +819,15 @@
 
     function formatMoney(value) {
         return Number.isInteger(value) ? value.toString() : value.toFixed(2);
+    }
+
+    function formatSignedMoney(value) {
+        return `${value >= 0 ? "+" : "−"}$${Math.abs(value).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+    }
+
+    function setProfitMetricColor(element, value) {
+        element.classList.toggle('is-negative', value < 0);
+        element.style.color = value >= 0 ? "var(--profit-pos)" : "var(--profit-neg)";
     }
 
     function getAllocatedSP(totalSets = Infinity) {
@@ -848,15 +856,13 @@
         return { base, spBonus, total: base + spBonus };
     }
 
-    function normalizeSPAllocation(totalSets, spAvailableByRound, maxPoints = Infinity) {
+    function normalizeSPAllocation(totalSets, maxPoints = Infinity) {
         const normalized = new Map();
         let used = 0;
         for (let round = 1; round <= totalSets; round++) {
-            const available = spAvailableByRound[round] || 0;
             const requested = clampInteger(spAllocation.get(round) || 0, 0, 3);
             const points = Math.min(
                 requested,
-                Math.max(0, available - used),
                 Math.max(0, maxPoints - used)
             );
             if (points > 0) normalized.set(round, points);
@@ -866,61 +872,38 @@
         normalized.forEach((points, round) => spAllocation.set(round, points));
     }
 
-    function isSPAllocationFeasible(candidate, totalSets, spAvailableByRound, maxPoints = Infinity) {
+    function isSPAllocationFeasible(candidate, totalSets, maxPoints = Infinity) {
         let used = 0;
         for (let round = 1; round <= totalSets; round++) {
-            used += candidate.get(round) || 0;
-            if (used > (spAvailableByRound[round] || 0) || used > maxPoints) return false;
+            const points = candidate.get(round) || 0;
+            if (points < 0 || points > 3) return false;
+            used += points;
+            if (used > maxPoints) return false;
         }
         return true;
     }
 
-    function getOptimalSPAllocation(totalSets, spAvailableByRound, maxPoints = Infinity) {
-        const layers = [new Map([[0, { value: 0, previous: -1, points: 0 }]])];
-
+    function getOptimalSPAllocation(totalSets, maxPoints = Infinity) {
+        const slots = [];
         for (let round = 1; round <= totalSets; round++) {
-            const previousLayer = layers[round - 1];
-            const layer = new Map();
-            const available = spAvailableByRound[round] || 0;
-            previousLayer.forEach((state, used) => {
-                for (
-                    let points = 0;
-                    points <= 3 && used + points <= available && used + points <= maxPoints;
-                    points++
-                ) {
-                    const nextUsed = used + points;
-                    const value = state.value + getRoundReward(round) * points * 0.1;
-                    const existing = layer.get(nextUsed);
-                    if (!existing || value > existing.value) {
-                        layer.set(nextUsed, { value, previous: used, points });
-                    }
-                }
-            });
-            layers.push(layer);
-        }
-
-        const finalLayer = layers[totalSets] || new Map();
-        let bestUsed = 0;
-        let bestValue = -Infinity;
-        finalLayer.forEach((state, used) => {
-            if (state.value > bestValue) {
-                bestValue = state.value;
-                bestUsed = used;
+            for (let slot = 0; slot < 3; slot++) {
+                slots.push({ round, value: getRoundReward(round) * 0.1 });
             }
-        });
-
-        const result = new Map();
-        for (let round = totalSets; round >= 1; round--) {
-            const state = layers[round].get(bestUsed);
-            if (!state) break;
-            if (state.points > 0) result.set(round, state.points);
-            bestUsed = state.previous;
         }
+        slots.sort((left, right) => right.value - left.value || left.round - right.round);
+
+        const budget = Number.isFinite(maxPoints)
+            ? Math.max(0, Math.floor(maxPoints))
+            : slots.length;
+        const result = new Map();
+        slots.slice(0, budget).forEach(({ round }) => {
+            result.set(round, (result.get(round) || 0) + 1);
+        });
         return result;
     }
 
     function adjustSP(round, delta) {
-        const { totalSets, spAvailableByRound, spPointCap } = latestProjection;
+        const { totalSets, spPointCap } = latestProjection;
         if (round < 1 || round > totalSets) return;
 
         const candidate = new Map(spAllocation);
@@ -928,14 +911,14 @@
         if (nextPoints > 0) candidate.set(round, nextPoints);
         else candidate.delete(round);
 
-        if (!isSPAllocationFeasible(candidate, totalSets, spAvailableByRound, spPointCap)) return;
+        if (!isSPAllocationFeasible(candidate, totalSets, spPointCap)) return;
         spAllocation.clear();
         candidate.forEach((points, targetRound) => spAllocation.set(targetRound, points));
         calculate();
     }
 
     function autoAllocateSP() {
-        const optimal = getOptimalSPAllocation(latestProjection.totalSets, latestProjection.spAvailableByRound, latestProjection.spPointCap);
+        const optimal = getOptimalSPAllocation(latestProjection.totalSets, latestProjection.spPointCap);
         spAllocation.clear();
         optimal.forEach((points, round) => spAllocation.set(round, points));
         calculate();
@@ -946,16 +929,15 @@
         calculate();
     }
 
-    function renderSPPanel(enabled, totalSets, earnedSP, spAvailableByRound, spPointCap) {
+    function renderSPPanel(enabled, totalSets, earnedSP, spPointCap) {
         const panel = document.getElementById('spPanel');
         panel.classList.toggle('is-hidden', !enabled);
         if (!enabled) return;
 
         const allocated = getAllocatedSP(totalSets);
-        const usableByLastRound = totalSets > 0 ? (spAvailableByRound[totalSets] || 0) : 0;
         const bonus = getSPBonus(totalSets);
         document.getElementById('spStats').innerText =
-            `预计获得${earnedSP}点 · 使用上限${spPointCap}点 · 兑换前可用${usableByLastRound}点 · 已分配${allocated}点 · 加成$${formatMoney(bonus)}`;
+            `预计获得${earnedSP}点 · 使用上限${spPointCap}点 · 已分配${allocated}点 · 加成$${formatMoney(bonus)}`;
 
         const grid = document.getElementById('spAllocationGrid');
         grid.innerHTML = '';
@@ -963,7 +945,7 @@
             const points = spAllocation.get(round) || 0;
             const candidate = new Map(spAllocation);
             candidate.set(round, points + 1);
-            const canIncrease = points < 3 && isSPAllocationFeasible(candidate, totalSets, spAvailableByRound, spPointCap);
+            const canIncrease = points < 3 && isSPAllocationFeasible(candidate, totalSets, spPointCap);
             const card = document.createElement('div');
             card.className = [
                 'sp-round',
@@ -972,7 +954,7 @@
             ].filter(Boolean).join(' ');
             card.innerHTML = `
                 <strong>第${round}轮</strong>
-                <small>基础 $${formatMoney(getRoundReward(round))} · 截至本轮可得${spAvailableByRound[round] || 0}点</small>
+                <small>基础 $${formatMoney(getRoundReward(round))} · SP可积攒后使用</small>
                 <div class="sp-stepper">
                     <button type="button" aria-label="第${round}轮减少SP" onclick="adjustSP(${round}, -1)" ${points === 0 ? 'disabled' : ''}>−</button>
                     <span>${points} SP · +${points * 10}%</span>
@@ -1023,9 +1005,7 @@
         }
 
         const tableData = [];
-        const spAvailableByRound = [];
         let cumulativeDrawn = 0;
-        let previousSets = 0;
         let stardust = startingStardust;
         let craftedCards = 0;
         let cumulativeDissolveCost = 0;
@@ -1063,10 +1043,6 @@
             const usableCards = baseUsableCards + craftedCards;
             const cumulativeSets = Math.floor(usableCards / 6);
             const earnedSP = Math.floor(cumulativeDrawn * 0.1);
-            for (let round = previousSets + 1; round <= cumulativeSets; round++) {
-                spAvailableByRound[round] = earnedSP;
-            }
-            previousSets = cumulativeSets;
 
             tableData.push({
                 day,
@@ -1095,11 +1071,10 @@
         latestProjection = {
             totalSets: lastPreliminaryRow.cumulativeSets,
             earnedSP: lastPreliminaryRow.earnedSP,
-            spPointCap,
-            spAvailableByRound
+            spPointCap
         };
-        normalizeSPAllocation(latestProjection.totalSets, spAvailableByRound, latestProjection.spPointCap);
-        renderSPPanel(enableSP, latestProjection.totalSets, latestProjection.earnedSP, spAvailableByRound, latestProjection.spPointCap);
+        normalizeSPAllocation(latestProjection.totalSets, latestProjection.spPointCap);
+        renderSPPanel(enableSP, latestProjection.totalSets, latestProjection.earnedSP, latestProjection.spPointCap);
 
         let minProfit = Infinity;
         let minProfitDay = -1;
@@ -1163,21 +1138,20 @@
         document.getElementById('sumCards').innerText = lastRow.usableCards + " 张";
         document.getElementById('sumSets').innerText = lastRow.cumulativeSets + " 套";
         const sumProfitElement = document.getElementById('sumProfit');
-        sumProfitElement.innerText = `${lastRow.netProfit >= 0 ? "+" : "−"}$${Math.abs(lastRow.netProfit).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
-        sumProfitElement.classList.toggle('is-negative', lastRow.netProfit < 0);
-        sumProfitElement.style.color = lastRow.netProfit >= 0 ? "var(--profit-pos)" : "var(--profit-neg)";
+        sumProfitElement.innerText = formatSignedMoney(lastRow.netProfit);
+        setProfitMetricColor(sumProfitElement, lastRow.netProfit);
 
         const breakEvenElement = document.getElementById('sumBreakEven');
         breakEvenElement.innerText = breakevenDay === -1 ? "赛季内未回本" : `第 ${breakevenDay} 天`;
         breakEvenElement.style.color = breakevenDay === -1 ? "var(--text-muted)" : "var(--cyan)";
 
         const drawdownElement = document.getElementById('sumDrawdown');
-        drawdownElement.innerText = `第${minProfitDay}天 · −$${Math.abs(minProfit).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
-        drawdownElement.style.color = "var(--profit-neg)";
+        drawdownElement.innerText = `第${minProfitDay}天 · ${formatSignedMoney(minProfit)}`;
+        setProfitMetricColor(drawdownElement, minProfit);
 
-        document.getElementById('sumMaxProfit').innerText =
-            `第${maxProfitDay}天 · ${maxProfit >= 0 ? "+" : "−"}$${Math.abs(maxProfit).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
-        document.getElementById('sumMaxProfit').style.color = "var(--profit-max)";
+        const maxProfitElement = document.getElementById('sumMaxProfit');
+        maxProfitElement.innerText = `第${maxProfitDay}天 · ${formatSignedMoney(maxProfit)}`;
+        setProfitMetricColor(maxProfitElement, maxProfit);
     }
 
     function exportCSV() {
