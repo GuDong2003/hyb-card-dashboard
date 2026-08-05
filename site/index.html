@@ -675,6 +675,26 @@
             </div>
         </section>
 
+        <section class="panel rankings-setup" id="rankingsSetup" aria-label="榜单同步设置">
+            <div class="rankings-setup-copy">
+                <span class="section-kicker">Sync Setup</span>
+                <strong>安装榜单同步脚本</strong>
+                <span>脚本只在 Card Dashboard 页面工作；请先登录 cdk.hybgzs.com，再点击“检查更新”。</span>
+            </div>
+            <div class="rankings-setup-actions">
+                <a class="btn" id="rankingsInstallLink" href="/userscripts/hyb-card-dashboard-rankings.user.js" target="_blank" rel="noreferrer">安装同步脚本</a>
+                <a class="btn btn-secondary" href="https://cdk.hybgzs.com/" target="_blank" rel="noreferrer">打开 CDK</a>
+            </div>
+            <label class="rankings-upload-toggle">
+                <span class="rankings-toggle-copy"><strong>抓取后自动上传</strong><small>关闭时只在当前页面显示，手动点击上传才会提交云端</small></span>
+                <span class="rankings-toggle-control"><input id="rankingsAutoUpload" type="checkbox"><span class="rankings-toggle-track"></span></span>
+            </label>
+            <div class="rankings-manual-upload">
+                <button class="btn btn-secondary" type="button" id="rankingsUploadButton" disabled>暂无待上传快照</button>
+                <span id="rankingsUploadStatus">尚无待上传的本地快照</span>
+            </div>
+        </section>
+
         <section class="rankings-switcher panel" aria-label="榜单和周期选择">
             <div class="rankings-tab-group" role="tablist" aria-label="榜单类型">
                 <button type="button" class="rankings-tab is-active" data-rank-board="epic" role="tab" aria-selected="true">欧皇榜</button>
@@ -741,11 +761,6 @@
             </aside>
         </section>
 
-        <div class="rankings-notice is-hidden" id="rankingsInstallHint" role="status">
-            <strong>未检测到榜单同步脚本。</strong>
-            <span>请先安装油猴脚本并登录 cdk.hybgzs.com，再点击“检查更新”。</span>
-            <a href="/userscripts/hyb-card-dashboard-rankings.user.js" target="_blank" rel="noreferrer">安装同步脚本</a>
-        </div>
     </section>
 </div>
 

@@ -97,6 +97,8 @@ https://cdk.hybgzs.com/api/cards/leaderboard?scope=global
 2. 登录 `cdk.hybgzs.com`，回到 Card Dashboard 的“榜单统计”视图。
 3. 页面没有快照或快照超过 1 小时时，点击“检查更新”主动获取一次；新鲜快照不会重复请求 CDK。
 
+榜单页默认关闭“抓取后自动上传”：关闭时只在当前页面显示本次抓到的公开榜单，不会提交 D1；需要共享本次快照时，点击“上传本次快照”，或在设置中开启自动上传。上传开关只保存在当前浏览器。
+
 油猴脚本只匹配 `card.gudong226.com`，通过 `GM_xmlhttpRequest` 请求 CDK 接口并将结果桥接回 Card Dashboard。`cdk.hybgzs.com` 页面不会显示榜单按钮、统计视图或 Card Dashboard 入口。
 
 榜单页的“估算传说概率”使用赛季累计榜单值估算：

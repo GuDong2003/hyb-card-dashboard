@@ -6,8 +6,11 @@
 Card Dashboard 页面
   └─ userscript bridge
       └─ GM_xmlhttpRequest → https://cdk.hybgzs.com/api/cards/leaderboard?scope=global
-          └─ POST /api/rankings/snapshots
-              └─ Cloudflare D1 rank_snapshots + rank_entries
+          ├─ 自动上传开启 / 手动确认上传
+          │   └─ POST /api/rankings/snapshots
+          │       └─ Cloudflare D1 rank_snapshots + rank_entries
+          └─ 自动上传关闭且未手动确认
+              └─ 只在当前页面临时展示，不写入 D1
 ```
 
 只有 `card.gudong226.com` 发起同步。`cdk.hybgzs.com/entertainment/cards/leaderboard` 是数据来源页面，不部署本项目的榜单按钮或脚本 UI。
@@ -58,7 +61,7 @@ curl -sS 'http://127.0.0.1:8787/api/rankings/leaderboard?board=epic&period=total
 
 ## 刷新策略
 
-页面打开榜单视图时先读取 D1。只有无快照或最新快照超过一小时，才通过 bridge 请求 CDK 一次；周期或榜单类型切换只读取 D1，不重复请求 CDK。请求遇到 401/403、429 或超时，页面保留旧快照并显示错误。
+页面打开榜单视图时先读取 D1。只有无快照或最新快照超过一小时，才通过 bridge 请求 CDK 一次；周期或榜单类型切换只读取 D1，不重复请求 CDK。默认不自动上传，关闭上传时新快照只在当前页面显示；开启自动上传或点击“上传本次快照”后才写入 D1。请求遇到 401/403、429 或超时，页面保留旧快照并显示错误。
 
 ## 隐私与安全
 

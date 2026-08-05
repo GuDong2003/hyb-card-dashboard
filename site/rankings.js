@@ -5,14 +5,39 @@
     const BRIDGE_REQUEST = 'HYB_CARD_RANKINGS_REQUEST';
     const BRIDGE_RESPONSE = 'HYB_CARD_RANKINGS_RESPONSE';
     const BRIDGE_TIMEOUT_MS = 9000;
+    const SETTINGS_STORAGE_KEY = 'hyb-card-rankings-settings-v1';
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const DEFAULT_SEASON_START_AT = Date.parse('2026-08-02T04:00:00+08:00');
 
     const BOARD_LABELS = Object.freeze({ epic: '欧皇榜', spend: '消费榜', sets: '兑换榜' });
     const PERIOD_LABELS = Object.freeze({ today: '今日', week: '本周', month: '本月', total: '赛季' });
+
+    function loadSettings() {
+        try {
+            const stored = JSON.parse(window.localStorage.getItem(SETTINGS_STORAGE_KEY) || '{}') || {};
+            return { autoUpload: stored.autoUpload === true };
+        } catch (_) {
+            return { autoUpload: false };
+        }
+    }
+
+    function saveSettings(settings) {
+        try {
+            window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({
+                autoUpload: settings.autoUpload === true
+            }));
+        } catch (_) {
+            // Private browsing or storage restrictions must not block rankings viewing.
+        }
+    }
+
     const state = {
         view: 'calculator',
         board: 'epic',
         period: 'today',
+        settings: loadSettings(),
         latest: null,
+        localSnapshot: null,
         loaded: false,
         busy: false,
         bridgeReady: false,
@@ -65,9 +90,27 @@
     function setBusy(busy) {
         state.busy = Boolean(busy);
         const button = $('#rankingsRefreshButton');
-        if (!button) return;
-        button.disabled = state.busy;
-        button.textContent = state.busy ? '同步中…' : '检查更新';
+        if (button) {
+            button.disabled = state.busy;
+            button.textContent = state.busy ? '同步中…' : '检查更新';
+        }
+        renderUploadControls();
+    }
+
+    function renderUploadControls() {
+        const toggle = $('#rankingsAutoUpload');
+        if (toggle) toggle.checked = state.settings.autoUpload === true;
+        const uploadButton = $('#rankingsUploadButton');
+        if (uploadButton) {
+            uploadButton.disabled = state.busy || !state.localSnapshot;
+            uploadButton.textContent = state.localSnapshot ? '上传本次快照' : '暂无待上传快照';
+        }
+        const localStatus = $('#rankingsUploadStatus');
+        if (localStatus) {
+            localStatus.textContent = state.localSnapshot
+                ? (state.settings.autoUpload ? '自动上传已开启' : '本次抓取仅保存在当前页面')
+                : '尚无待上传的本地快照';
+        }
     }
 
     function formatNumber(value) {
@@ -95,6 +138,106 @@
     function initials(value) {
         const text = String(value || '?').trim();
         return escapeHtml(text.slice(0, 1).toUpperCase());
+    }
+
+    function snapshotSource(snapshot) {
+        if (!snapshot || typeof snapshot !== 'object') return null;
+        if (snapshot.data && snapshot.data.leaderboards) return snapshot.data;
+        return snapshot;
+    }
+
+    function rowUserId(row) {
+        return String(row && (row.userId ?? row.user_id ?? row.id) || '').trim();
+    }
+
+    function rowName(row, userId) {
+        return String(row && (row.userName ?? row.user_name ?? row.name) || userId).trim();
+    }
+
+    function rowValue(row) {
+        const value = Number(row && (row.value ?? row.total ?? row.count));
+        return Number.isFinite(value) && value >= 0 ? Math.floor(value) : null;
+    }
+
+    function rowRank(row, fallback) {
+        const rank = Number(row && (row.rank ?? row.position));
+        return Number.isFinite(rank) && rank > 0 ? Math.floor(rank) : fallback;
+    }
+
+    function rowAvatar(row) {
+        return String(row && (row.avatar ?? row.avatarUrl ?? row.avatar_url) || '').trim();
+    }
+
+    function rowIsVip(row) {
+        return Boolean(row && (row.isVip ?? row.is_vip ?? row.vip));
+    }
+
+    function elapsedSeasonDays() {
+        return Math.max(1, Math.min(90, Math.floor((Date.now() - DEFAULT_SEASON_START_AT) / DAY_MS) + 1));
+    }
+
+    function estimatedProbability(epicTotal, spendTotal, isVip) {
+        const pulls = Number(spendTotal || 0) / 10 + elapsedSeasonDays() * (isVip ? 50 : 30);
+        return pulls > 0 && Number.isFinite(epicTotal) ? Number(epicTotal) / pulls : null;
+    }
+
+    function localLeaderboardPayload(snapshot) {
+        const source = snapshotSource(snapshot);
+        const leaderboards = source && source.leaderboards;
+        if (!source || !leaderboards || typeof leaderboards !== 'object') return null;
+        const boardKey = `${state.board}_${state.period}`;
+        const rawRows = Array.isArray(leaderboards[boardKey]) ? leaderboards[boardKey] : [];
+        const epicRows = Array.isArray(leaderboards.epic_total) ? leaderboards.epic_total : [];
+        const spendRows = Array.isArray(leaderboards.spend_total) ? leaderboards.spend_total : [];
+        const epicByUser = new Map(epicRows.map((row) => [rowUserId(row), rowValue(row)]));
+        const spendByUser = new Map(spendRows.map((row) => [rowUserId(row), rowValue(row)]));
+        const rows = rawRows.slice(0, 100).map((rawRow, index) => {
+            const userId = rowUserId(rawRow);
+            const userName = rowName(rawRow, userId);
+            const isVip = rowIsVip(rawRow);
+            const epicTotal = epicByUser.get(userId) ?? (state.board === 'epic' && state.period === 'total' ? rowValue(rawRow) : null);
+            const spendTotal = spendByUser.get(userId) ?? (state.board === 'spend' && state.period === 'total' ? rowValue(rawRow) : null);
+            return {
+                snapshotId: null,
+                boardKey,
+                userId,
+                userName,
+                avatar: rowAvatar(rawRow),
+                value: rowValue(rawRow) ?? 0,
+                rank: rowRank(rawRow, index + 1),
+                isVip,
+                previousRank: null,
+                previousValue: null,
+                rankDelta: null,
+                valueDelta: null,
+                event: '',
+                epicTotal,
+                spendTotal,
+                estimatedPulls: epicTotal == null && spendTotal == null
+                    ? null
+                    : Number(spendTotal || 0) / 10 + elapsedSeasonDays() * (isVip ? 50 : 30),
+                estimatedLegendProbability: estimatedProbability(epicTotal, spendTotal, isVip)
+            };
+        }).filter((row) => row.userId && Number.isFinite(row.value));
+        return {
+            ok: true,
+            board: state.board,
+            period: state.period,
+            boardKey,
+            snapshot: {
+                id: null,
+                seasonId: String(source.season && source.season.id || ''),
+                seasonName: String(source.season && source.season.name || ''),
+                scope: String(source.scope || 'global'),
+                capturedAt: Number(source.capturedAt) || Date.now(),
+                source: 'local-unsent'
+            },
+            previousSnapshot: null,
+            elapsedDays: elapsedSeasonDays(),
+            estimated: true,
+            localOnly: true,
+            rows
+        };
     }
 
     function setDashboardView(view) {
@@ -145,14 +288,21 @@
         const latest = await apiGet('/api/rankings/latest');
         state.latest = latest;
         if (latest.snapshot) {
-            $('#rankingsInstallHint')?.classList.add('is-hidden');
             const updated = $('#rankingsUpdatedAt');
             if (updated) updated.textContent = `更新于 ${formatDate(latest.snapshot.capturedAt)}`;
         }
         return latest;
     }
 
-    async function ensureFreshSnapshot() {
+    async function uploadSnapshot(snapshot) {
+        return apiPost('/api/rankings/snapshots', { snapshot, source: 'card-dashboard-userscript' });
+    }
+
+    async function ensureFreshSnapshot(force = false) {
+        if (!force && state.localSnapshot && !state.settings.autoUpload) {
+            setStatus('已显示本地抓取数据，尚未上传云端');
+            return { localOnly: true, snapshot: state.localSnapshot };
+        }
         const latest = await loadLatestSnapshot();
         if (latest.snapshot && !latest.stale) {
             setStatus(`数据新鲜 · ${formatDate(latest.snapshot.capturedAt)}`);
@@ -163,14 +313,21 @@
         try {
             const snapshot = await requestBridgeSnapshot();
             state.bridgeReady = true;
-            await apiPost('/api/rankings/snapshots', { snapshot, source: 'card-dashboard-userscript' });
+            state.localSnapshot = snapshot;
+            if (!state.settings.autoUpload) {
+                setStatus('已抓取本地榜单，未上传云端');
+                renderUploadControls();
+                return { localOnly: true, snapshot };
+            }
+            await uploadSnapshot(snapshot);
+            state.localSnapshot = null;
             const refreshed = await loadLatestSnapshot();
             setStatus(`已同步 · ${formatDate(refreshed.snapshot && refreshed.snapshot.capturedAt)}`);
-            $('#rankingsInstallHint')?.classList.add('is-hidden');
+            renderUploadControls();
             return refreshed;
         } catch (error) {
             setStatus(String(error && error.message || error), true);
-            $('#rankingsInstallHint')?.classList.remove('is-hidden');
+            renderUploadControls();
             return latest;
         }
     }
@@ -186,18 +343,43 @@
         renderLeaderboard(leaderboard);
     }
 
-    async function loadRankingsView() {
+    async function loadRankingsView(force = false) {
         if (state.busy) return;
         setBusy(true);
         try {
-            await ensureFreshSnapshot();
-            await loadLeaderboard();
+            const source = await ensureFreshSnapshot(force);
+            if (source && source.localOnly) {
+                const payload = localLeaderboardPayload(source.snapshot);
+                state.rows = payload ? payload.rows : [];
+                state.events = [];
+                renderLeaderboard(payload || { rows: [] });
+            } else {
+                await loadLeaderboard();
+            }
             state.loaded = true;
         } catch (error) {
             setStatus(String(error && error.message || error), true);
             renderLeaderboard({ rows: [] });
         } finally {
             setBusy(false);
+        }
+    }
+
+    async function uploadPendingSnapshot() {
+        if (!state.localSnapshot || state.busy) return;
+        setBusy(true);
+        setStatus('正在上传本次榜单快照…');
+        try {
+            await uploadSnapshot(state.localSnapshot);
+            state.localSnapshot = null;
+            const refreshed = await loadLatestSnapshot();
+            await loadLeaderboard();
+            setStatus(`已上传并同步 · ${formatDate(refreshed.snapshot && refreshed.snapshot.capturedAt)}`);
+        } catch (error) {
+            setStatus(`上传失败：${String(error && error.message || error)}`, true);
+        } finally {
+            setBusy(false);
+            renderUploadControls();
         }
     }
 
@@ -347,7 +529,16 @@
                 if (state.view === 'rankings') loadRankingsView();
             });
         });
-        $('#rankingsRefreshButton')?.addEventListener('click', loadRankingsView);
+        $('#rankingsRefreshButton')?.addEventListener('click', () => loadRankingsView(true));
+        $('#rankingsUploadButton')?.addEventListener('click', uploadPendingSnapshot);
+        $('#rankingsAutoUpload')?.addEventListener('change', (event) => {
+            state.settings.autoUpload = Boolean(event.target.checked);
+            saveSettings(state.settings);
+            setStatus(state.settings.autoUpload
+                ? '已开启抓取后自动上传云端。'
+                : '已关闭自动上传；只有手动点击上传才会提交云端。');
+            renderUploadControls();
+        });
         $('#rankingsSearchButton')?.addEventListener('click', searchUsers);
         $('#rankingsUserSearch')?.addEventListener('keydown', (event) => {
             if (event.key === 'Enter') searchUsers();
@@ -359,10 +550,10 @@
             if (event.origin !== window.location.origin) return;
             if (event.data && event.data.type === BRIDGE_READY) {
                 state.bridgeReady = true;
-                $('#rankingsInstallHint')?.classList.add('is-hidden');
             }
         });
         bindControls();
+        renderUploadControls();
         setDashboardView('calculator');
     }
 
