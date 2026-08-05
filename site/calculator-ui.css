@@ -1354,6 +1354,19 @@ body {
     scroll-behavior: smooth;
     overscroll-behavior-y: contain;
     scrollbar-gutter: stable;
+    contain: layout paint;
+}
+
+.results-column .sp-window-message {
+    grid-column: 1 / -1;
+    grid-row: 1 / -1;
+    display: grid;
+    min-height: calc(var(--sp-row-height) * 2 + 8px);
+    place-items: center;
+    padding: 16px;
+    color: var(--muted);
+    font-size: 0.72rem;
+    text-align: center;
 }
 
 .results-column .sp-round {

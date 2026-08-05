@@ -807,10 +807,40 @@
         earnedSP: 0,
         spPointCap: 0
     };
+    const spWindowState = {
+        totalSets: 0,
+        columns: 1,
+        totalRows: 0,
+        firstRow: 0,
+        visibleRows: 2,
+        rowStep: 112,
+        frameId: 0,
+        bound: false
+    };
 
     function clampInteger(value, min, max) {
         const parsed = Number.parseInt(value, 10);
         return Math.max(min, Math.min(max, Number.isFinite(parsed) ? parsed : min));
+    }
+
+    function getSPGridColumnCount(grid) {
+        const columns = getComputedStyle(grid).gridTemplateColumns
+            .split(/\s+/)
+            .filter(Boolean).length;
+        return Math.max(1, columns || 1);
+    }
+
+    function getSPRowStep(grid) {
+        const styles = getComputedStyle(grid);
+        const height = Number.parseFloat(styles.getPropertyValue('--sp-row-height')) || 104;
+        const gap = Number.parseFloat(styles.rowGap || styles.gap) || 8;
+        return height + gap;
+    }
+
+    function normalizeSPWindowTotalSets(totalSets) {
+        const parsed = Number(totalSets);
+        if (!Number.isFinite(parsed) || parsed < 0) return null;
+        return Math.floor(parsed);
     }
 
     function syncTotalDrawsWithDay() {
@@ -934,6 +964,8 @@
         spAllocation.clear();
         optimal.forEach((points, round) => spAllocation.set(round, points));
         calculate();
+        const focusRound = getBestSPFocusRound(spAllocation);
+        if (focusRound !== null) focusSPRound(focusRound);
     }
 
     function handleSPPointCapInput() {
@@ -944,6 +976,137 @@
     function clearSPAllocation() {
         spAllocation.clear();
         calculate();
+    }
+
+    function createSPRoundCard(round, points, canIncrease, row, column) {
+        const card = document.createElement('div');
+        card.className = [
+            'sp-round',
+            round >= 49 && round <= 54 ? 'is-peak' : '',
+            points > 0 ? 'has-points' : ''
+        ].filter(Boolean).join(' ');
+        card.style.gridRow = String(row + 1);
+        card.style.gridColumn = String(column + 1);
+        card.innerHTML = `
+            <strong>第${round}轮</strong>
+            <small>基础 $${formatMoney(getRoundReward(round))} · SP可积攒后使用</small>
+            <div class="sp-stepper">
+                <button type="button" aria-label="第${round}轮减少SP" onclick="adjustSP(${round}, -1)" ${points === 0 ? 'disabled' : ''}>−</button>
+                <span>${points} SP · +${points * 10}%</span>
+                <button type="button" aria-label="第${round}轮增加SP" onclick="adjustSP(${round}, 1)" ${canIncrease ? '' : 'disabled'}>＋</button>
+            </div>
+        `;
+        return card;
+    }
+
+    function setSPWindowMessage(grid, message) {
+        grid.replaceChildren();
+        grid.style.gridTemplateColumns = '';
+        grid.style.gridTemplateRows = '';
+        const element = document.createElement('div');
+        element.className = 'sp-window-message';
+        element.textContent = message;
+        grid.appendChild(element);
+    }
+
+    function renderSPWindow() {
+        const grid = document.getElementById('spAllocationGrid');
+        const { totalSets, columns, totalRows, visibleRows, rowStep } = spWindowState;
+        if (!grid || totalSets <= 0 || totalRows <= 0) return;
+
+        const maxFirstRow = Math.max(0, totalRows - visibleRows);
+        const firstRow = Math.max(0, Math.min(spWindowState.firstRow, maxFirstRow));
+        spWindowState.firstRow = firstRow;
+        grid.style.gridTemplateColumns = `repeat(${columns}, minmax(0, 1fr))`;
+        grid.style.gridTemplateRows = `repeat(${totalRows}, var(--sp-row-height))`;
+        grid.replaceChildren();
+
+        const allocated = getAllocatedSP(totalSets);
+        const lastVisibleRow = Math.min(totalRows, firstRow + visibleRows);
+        for (let row = firstRow; row < lastVisibleRow; row += 1) {
+            const firstRound = row * columns + 1;
+            const lastRound = Math.min(totalSets, firstRound + columns - 1);
+            for (let round = firstRound; round <= lastRound; round += 1) {
+                const points = spAllocation.get(round) || 0;
+                const canIncrease = points < 3 && allocated < spWindowState.spPointCap;
+                grid.appendChild(createSPRoundCard(
+                    round,
+                    points,
+                    canIncrease,
+                    row,
+                    round - firstRound
+                ));
+            }
+        }
+
+        grid.scrollTop = firstRow * rowStep;
+    }
+
+    function bindSPGridScroll() {
+        const grid = document.getElementById('spAllocationGrid');
+        if (!grid || spWindowState.bound) return;
+        spWindowState.bound = true;
+        grid.addEventListener('scroll', () => {
+            if (spWindowState.frameId) return;
+            const schedule = window.requestAnimationFrame || ((callback) => window.setTimeout(callback, 16));
+            spWindowState.frameId = schedule(() => {
+                spWindowState.frameId = 0;
+                const maxFirstRow = Math.max(0, spWindowState.totalRows - spWindowState.visibleRows);
+                const nextFirstRow = Math.max(
+                    0,
+                    Math.min(
+                        Math.round(grid.scrollTop / spWindowState.rowStep),
+                        maxFirstRow
+                    )
+                );
+                if (nextFirstRow === spWindowState.firstRow) return;
+                spWindowState.firstRow = nextFirstRow;
+                renderSPWindow();
+            });
+        }, { passive: true });
+    }
+
+    function getBestSPFocusRound(allocation) {
+        if (!allocation || allocation.size === 0 || spWindowState.columns < 1) return null;
+        const rows = new Map();
+        allocation.forEach((points, round) => {
+            const parsedRound = Number.parseInt(round, 10);
+            const parsedPoints = Number.parseInt(points, 10);
+            if (!Number.isFinite(parsedRound) || !Number.isFinite(parsedPoints) || parsedPoints <= 0) return;
+            const row = Math.floor((parsedRound - 1) / spWindowState.columns);
+            const current = rows.get(row) || { points: 0, firstRound: row * spWindowState.columns + 1 };
+            current.points += parsedPoints;
+            rows.set(row, current);
+        });
+
+        let best = null;
+        rows.forEach((candidate) => {
+            if (!best || candidate.points > best.points || (candidate.points === best.points && candidate.firstRound < best.firstRound)) {
+                best = candidate;
+            }
+        });
+        return best ? best.firstRound : null;
+    }
+
+    function focusSPRound(round) {
+        const grid = document.getElementById('spAllocationGrid');
+        const parsedRound = Number.parseInt(round, 10);
+        if (!grid || !Number.isFinite(parsedRound) || parsedRound < 1 || parsedRound > spWindowState.totalSets) return;
+
+        const targetRow = Math.floor((parsedRound - 1) / spWindowState.columns);
+        const maxFirstRow = Math.max(0, spWindowState.totalRows - spWindowState.visibleRows);
+        const targetFirstRow = Math.min(targetRow, maxFirstRow);
+        spWindowState.firstRow = targetFirstRow;
+        renderSPWindow();
+        const schedule = window.requestAnimationFrame || ((callback) => window.setTimeout(callback, 16));
+        schedule(() => {
+            const targetTop = targetFirstRow * spWindowState.rowStep;
+            if (typeof grid.scrollTo === 'function') {
+                grid.scrollTo({ top: targetTop, behavior: 'smooth' });
+            } else {
+                grid.scrollTop = targetTop;
+            }
+        });
     }
 
     function renderSPPanel(enabled, totalSets, earnedSP, spPointCap) {
@@ -957,29 +1120,33 @@
             `预计获得${earnedSP}点 · 使用上限${spPointCap}点 · 已分配${allocated}点 · 加成$${formatMoney(bonus)}`;
 
         const grid = document.getElementById('spAllocationGrid');
-        grid.innerHTML = '';
-        for (let round = 1; round <= totalSets; round++) {
-            const points = spAllocation.get(round) || 0;
-            const candidate = new Map(spAllocation);
-            candidate.set(round, points + 1);
-            const canIncrease = points < 3 && isSPAllocationFeasible(candidate, totalSets, spPointCap);
-            const card = document.createElement('div');
-            card.className = [
-                'sp-round',
-                round >= 49 && round <= 54 ? 'is-peak' : '',
-                points > 0 ? 'has-points' : ''
-            ].filter(Boolean).join(' ');
-            card.innerHTML = `
-                <strong>第${round}轮</strong>
-                <small>基础 $${formatMoney(getRoundReward(round))} · SP可积攒后使用</small>
-                <div class="sp-stepper">
-                    <button type="button" aria-label="第${round}轮减少SP" onclick="adjustSP(${round}, -1)" ${points === 0 ? 'disabled' : ''}>−</button>
-                    <span>${points} SP · +${points * 10}%</span>
-                    <button type="button" aria-label="第${round}轮增加SP" onclick="adjustSP(${round}, 1)" ${canIncrease ? '' : 'disabled'}>＋</button>
-                </div>
-            `;
-            grid.appendChild(card);
+        bindSPGridScroll();
+        const normalizedTotalSets = normalizeSPWindowTotalSets(totalSets);
+        if (normalizedTotalSets === null) {
+            spWindowState.totalSets = 0;
+            spWindowState.totalRows = 0;
+            spWindowState.firstRow = 0;
+            setSPWindowMessage(grid, '预测套数异常，暂无法显示 SP 分配');
+            return;
         }
+        if (normalizedTotalSets === 0) {
+            spWindowState.totalSets = 0;
+            spWindowState.totalRows = 0;
+            spWindowState.firstRow = 0;
+            setSPWindowMessage(grid, '暂无可分配轮次');
+            return;
+        }
+
+        spWindowState.totalSets = normalizedTotalSets;
+        spWindowState.columns = getSPGridColumnCount(grid);
+        spWindowState.totalRows = Math.ceil(normalizedTotalSets / spWindowState.columns);
+        spWindowState.rowStep = getSPRowStep(grid);
+        spWindowState.spPointCap = spPointCap;
+        spWindowState.firstRow = Math.min(
+            spWindowState.firstRow,
+            Math.max(0, spWindowState.totalRows - spWindowState.visibleRows)
+        );
+        renderSPWindow();
     }
 
     function calculate(autoAllocateSPPoints = false) {
