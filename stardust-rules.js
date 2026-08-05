@@ -34,6 +34,14 @@
         return Math.max(0, usable - drawn);
     }
 
+    function getAutomaticDissolveDayState() {
+        return {
+            usedCards: MAX_DISSOLVE_PER_DAY,
+            dustAdded: MAX_DISSOLVE_PER_DAY * DUST_PER_DISSOLVED_HISTORIC,
+            cashCost: MAX_DISSOLVE_PER_DAY * VIP_FEE_PER_DISSOLVED_HISTORIC
+        };
+    }
+
     function getDissolveDayState({ day, currentDay, dissolveRemaining }) {
         if (day < currentDay) {
             return {
@@ -77,6 +85,7 @@
         getSeasonDay,
         getDynamicDefaults,
         getPreviousAdditionalCards,
+        getAutomaticDissolveDayState,
         getDissolveDayState,
         getCraftLimit
     });

@@ -1825,9 +1825,13 @@ table.simulation-table td {
 /* Compact left workbench */
 .control-column {
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
     align-content: start;
     gap: 0;
+}
+
+.control-column .control-section {
+    min-height: 0;
 }
 
 .control-column .control-section + .control-section {

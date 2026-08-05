@@ -508,14 +508,6 @@
                             <label for="stardustBalance">当前星尘余额</label>
                             <input type="number" id="stardustBalance" min="0" value="0" inputmode="numeric" oninput="calculate()">
                         </div>
-                        <div class="form-group">
-                            <label for="dissolveRemaining">今日剩余融解 <span class="field-hint">0～20</span></label>
-                            <input type="number" id="dissolveRemaining" min="0" max="20" value="0" inputmode="numeric" oninput="calculate()">
-                        </div>
-                        <div class="form-group">
-                            <label for="craftRemaining">今日剩余合成 <span class="field-hint">0～5</span></label>
-                            <input type="number" id="craftRemaining" min="0" max="5" value="5" inputmode="numeric" oninput="calculate()">
-                        </div>
                     </div>
                     <div class="derived-stat" aria-live="polite">
                         <span>此前额外传说（含之前合成/兑换）</span>
@@ -546,7 +538,7 @@
                         <input type="checkbox" id="enableForge" onchange="calculate()">
                         <span>
                             <strong>每日融解 20 张史实卡并合成传说</strong>
-                            <small>每日最多获得 1,000 星尘并支出 $900 手续费；传说合成消耗 1,600 星尘，受每日 5 次额度限制。</small>
+                            <small>每天默认融解20张史实卡，获得✦1,000并计入$900成本；星尘足够时自动合成，最多5张/天。</small>
                         </span>
                     </label>
                     <label class="strategy-option" for="enableSP">
@@ -677,16 +669,13 @@
         'currentCards',
         'currentTotalDraws',
         'currentUsableCards',
-        'stardustBalance',
-        'dissolveRemaining',
-        'craftRemaining'
+        'stardustBalance'
     ];
     const SNAPSHOT_CHECKBOX_FIELDS = ['enableSP', 'enableForge'];
-    const DYNAMIC_DEFAULT_FIELDS = ['currentDay', 'currentTotalDraws', 'dissolveRemaining'];
+    const DYNAMIC_DEFAULT_FIELDS = ['currentDay', 'currentTotalDraws'];
     const LEGACY_DYNAMIC_DEFAULTS = {
         currentDay: 2,
-        currentTotalDraws: 1300,
-        dissolveRemaining: 20
+        currentTotalDraws: 1300
     };
     let themeModeState = 'system';
 
@@ -990,8 +979,6 @@
             currentUsableCards
         });
         const startingStardust = Math.max(0, Number.parseInt(document.getElementById('stardustBalance').value, 10) || 0);
-        const dissolveRemaining = clampInteger(document.getElementById('dissolveRemaining').value, 0, StardustRules.MAX_DISSOLVE_PER_DAY);
-        const craftRemaining = clampInteger(document.getElementById('craftRemaining').value, 0, StardustRules.MAX_CRAFT_PER_DAY);
         const enableSP = document.getElementById('enableSP').checked;
         const enableForge = document.getElementById('enableForge').checked;
         saveSnapshot();
@@ -1028,6 +1015,7 @@
         let stardust = startingStardust;
         let craftedCards = 0;
         let cumulativeDissolveCost = 0;
+        const automaticDissolveState = StardustRules.getAutomaticDissolveDayState();
 
         for (let day = 1; day <= 90; day++) {
             const dayCards = dailyCards[day - 1];
@@ -1039,22 +1027,19 @@
 
             let dustDisplay = startingStardust;
             if (enableForge) {
-                const dissolveState = StardustRules.getDissolveDayState({
-                    day,
-                    currentDay,
-                    dissolveRemaining
-                });
+                const dissolveState = day < currentDay
+                    ? StardustRules.getDissolveDayState({
+                        day,
+                        currentDay,
+                        dissolveRemaining: 0
+                    })
+                    : automaticDissolveState;
                 cumulativeDissolveCost += dissolveState.cashCost;
                 if (day < currentDay) {
                     dustDisplay = null;
                 } else {
-                    const dailyCraftLimit = StardustRules.getCraftLimit({
-                        day,
-                        currentDay,
-                        craftRemaining
-                    });
                     stardust += dissolveState.dustAdded;
-                    const craftedToday = Math.min(dailyCraftLimit, Math.floor(stardust / 1600));
+                    const craftedToday = Math.min(StardustRules.MAX_CRAFT_PER_DAY, Math.floor(stardust / 1600));
                     stardust -= craftedToday * 1600;
                     craftedCards += craftedToday;
                     dustDisplay = stardust;
