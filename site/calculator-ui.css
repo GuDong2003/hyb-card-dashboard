@@ -538,7 +538,7 @@ select {
 
 .sp-panel {
     margin-top: 16px;
-    min-height: 330px;
+    min-height: 0;
     border-color: rgba(168, 85, 247, 0.32);
     background:
         radial-gradient(circle at 92% 0, rgba(168, 85, 247, 0.14), transparent 32%),
@@ -1303,7 +1303,8 @@ body {
 }
 
 .results-column .sp-panel {
-    max-height: 218px;
+    min-height: 0;
+    max-height: 270px;
     margin: 0;
     padding: 12px 14px;
     overflow: hidden;
@@ -1335,7 +1336,8 @@ body {
 
 .results-column .sp-allocation-grid {
     grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
-    max-height: 128px;
+    min-height: 0;
+    max-height: 210px;
     margin-top: 8px;
 }
 
