@@ -538,10 +538,28 @@ select {
 
 .sp-panel {
     margin-top: 16px;
+    min-height: 330px;
     border-color: rgba(168, 85, 247, 0.32);
     background:
         radial-gradient(circle at 92% 0, rgba(168, 85, 247, 0.14), transparent 32%),
         rgba(14, 22, 39, 0.96);
+}
+
+.sp-panel-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.sp-heading {
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.sp-heading .panel-subtitle {
+    max-width: 620px;
+    margin-top: 4px;
 }
 
 .sp-toolbar {
@@ -549,12 +567,40 @@ select {
     flex-wrap: wrap;
     gap: 9px;
     align-items: center;
+    justify-content: flex-end;
+    flex: 0 1 auto;
+}
+
+.sp-cap-field {
+    display: grid;
+    gap: 3px;
+    min-width: 118px;
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    font-weight: 750;
+}
+
+.sp-cap-field input {
+    width: 96px;
+    min-height: 34px;
+    padding: 0 9px;
+    border: 1px solid var(--border-bright);
+    border-radius: 8px;
+    background: var(--control-bg);
+    color: var(--text-main);
+    font-size: 0.82rem;
+}
+
+.sp-cap-field input:focus {
+    outline: 2px solid color-mix(in srgb, var(--primary) 38%, transparent);
+    outline-offset: 1px;
 }
 
 .sp-stats {
-    flex: 1 1 340px;
+    flex: 0 1 auto;
     color: #d8b4fe;
     font-size: 0.82rem;
+    white-space: nowrap;
 }
 
 .btn {
@@ -596,6 +642,7 @@ select {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
     gap: 8px;
+    min-height: 190px;
     max-height: 360px;
     margin-top: 14px;
     padding-right: 4px;
@@ -617,6 +664,14 @@ select {
 
 .sp-round.has-points {
     box-shadow: inset 0 0 0 1px rgba(168, 85, 247, 0.45);
+}
+
+.profit-value {
+    color: var(--profit-pos);
+}
+
+.profit-value.is-negative {
+    color: var(--profit-neg);
 }
 
 .sp-round strong,
@@ -1889,6 +1944,32 @@ table.simulation-table td {
     --profit-neg: var(--green);
     --profit-max: var(--red);
     --highlight-orange: #442326;
+}
+
+@media (max-width: 1080px) {
+    .sp-panel-header {
+        display: block;
+    }
+
+    .sp-toolbar {
+        justify-content: flex-start;
+        margin-top: 12px;
+    }
+}
+
+@media (max-width: 680px) {
+    .sp-panel {
+        min-height: 0;
+    }
+
+    .sp-toolbar {
+        align-items: flex-start;
+    }
+
+    .sp-stats {
+        flex: 1 1 100%;
+        white-space: normal;
+    }
 }
 
 .metric-card.loss {
