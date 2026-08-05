@@ -59,11 +59,11 @@
 }
 
 .rankings-setup {
-    display: grid;
-    grid-template-columns: minmax(220px, 1.2fr) auto minmax(240px, 1fr) auto;
+    display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 12px;
-    padding: 12px 14px;
+    padding: 8px 12px;
 }
 
 .rankings-setup-copy {
@@ -93,6 +93,10 @@
     gap: 8px;
 }
 
+.rankings-setup-actions {
+    flex: 0 0 auto;
+}
+
 .rankings-setup-actions .btn,
 .rankings-manual-upload .btn {
     min-height: 34px;
@@ -102,7 +106,8 @@
 
 .rankings-upload-toggle {
     display: flex;
-    min-width: 0;
+    min-width: 170px;
+    flex: 0 1 auto;
     align-items: center;
     justify-content: space-between;
     gap: 10px;
@@ -181,6 +186,7 @@
 }
 
 .rankings-manual-upload {
+    margin-left: auto;
     justify-content: flex-end;
 }
 

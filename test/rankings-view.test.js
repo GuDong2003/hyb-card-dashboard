@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 test('index contains an in-page rankings view without a new URL route', async () => {
   const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
   assert.match(html, /data-view="rankings"/);
+  assert.match(html, /data-view="calculator"/);
   assert.match(html, /id="calculatorView"/);
   assert.match(html, /id="rankingsView"/);
   assert.match(html, /rankings\.js/);
@@ -22,6 +23,7 @@ test('rankings view keeps script setup and upload consent controls visible', asy
   assert.match(html, /id="rankingsInstallLink"/);
   assert.match(html, /id="rankingsAutoUpload"/);
   assert.match(html, /id="rankingsUploadButton"/);
+  assert.match(html, /自动上传/);
   assert.doesNotMatch(html, /id="rankingsInstallHint"[^>]*is-hidden/);
 });
 

@@ -459,6 +459,7 @@
             <h1>HYB Card Dashboard</h1>
         </div>
         <nav class="topbar-actions" aria-label="项目链接与主题">
+            <button class="topbar-view-btn" type="button" data-view="calculator" onclick="setDashboardView('calculator')" aria-pressed="true">收益表</button>
             <button class="topbar-view-btn" type="button" data-view="rankings" onclick="setDashboardView('rankings')" aria-pressed="false">榜单统计</button>
             <a class="farm-link" href="https://hyb.gudong226.com/" target="_blank" rel="noreferrer" aria-label="打开 HYB Farm Dashboard" title="HYB Farm Dashboard">
                 <img src="/farm-icon.svg" alt="" width="20" height="20">
@@ -662,13 +663,11 @@
         </section>
     </main>
 
-    <section id="rankingsView" class="rankings-view dashboard-view is-hidden" aria-labelledby="rankingsTitle">
-        <section class="panel rankings-toolbar">
-            <div>
-                <span class="section-kicker">Global Rankings</span>
-                <h2 id="rankingsTitle">榜单统计</h2>
-                <p class="panel-subtitle">数据来源：CDK 卡牌榜单；历史记录按当前赛季保存。传说概率为估算值。</p>
-            </div>
+        <section id="rankingsView" class="rankings-view dashboard-view is-hidden" aria-labelledby="rankingsTitle">
+            <section class="panel rankings-toolbar">
+                <div>
+                    <h2 id="rankingsTitle">榜单统计</h2>
+                </div>
             <div class="rankings-toolbar-actions">
                 <div class="rankings-source-status" id="rankingsStatus" aria-live="polite">等待榜单数据</div>
                 <button class="btn" type="button" id="rankingsRefreshButton">检查更新</button>
@@ -676,22 +675,17 @@
         </section>
 
         <section class="panel rankings-setup" id="rankingsSetup" aria-label="榜单同步设置">
-            <div class="rankings-setup-copy">
-                <span class="section-kicker">Sync Setup</span>
-                <strong>安装榜单同步脚本</strong>
-                <span>脚本只在 Card Dashboard 页面工作；请先登录 cdk.hybgzs.com，再点击“检查更新”。</span>
-            </div>
             <div class="rankings-setup-actions">
                 <a class="btn" id="rankingsInstallLink" href="/userscripts/hyb-card-dashboard-rankings.user.js" target="_blank" rel="noreferrer">安装同步脚本</a>
                 <a class="btn btn-secondary" href="https://cdk.hybgzs.com/" target="_blank" rel="noreferrer">打开 CDK</a>
             </div>
             <label class="rankings-upload-toggle">
-                <span class="rankings-toggle-copy"><strong>抓取后自动上传</strong><small>关闭时只在当前页面显示，手动点击上传才会提交云端</small></span>
+                <span class="rankings-toggle-copy"><strong>自动上传</strong><small>抓取后写入共享榜单</small></span>
                 <span class="rankings-toggle-control"><input id="rankingsAutoUpload" type="checkbox"><span class="rankings-toggle-track"></span></span>
             </label>
             <div class="rankings-manual-upload">
                 <button class="btn btn-secondary" type="button" id="rankingsUploadButton" disabled>暂无待上传快照</button>
-                <span id="rankingsUploadStatus">尚无待上传的本地快照</span>
+                <span id="rankingsUploadStatus">未抓取</span>
             </div>
         </section>
 
