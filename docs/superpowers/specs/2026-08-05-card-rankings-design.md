@@ -12,7 +12,7 @@
 - 页面地址保持 `https://card.gudong226.com/` 不变。
 - 顶栏在 Farm Dashboard 历史记录按钮所在区域增加“榜单统计”入口。
 - 点击入口后在同一页面切换到榜单统计视图，不使用新的路径、查询参数或 hash。
-- 榜单入口、刷新按钮和主动获取流程只出现在 `card.gudong226.com`；`hybcdk` 站不增加榜单按钮、榜单视图或获取入口。
+- 榜单入口、刷新按钮和主动获取流程只出现在 `card.gudong226.com`；`cdk.hybgzs.com` 榜单站不增加 Card Dashboard 的按钮、视图或反向入口。
 - 榜单数据是全服共享数据，写入 D1，所有访问者读取同一份历史。
 - 当前只保存当前赛季；表结构保留 `season_id`，以后再扩展赛季切换。
 - 服务器榜单约每小时刷新一次；页面无数据或快照超过 1 小时时，才触发一次主动抓取。
@@ -49,11 +49,11 @@ flowchart LR
 
 ### 油猴脚本桥接
 
-榜单同步只由 Card Dashboard 页面发起；`hybcdk` 页面不提供任何榜单入口。油猴脚本在 Card Dashboard 页面提供桥接能力，并通过授权的跨域请求读取 HYB 榜单接口：
+榜单同步只由 Card Dashboard 页面发起；`cdk.hybgzs.com/entertainment/cards/leaderboard` 只作为数据来源页面，不提供 Card Dashboard 的榜单入口。油猴脚本在 Card Dashboard 页面提供桥接能力，并通过授权的跨域请求读取 CDK 榜单接口：
 
 1. 页面调用 `GET /api/rankings/latest`。
 2. 如果没有快照或 `capturedAt` 距今达到 1 小时，页面发送带 requestId 的 bridge message。
-3. 脚本调用 `/api/cards/leaderboard?scope=global`，只发起一次请求。
+3. 脚本调用 `https://cdk.hybgzs.com/api/cards/leaderboard?scope=global`，只发起一次请求。
 4. 脚本将完整接口响应回传给页面。
 5. 页面提交规范化快照到 `POST /api/rankings/snapshots`。
 6. Worker 校验赛季、榜单键、数值和时间，并按小时桶与签名去重后写入 D1。
@@ -181,7 +181,7 @@ estimatedLegendProbability = epic_total / estimatedPulls
 
 - 不修改收益计算公式和当前收益计算视图。
 - 不改变页面地址，不新增独立榜单 URL。
-- 不在 `hybcdk` 站增加榜单按钮、榜单视图或主动获取逻辑；榜单功能只属于 `card.gudong226.com`。
+- 不在 `cdk.hybgzs.com` 增加 Card Dashboard 的榜单按钮、榜单视图或主动获取逻辑；榜单功能只属于 `card.gudong226.com`，该域名仅作为数据来源。
 - 不把排行榜数据写入浏览器 IndexedDB 作为主存储。
 - 不把当前榜单快照限制为“只保留最新前 100”；每次抓取出现过的用户都保留历史。
 - 不把估算概率描述为服务器真实抽卡概率。
