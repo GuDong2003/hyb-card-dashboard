@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the SP allocation panel render only the current two visible rows, preserve full scrolling, and automatically jump to the row with the most allocated SP after optimal allocation.
+**Goal:** Make the SP allocation panel keep a two-row viewport with one buffered row before and after it, preserve full scrolling, and automatically jump to the row with the most allocated SP after optimal allocation.
 
-**Architecture:** Keep the existing reward, projection, and SP allocation algorithms unchanged. Replace the full-card DOM loop with a window renderer that uses explicit CSS grid row tracks and places only visible cards into those tracks; scroll position determines which two rows are materialized. Add a small focus helper for post-allocation navigation and a finite-value guard for invalid projections.
+**Architecture:** Keep the existing reward, projection, and SP allocation algorithms unchanged. Replace the full-card DOM loop with a window renderer that uses explicit CSS grid row tracks and places only the viewport plus one-row buffers into those tracks; scroll position determines which four-row window is materialized. Add a focus guard so smooth auto-navigation is not reset by intermediate scroll events, plus a finite-value guard for invalid projections.
 
 **Tech Stack:** Vanilla JavaScript in `site/index.html`, existing CSS in `site/calculator-ui.css`, static Cloudflare Assets build.
 
@@ -51,7 +51,7 @@ Run: `npm run build`
 
 Expected: `Built static assets in card-dashboard/dist` and exit code 0.
 
-### Task 2: Replace full SP rendering with a two-row window
+### Task 2: Replace full SP rendering with a buffered window
 
 **Files:**
 - Modify: `site/index.html` in `renderSPPanel` and the SP card creation area.
@@ -72,7 +72,9 @@ grid.style.gridTemplateColumns = `repeat(${columns}, minmax(0, 1fr))`;
 grid.style.gridTemplateRows = `repeat(${Math.max(1, totalRows)}, var(--sp-row-height))`;
 grid.replaceChildren();
 
-for (let row = firstRow; row < Math.min(totalRows, firstRow + windowState.visibleRows); row += 1) {
+const firstRenderedRow = Math.max(0, firstRow - 1);
+const lastRenderedRow = Math.min(totalRows, firstRow + windowState.visibleRows + 1);
+for (let row = firstRenderedRow; row < lastRenderedRow; row += 1) {
     const firstRound = row * columns + 1;
     const lastRound = Math.min(totalSets, firstRound + columns - 1);
     for (let round = firstRound; round <= lastRound; round += 1) {
@@ -82,7 +84,7 @@ for (let row = firstRow; row < Math.min(totalRows, firstRow + windowState.visibl
 grid.scrollTop = firstRow * windowState.rowStep;
 ```
 
-Only the current two rows may be appended to `#spAllocationGrid`; do not iterate over every round to create DOM nodes. The explicit grid tracks preserve the full scroll range without spacer-card nodes.
+Only the current viewport and its adjacent one-row buffers may be appended to `#spAllocationGrid`; do not iterate over every round to create DOM nodes. The explicit grid tracks preserve the full scroll range without spacer-card nodes.
 
 - [ ] **Step 3: Preserve the current panel summary and allocation normalization.**
 
@@ -108,7 +110,7 @@ const nextFirstRow = Math.max(
 );
 ```
 
-When the row changes, update `windowState.firstRow` and call `renderSPWindow`; otherwise do nothing. Restore `scrollTop` after replacement so rerendering does not jump to the top.
+When the row changes, update `windowState.firstRow` and call `renderSPWindow`; otherwise do nothing. While `focusTargetRow` is active, ignore intermediate animation positions and only release the guard when the target row is reached or the short safety timer expires. Restore `scrollTop` after replacement so rerendering does not jump to the top.
 
 - [ ] **Step 2: Keep the two-row snap behavior.**
 
@@ -133,7 +135,7 @@ Implement `getBestSPFocusRound(allocation)` by summing points per grid row using
 
 - [ ] **Step 2: Add smooth row focusing.**
 
-Implement `focusSPRound(round)` to calculate the target row, set `windowState.firstRow` so the target is inside the two-row window, call `renderSPWindow`, and then call:
+Implement `focusSPRound(round)` to calculate the target row, set `windowState.firstRow` so the target is inside the two-row viewport, render the viewport plus buffers, and then call:
 
 ```js
 grid.scrollTo({ top: targetRow * windowState.rowStep, behavior: 'smooth' });
@@ -163,11 +165,11 @@ Expected: no diff-check errors and a successful static build.
 
 - [ ] **Step 2: Verify normal DOM size.**
 
-With the current 80-set projection, inspect the page and verify that `#spAllocationGrid .sp-round` is no more than `columns × 2`, while the grid's computed `grid-template-rows` still represents all rows.
+With the current 80-set projection, inspect the page and verify that `#spAllocationGrid .sp-round` is no more than `columns × 4` (fewer only at the season boundaries), while the grid's computed `grid-template-rows` still represents all rows.
 
 - [ ] **Step 3: Verify large projection safety.**
 
-In a temporary browser state, set the usable legend count high enough to produce tens of thousands of sets and call the existing calculation. Verify that page interaction remains responsive and that the number of `.sp-round` elements remains at most `columns × 2`.
+In a temporary browser state, set the usable legend count high enough to produce tens of thousands of sets and call the existing calculation. Verify that page interaction remains responsive, that the number of `.sp-round` elements remains at most `columns × 4`, and that scrolling through the window does not expose blank intermediate rows.
 
 - [ ] **Step 4: Verify scrolling and focus behavior.**
 

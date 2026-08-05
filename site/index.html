@@ -813,9 +813,12 @@
         totalRows: 0,
         firstRow: 0,
         visibleRows: 2,
+        bufferRows: 1,
         rowStep: 112,
         frameId: 0,
-        bound: false
+        bound: false,
+        focusTargetRow: null,
+        focusTimer: 0,
     };
 
     function clampInteger(value, min, max) {
@@ -1011,7 +1014,7 @@
 
     function renderSPWindow() {
         const grid = document.getElementById('spAllocationGrid');
-        const { totalSets, columns, totalRows, visibleRows, rowStep } = spWindowState;
+        const { totalSets, columns, totalRows, visibleRows, bufferRows, rowStep } = spWindowState;
         if (!grid || totalSets <= 0 || totalRows <= 0) return;
 
         const maxFirstRow = Math.max(0, totalRows - visibleRows);
@@ -1022,8 +1025,9 @@
         grid.replaceChildren();
 
         const allocated = getAllocatedSP(totalSets);
-        const lastVisibleRow = Math.min(totalRows, firstRow + visibleRows);
-        for (let row = firstRow; row < lastVisibleRow; row += 1) {
+        const firstRenderedRow = Math.max(0, firstRow - bufferRows);
+        const lastRenderedRow = Math.min(totalRows, firstRow + visibleRows + bufferRows);
+        for (let row = firstRenderedRow; row < lastRenderedRow; row += 1) {
             const firstRound = row * columns + 1;
             const lastRound = Math.min(totalSets, firstRound + columns - 1);
             for (let round = firstRound; round <= lastRound; round += 1) {
@@ -1052,6 +1056,17 @@
             spWindowState.frameId = schedule(() => {
                 spWindowState.frameId = 0;
                 const maxFirstRow = Math.max(0, spWindowState.totalRows - spWindowState.visibleRows);
+                if (spWindowState.focusTargetRow !== null) {
+                    const targetTop = spWindowState.focusTargetRow * spWindowState.rowStep;
+                    const reachedTarget = Math.abs(grid.scrollTop - targetTop) <= Math.max(1, spWindowState.rowStep / 2);
+                    if (!reachedTarget) return;
+                    spWindowState.focusTargetRow = null;
+                    if (spWindowState.focusTimer) {
+                        window.clearTimeout(spWindowState.focusTimer);
+                        spWindowState.focusTimer = 0;
+                    }
+                    return;
+                }
                 const nextFirstRow = Math.max(
                     0,
                     Math.min(
@@ -1097,6 +1112,8 @@
         const maxFirstRow = Math.max(0, spWindowState.totalRows - spWindowState.visibleRows);
         const targetFirstRow = Math.min(targetRow, maxFirstRow);
         spWindowState.firstRow = targetFirstRow;
+        spWindowState.focusTargetRow = targetFirstRow;
+        if (spWindowState.focusTimer) window.clearTimeout(spWindowState.focusTimer);
         renderSPWindow();
         const schedule = window.requestAnimationFrame || ((callback) => window.setTimeout(callback, 16));
         schedule(() => {
@@ -1107,6 +1124,11 @@
                 grid.scrollTop = targetTop;
             }
         });
+        spWindowState.focusTimer = window.setTimeout(() => {
+            if (spWindowState.focusTargetRow !== targetFirstRow) return;
+            spWindowState.focusTargetRow = null;
+            spWindowState.focusTimer = 0;
+        }, 1400);
     }
 
     function renderSPPanel(enabled, totalSets, earnedSP, spPointCap) {
@@ -1120,6 +1142,11 @@
             `预计获得${earnedSP}点 · 使用上限${spPointCap}点 · 已分配${allocated}点 · 加成$${formatMoney(bonus)}`;
 
         const grid = document.getElementById('spAllocationGrid');
+        spWindowState.focusTargetRow = null;
+        if (spWindowState.focusTimer) {
+            window.clearTimeout(spWindowState.focusTimer);
+            spWindowState.focusTimer = 0;
+        }
         bindSPGridScroll();
         const normalizedTotalSets = normalizeSPWindowTotalSets(totalSets);
         if (normalizedTotalSets === null) {
