@@ -1041,13 +1041,14 @@ body {
     max-width: none;
     height: 100dvh;
     margin: 0 auto;
-    padding: 12px 0;
+    padding: 0;
 }
 
 .topbar {
     position: relative;
     display: flex;
     min-width: 0;
+    min-height: 58px;
     padding: 0 18px;
     border: 0;
     border-bottom: 1px solid var(--border-color);
@@ -1064,14 +1065,6 @@ body {
     min-width: 0;
     gap: 10px;
     align-items: center;
-}
-
-.brand-icon {
-    display: block;
-    width: 20px;
-    height: 20px;
-    flex: none;
-    border-radius: 6px;
 }
 
 .topbar h1 {
@@ -1418,7 +1411,7 @@ body {
         width: calc(100% - 20px);
         height: auto;
         min-height: 100dvh;
-        padding: 10px 0 24px;
+        padding: 0 0 24px;
     }
 
     .topbar {
@@ -1608,8 +1601,7 @@ body {
 }
 
 .farm-link img,
-.github-link svg,
-.brand-icon {
+.github-link svg {
     display: block;
     width: 20px;
     height: 20px;

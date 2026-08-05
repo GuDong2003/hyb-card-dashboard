@@ -72,7 +72,7 @@ SP 卡可以积攒到后期统一使用，日常普通兑换不消耗 SP。点�
 
 ## 主题与导航
 
-顶栏采用与 HYB Farm Dashboard 一致的单行布局：左侧是传说卡品牌图标，右侧固定放置三个操作图标。
+顶栏采用与 HYB Farm Dashboard 一致的单行布局：左侧显示页面标题，右侧固定放置三个操作图标。
 
 - Farm 图标：[HYB Farm Dashboard](https://hyb.gudong226.com/)
 - 主题图标：跟随系统 → 暗色 → 亮色 → 跟随系统
