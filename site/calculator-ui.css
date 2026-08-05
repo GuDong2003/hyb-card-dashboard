@@ -1862,9 +1862,9 @@ table.simulation-table td {
 
 /* Compact left workbench */
 .control-column {
-    display: grid;
-    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
-    align-content: start;
+    display: flex;
+    flex-direction: column;
+    align-content: stretch;
     gap: 0;
 }
 
@@ -1879,6 +1879,7 @@ table.simulation-table td {
 }
 
 .control-column .strategy-section {
+    flex: 1 1 auto;
     min-height: 0;
     overflow: auto;
 }
