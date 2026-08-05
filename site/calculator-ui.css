@@ -1045,55 +1045,42 @@ body {
 }
 
 .topbar {
+    position: relative;
     display: flex;
     min-width: 0;
     padding: 0 18px;
-    border: 1px solid var(--border-color);
-    border-radius: 14px;
+    border: 0;
+    border-bottom: 1px solid var(--border-color);
+    border-radius: 0;
     align-items: center;
-    justify-content: space-between;
-    background: linear-gradient(120deg, rgba(17, 27, 49, 0.98), rgba(25, 28, 65, 0.96));
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+    gap: 16px;
+    background: var(--topbar-bg);
+    box-shadow: none;
 }
 
 .topbar-title {
     display: flex;
+    flex: 0 1 auto;
     min-width: 0;
-    gap: 14px;
+    gap: 10px;
     align-items: center;
 }
 
-.topbar .eyebrow {
-    flex: 0 0 auto;
-    margin: 0;
-    font-size: 0.64rem;
+.brand-icon {
+    display: block;
+    width: 20px;
+    height: 20px;
+    flex: none;
+    border-radius: 6px;
 }
 
 .topbar h1 {
     overflow: hidden;
     margin: 0;
-    font-size: 1.18rem;
+    font-size: 1.12rem;
     font-weight: 820;
     letter-spacing: -0.02em;
     text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.topbar-rules {
-    display: flex;
-    flex-wrap: nowrap;
-    gap: 7px;
-    align-items: center;
-}
-
-.topbar-rules span {
-    padding: 5px 9px;
-    border: 1px solid rgba(147, 164, 204, 0.18);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.035);
-    color: var(--text-muted);
-    font-size: 0.66rem;
-    font-weight: 680;
     white-space: nowrap;
 }
 
@@ -1339,11 +1326,12 @@ body {
 .results-column .sp-allocation-grid {
     grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
     min-height: 0;
-    height: 210px;
-    max-height: 210px;
+    height: 250px;
+    max-height: 250px;
     margin-top: 8px;
-    padding-bottom: 8px;
+    padding-bottom: 12px;
     overflow-y: auto;
+    scroll-padding-bottom: 10px;
 }
 
 .results-column .sp-round {
@@ -1435,11 +1423,6 @@ body {
         min-height: 58px;
     }
 
-    .topbar-rules span:nth-child(2),
-    .topbar-rules span:nth-child(3) {
-        display: none;
-    }
-
     .workspace {
         grid-template-columns: 1fr;
         margin-top: 10px;
@@ -1457,11 +1440,6 @@ body {
 @media (max-width: 680px) {
     .topbar {
         padding: 0 13px;
-    }
-
-    .topbar .eyebrow,
-    .topbar-rules {
-        display: none;
     }
 
     .topbar h1 {
@@ -1585,15 +1563,14 @@ body {
 }
 
 .topbar {
-    border-color: var(--line) !important;
+    border: 0 !important;
+    border-bottom: 1px solid var(--line) !important;
     background: var(--topbar-bg) !important;
-    box-shadow: var(--shadow) !important;
+    box-shadow: none !important;
     backdrop-filter: blur(10px);
 }
 
 .topbar-title h1,
-.topbar .eyebrow,
-.topbar-rules span,
 .panel h2,
 .panel h3,
 .metric-value,
@@ -1603,11 +1580,8 @@ body {
     color: var(--text) !important;
 }
 
-.topbar-rules {
-    margin-left: auto;
-}
-
 .topbar-actions {
+    margin-left: auto;
     display: flex;
     flex: 0 0 auto;
     gap: 4px;
@@ -1631,7 +1605,9 @@ body {
     text-decoration: none;
 }
 
-.farm-link img {
+.farm-link img,
+.github-link svg,
+.brand-icon {
     display: block;
     width: 20px;
     height: 20px;
@@ -1639,8 +1615,6 @@ body {
 }
 
 .github-link svg {
-    width: 20px;
-    height: 20px;
     fill: currentColor;
 }
 
@@ -1799,6 +1773,10 @@ table.simulation-table tbody tr:hover td:first-child {
 table.simulation-table th:first-child,
 table.simulation-table td:first-child {
     background: inherit !important;
+}
+
+table.simulation-table th:first-child {
+    background: var(--table-head-bg) !important;
 }
 
 .row-breakeven,
