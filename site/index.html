@@ -515,9 +515,13 @@
 
                     <div class="input-section">
                         <h3 class="input-section-title">库存与星尘</h3>
-                        <div class="form-grid">
+                        <div class="form-grid three">
                             <div class="form-group">
-                                <label for="currentUsableCards">当前可用传说 <span class="field-hint">含合成</span></label>
+                                <label for="redeemedSets">已兑换套数 <span class="field-hint">已提交卡组</span></label>
+                                <input type="number" id="redeemedSets" min="0" value="0" inputmode="numeric" oninput="calculate()">
+                            </div>
+                            <div class="form-group">
+                                <label for="currentUsableCards">当前持有传说 <span class="field-hint">未兑换，含合成</span></label>
                                 <input type="number" id="currentUsableCards" min="0" value="7" inputmode="numeric" oninput="calculate()">
                             </div>
                             <div class="form-group">
@@ -526,8 +530,16 @@
                             </div>
                         </div>
                         <div class="derived-stat" aria-live="polite">
-                            <span>此前额外传说（含之前合成/兑换）</span>
-                            <strong id="previousAdditionalCardsText">0 张</strong>
+                            <span>已获得传说（含合成）</span>
+                            <strong id="totalAcquiredCardsText">7 张</strong>
+                        </div>
+                        <div class="derived-stat" aria-live="polite">
+                            <span>此前合成传说</span>
+                            <strong id="previousCraftedCardsText">0 张</strong>
+                        </div>
+                        <div class="derived-stat" aria-live="polite">
+                            <span>当前累计套数</span>
+                            <strong id="currentTotalSetsText">1 套</strong>
                         </div>
                     </div>
                 </section>
@@ -661,7 +673,7 @@
                             <th>天数</th>
                             <th>当日传说</th>
                             <th>累计抽出传说</th>
-                            <th>此前额外传说</th>
+                            <th>此前合成传说</th>
                             <th class="forge-column is-hidden">星尘余额</th>
                             <th class="forge-column is-hidden">本期模拟合成传说</th>
                             <th class="forge-column is-hidden">合成折算套数</th>
@@ -831,6 +843,7 @@
         'currentDay',
         'currentCards',
         'currentTotalDraws',
+        'redeemedSets',
         'currentUsableCards',
         'stardustBalance',
         'spPointCap'
@@ -926,6 +939,9 @@
                     document.getElementById(id).value = saved.values[id];
                 }
             });
+            if (saved.values.redeemedSets === undefined) {
+                document.getElementById('redeemedSets').value = '0';
+            }
             SNAPSHOT_CHECKBOX_FIELDS.forEach(id => {
                 if (typeof saved.values[id] === 'boolean') {
                     document.getElementById(id).checked = saved.values[id];
@@ -1342,10 +1358,12 @@
         const currentDay = clampInteger(document.getElementById('currentDay').value, 1, 90);
         const currentCards = Math.max(0, Number.parseInt(document.getElementById('currentCards').value, 10) || 0);
         const currentTotalDraws = Math.max(0, Number.parseInt(document.getElementById('currentTotalDraws').value, 10) || 0);
+        const redeemedSets = Math.max(0, Number.parseInt(document.getElementById('redeemedSets').value, 10) || 0);
         const currentUsableCards = Math.max(0, Number.parseInt(document.getElementById('currentUsableCards').value, 10) || 0);
-        const previousAdditionalCards = StardustRules.getPreviousAdditionalCards({
-            currentCards,
-            currentUsableCards
+        const inventorySummary = StardustRules.getLegendInventorySummary({
+            drawnLegendaryCards: currentCards,
+            heldLegendaryCards: currentUsableCards,
+            redeemedSets
         });
         const startingStardust = Math.max(0, Number.parseInt(document.getElementById('stardustBalance').value, 10) || 0);
         const enableSP = document.getElementById('enableSP').checked;
@@ -1363,7 +1381,9 @@
         document.getElementById('totalPullsText').innerText = currentTotalDraws;
         document.getElementById('calculatedProbText').innerText = (actualProb * 100).toFixed(3) + "%";
         document.getElementById('dailyExpectedText').innerText = dailyExpectedCards.toFixed(2);
-        document.getElementById('previousAdditionalCardsText').innerText = `${previousAdditionalCards} 张`;
+        document.getElementById('totalAcquiredCardsText').innerText = `${inventorySummary.totalAcquiredCards} 张`;
+        document.getElementById('previousCraftedCardsText').innerText = `${inventorySummary.previousCraftedCards} 张`;
+        document.getElementById('currentTotalSetsText').innerText = `${inventorySummary.totalSets} 套`;
         document.querySelectorAll('.forge-column').forEach(element => element.classList.toggle('is-hidden', !enableForge));
         document.querySelectorAll('.sp-column').forEach(element => element.classList.toggle('is-hidden', !enableSP));
 
@@ -1414,14 +1434,15 @@
             }
 
             const usableCards = baseUsableCards + craftedCards;
-            const cumulativeSets = Math.floor(usableCards / 6);
+            const redeemedSetBaseline = day < currentDay ? 0 : redeemedSets;
+            const cumulativeSets = redeemedSetBaseline + Math.floor(usableCards / 6);
             const earnedSP = Math.floor(cumulativeDrawn * 0.1);
 
             tableData.push({
                 day,
                 dayCards,
                 cumulativeDrawn,
-                previousAdditionalCards: day < currentDay ? null : previousAdditionalCards,
+                previousCraftedCards: day < currentDay ? null : inventorySummary.previousCraftedCards,
                 dustDisplay,
                 craftedCards,
                 craftedSetEquivalent: craftedCards / 6,
@@ -1501,7 +1522,7 @@
                 <td>${row.day}</td>
                 <td>${row.dayCards}</td>
                 <td>${row.cumulativeDrawn}</td>
-                <td>${row.previousAdditionalCards === null ? '—' : row.previousAdditionalCards}</td>
+                <td>${row.previousCraftedCards === null ? '—' : row.previousCraftedCards}</td>
                 <td class="forge-column${forgeHiddenClass}">${row.dustDisplay === null ? '—' : row.dustDisplay}</td>
                 <td class="forge-column${forgeHiddenClass}">${row.craftedCards}</td>
                 <td class="forge-column${forgeHiddenClass}">${row.craftedSetEquivalent.toFixed(2)}</td>

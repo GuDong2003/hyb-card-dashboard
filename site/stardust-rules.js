@@ -34,6 +34,19 @@
         return Math.max(0, usable - drawn);
     }
 
+    function getLegendInventorySummary({ drawnLegendaryCards, heldLegendaryCards, redeemedSets }) {
+        const drawn = Math.max(0, Number(drawnLegendaryCards) || 0);
+        const held = Math.max(0, Number(heldLegendaryCards) || 0);
+        const redeemed = Math.max(0, Math.floor(Number(redeemedSets) || 0));
+        const totalAcquiredCards = held + redeemed * 6;
+        return {
+            totalAcquiredCards,
+            previousCraftedCards: Math.max(0, totalAcquiredCards - drawn),
+            totalSets: redeemed + Math.floor(held / 6),
+            redeemableHeldSets: Math.floor(held / 6)
+        };
+    }
+
     function getAutomaticDissolveDayState() {
         return {
             usedCards: MAX_DISSOLVE_PER_DAY,
@@ -85,6 +98,7 @@
         getSeasonDay,
         getDynamicDefaults,
         getPreviousAdditionalCards,
+        getLegendInventorySummary,
         getAutomaticDissolveDayState,
         getDissolveDayState,
         getCraftLimit
