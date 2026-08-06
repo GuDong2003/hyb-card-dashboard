@@ -91,3 +91,12 @@ test('leaves manual inventory inputs blank for new users while keeping the saved
   assert.match(html, /<input type="number" id="stardustBalance"[^>]*value=""/);
   assert.match(html, /const SNAPSHOT_STORAGE_KEY = 'legend-card-calculator-snapshot-v1'/);
 });
+
+test('keeps the inventory section labels on one line in the compact layout', async () => {
+  const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../site/calculator-ui.css', import.meta.url), 'utf8');
+
+  assert.match(html, /<div class="input-section inventory-section">[\s\S]*<h3 class="input-section-title">库存与星尘<\/h3>/);
+  assert.match(css, /\.inventory-section \.form-group label[\s\S]*white-space:\s*nowrap/);
+  assert.match(css, /\.inventory-section \.field-hint[\s\S]*white-space:\s*nowrap/);
+});

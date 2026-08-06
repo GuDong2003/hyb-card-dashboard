@@ -2257,3 +2257,21 @@ table.simulation-table td {
 .results-column .metric-value.profit-value.is-negative {
     color: var(--profit-neg) !important;
 }
+
+/* Keep the inventory labels readable in the compact three-column workbench. */
+.control-column .input-section-title,
+.inventory-section .form-group label,
+.inventory-section .field-hint {
+    white-space: nowrap;
+}
+
+.inventory-section .form-group label {
+    flex-wrap: nowrap;
+    gap: 3px;
+    font-size: 0.64rem;
+}
+
+.inventory-section .field-hint {
+    flex: 0 0 auto;
+    font-size: 0.54rem;
+}
