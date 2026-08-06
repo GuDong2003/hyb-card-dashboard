@@ -60,8 +60,8 @@ test('exposes redeemed sets and renames the held legendary inventory field', asy
   const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
 
   assert.match(html, /<label for="redeemedSets">已兑换套数/);
-  assert.match(html, /<input type="number" id="redeemedSets"[^>]*value="0"/);
-  assert.match(html, /<label for="currentUsableCards">当前持有传说[\s\S]*未兑换/);
+  assert.match(html, /<input type="number" id="redeemedSets"[^>]*value=""/);
+  assert.match(html, /<label for="currentUsableCards">当前可用传说[\s\S]*含合成/);
   assert.match(html, /const SNAPSHOT_VALUE_FIELDS = \[[\s\S]*['"]redeemedSets['"]/);
   assert.match(html, /saved\.values\.redeemedSets === undefined/);
 });
@@ -78,4 +78,16 @@ test('seeds projected sets from redeemed history without inflating drawn cards o
   assert.match(html, /const redeemedSetBaseline = day < currentDay \? 0 : redeemedSets/);
   assert.match(html, /const cumulativeSets = redeemedSetBaseline \+ Math\.floor\(usableCards \/ 6\)/);
   assert.match(html, /const earnedSP = Math\.floor\(cumulativeDrawn \* 0\.1\)/);
+});
+
+test('leaves manual inventory inputs blank for new users while keeping the saved snapshot key', async () => {
+  const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
+
+  assert.match(html, /<label for="currentCards">抽出传说\s*<span class="field-hint">不含合成<\/span><\/label>/);
+  assert.match(html, /<input type="number" id="currentCards"[^>]*value=""/);
+  assert.match(html, /<label for="currentUsableCards">当前可用传说\s*<span class="field-hint">含合成<\/span><\/label>/);
+  assert.match(html, /<input type="number" id="currentUsableCards"[^>]*value=""/);
+  assert.match(html, /<input type="number" id="redeemedSets"[^>]*value=""/);
+  assert.match(html, /<input type="number" id="stardustBalance"[^>]*value=""/);
+  assert.match(html, /const SNAPSHOT_STORAGE_KEY = 'legend-card-calculator-snapshot-v1'/);
 });
