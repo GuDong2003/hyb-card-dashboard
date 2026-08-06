@@ -601,7 +601,11 @@
 .rankings-pin-button svg {
     width: 14px;
     height: 14px;
-    fill: currentColor;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.5;
 }
 
 .rank-user-button:hover .rankings-pin-button,

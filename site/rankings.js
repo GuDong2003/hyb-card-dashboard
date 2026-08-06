@@ -1398,7 +1398,7 @@
         return `<tr class="${rowClass}"${pinStyle} data-user-id="${escapeHtml(row.userId)}">
             <td class="rank-number">${formatNumber(rankNumber)}</td>
             <td>${row.isVip ? '<span class="rank-vip">VIP</span>' : ''}</td>
-            <td class="rank-user-cell"><span class="rank-user-button"><button class="rankings-pin-button" type="button" data-pin-user="${escapeHtml(row.userId)}" data-user-name="${escapeHtml(row.userName || row.userId)}" aria-pressed="false" aria-label="置顶 ${escapeHtml(row.userName || row.userId)}" title="置顶用户"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5.2 2.3 1.1 1.1-.8 2.2 2.1 2.1 2.2-.8 1.1 1.1-2.4 2.4 2.1 2.1-.9.9-2.1-2.1-2.4 2.4-.9-.9 2.4-2.4-2.1-2.1-.9.9-1.1-1.1 2.4-2.4-2.1-2.1.8-2.2-1.1-1.1Z"/></svg></button>${avatar}<span>${escapeHtml(row.userName || row.userId)}</span></span></td>
+            <td class="rank-user-cell"><span class="rank-user-button"><button class="rankings-pin-button" type="button" data-pin-user="${escapeHtml(row.userId)}" data-user-name="${escapeHtml(row.userName || row.userId)}" aria-pressed="false" aria-label="置顶 ${escapeHtml(row.userName || row.userId)}" title="置顶用户"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.25 2.75h3.5L9 6.75l2.75 2.75H4.25L7 6.75l-.75-4Z"/><path d="M8 9.5v3.75M6.25 13.25h3.5"/></svg></button>${avatar}<span>${escapeHtml(row.userName || row.userId)}</span></span></td>
             <td class="rank-legend">${formatOptionalNumber(row.epicTotal)}</td>
             <td class="rank-spend">${formatOptionalUsd(row.spendUsd)}</td>
             <td class="rank-pulls">${formatOptionalNumber(row.estimatedPulls)}</td>
