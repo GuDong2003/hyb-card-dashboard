@@ -9,6 +9,7 @@ test('index contains an in-page rankings view without a new URL route', async ()
   assert.match(html, /data-view="calculator"/);
   assert.match(html, /id="calculatorView"/);
   assert.match(html, /id="rankingsView"/);
+  assert.match(html, /class="topbar-view-btn is-hidden"[^>]*id="rankingsNavButton"/);
   assert.match(html, /rankings\.js/);
   assert.match(html, /rankings\.css/);
   assert.doesNotMatch(html, /href="\/rankings"/);
@@ -30,7 +31,15 @@ test('places view navigation beside the title like Farm Dashboard', async () => 
   assert.ok(navIndex > titleIndex);
   assert.ok(actionsIndex > navIndex);
   assert.match(html.slice(navIndex, actionsIndex), /data-view="calculator"/);
-  assert.match(html.slice(navIndex, actionsIndex), /data-view="rankings"/);
+  assert.match(html.slice(navIndex, actionsIndex), /id="rankingsNavButton"[^>]*data-view="rankings"/);
+});
+
+test('unlocks the hidden rankings entry only with the view query parameter', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  assert.match(source, /new URLSearchParams\(window\.location\.search\)/);
+  assert.match(source, /get\('view'\) === 'rankings'/);
+  assert.match(source, /rankingsNavButton/);
+  assert.match(source, /setDashboardView\(rankingsUnlocked \? 'rankings' : 'calculator'\)/);
 });
 
 test('rankings view keeps script setup and upload consent controls visible', async () => {

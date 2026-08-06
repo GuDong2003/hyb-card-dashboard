@@ -1211,6 +1211,10 @@
         if (state.view === 'rankings' && !state.loaded) loadRankingsView({ refresh: false });
     }
 
+    function rankingsEntryUnlocked() {
+        return new URLSearchParams(window.location.search).get('view') === 'rankings';
+    }
+
     window.setDashboardView = setDashboardView;
 
     function requestBridgeSnapshot() {
@@ -1655,7 +1659,10 @@
         renderTrendPeriodControl();
         renderUploadControls();
         configureHourlyRefresh();
-        setDashboardView('calculator');
+        const rankingsUnlocked = rankingsEntryUnlocked();
+        const rankingsNavButton = $('#rankingsNavButton');
+        if (rankingsNavButton) rankingsNavButton.classList.toggle('is-hidden', !rankingsUnlocked);
+        setDashboardView(rankingsUnlocked ? 'rankings' : 'calculator');
     }
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true });
