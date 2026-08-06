@@ -189,6 +189,8 @@ test('rankings client uses same-origin Worker APIs and the Card bridge events', 
   assert.match(source, /estimateUsesHistoricalData/);
   assert.match(source, /missing_common_day/);
   assert.match(source, /dayStartAtForCapturedAt/);
+  assert.match(source, /missing_epic/);
+  assert.match(source, /paidPulls/);
   assert.match(source, /运气榜/);
   assert.match(source, /partialRows/);
 });
@@ -235,6 +237,11 @@ test('rankings view provides daily and raw-capture user trend controls', async (
   assert.match(css, /\.trend-point:hover/);
   assert.match(source, /trend-point-wrap/);
   assert.match(source, /trend-point-tooltip/);
+  const tooltipStart = css.indexOf('.trend-point-tooltip text {');
+  const tooltipEnd = css.indexOf('}', tooltipStart) + 1;
+  assert.ok(tooltipStart >= 0 && tooltipEnd > tooltipStart);
+  assert.match(css.slice(tooltipStart, tooltipEnd), /fill\s*:\s*var\(--text\)/);
+  assert.doesNotMatch(css.slice(tooltipStart, tooltipEnd), /var\(--ink\)/);
 
   const helperNames = ['formatDecimal', 'formatUsd', 'formatProbability', 'formatTrendValue', 'formatTrendAxisValue'];
   const helperSources = helperNames.map((name) => source.match(new RegExp(`    function ${name}\\([\\s\\S]*?\\n    \\}`))?.[0]);

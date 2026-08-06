@@ -310,9 +310,9 @@ test('keeps historical raw values but does not pair metrics across different day
   const row = payload.rows.find((item) => item.userId === 'u-1');
   assert.equal(row.epicTotal, 36);
   assert.equal(row.spendUsd, 24_000);
-  assert.equal(row.paidPulls, null);
-  assert.equal(row.freePulls, null);
-  assert.equal(row.estimatedPulls, null);
+  assert.equal(row.paidPulls, 2_400);
+  assert.equal(row.freePulls, 200);
+  assert.equal(row.estimatedPulls, 2_600);
   assert.equal(row.estimatedLegendProbability, null);
   assert.equal(row.estimateStatus, 'missing_common_day');
   assert.equal(row.isPartial, true);
@@ -443,6 +443,33 @@ test('returns one dynamic user row with spend, pulls, exchanges and blank missin
   assert.equal(todayPayload.rows[0].estimatedPulls, null);
   assert.equal(todayPayload.rows[0].exchangeCount, null);
   assert.equal(todayPayload.rows[0].estimatedLegendProbability, null);
+});
+
+test('calculates paid and free pulls from spend even when the epic board is missing', async () => {
+  const environment = env();
+  const capturedAt = Date.now() - 1000;
+  const snapshot = {
+    season: { id: 'season-spend-only', name: '消费单榜抽数测试' },
+    scope: 'global', capturedAt,
+    leaderboards: {
+      spend_total: [{ userId: 'spend-only', userName: '只有消费', value: 12_000_000_000, rank: 1, isVip: true }]
+    }
+  };
+  const postResponse = await handleRankingsRequest(request('/api/rankings/snapshots', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(snapshot)
+  }), environment);
+  assert.equal(postResponse.status, 200, await postResponse.clone().text());
+
+  const response = await handleRankingsRequest(request('/api/rankings/leaderboard?period=total'), environment);
+  const payload = await response.json();
+  const row = payload.rows.find((item) => item.userId === 'spend-only');
+  assert.equal(row.spendUsd, 24_000);
+  assert.equal(row.paidPulls, 2_400);
+  assert.equal(row.freePulls, 200);
+  assert.equal(row.estimatedPulls, 2_600);
+  assert.equal(row.estimatedLegendProbability, null);
+  assert.equal(row.estimateStatus, 'missing_epic');
+  assert.equal(row.isPartial, true);
 });
 
 test('recomputes user ranks against the previous snapshot in the selected period', async () => {

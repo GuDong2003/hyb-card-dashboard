@@ -550,21 +550,16 @@ function buildDailyUserSummary(user, latestDayStartAt = null) {
       || (pairSpend && (pairSpend.is_vip ?? pairSpend.isVip))
   );
   const rawEstimate = estimatePullsFromSpend(spendValue, user.isVip);
-  let estimateStatus;
-  let estimate;
-  if (canDerive) {
-    estimate = estimatePullsFromSpend(Number(pairSpend.value), pairIsVip);
-    estimateStatus = estimate.estimateStatus;
-  } else {
-    estimateStatus = !hasEpic && !hasSpend
-      ? 'missing_pair'
+  const estimate = rawEstimate;
+  const estimateStatus = !hasEpic && !hasSpend
+    ? 'missing_pair'
+    : !hasSpend
+      ? 'missing_spend'
       : !hasEpic
         ? 'missing_epic'
-        : !hasSpend
-          ? 'missing_spend'
-          : 'missing_common_day';
-    estimate = emptyEstimate(rawEstimate.spendUsd, estimateStatus);
-  }
+        : !canDerive
+          ? 'missing_common_day'
+          : rawEstimate.estimateStatus;
   const probability = canDerive
     ? estimateLegendProbability({
       epicTotal: Number(pairEpic.value),
@@ -645,14 +640,16 @@ function buildUserSummary(user, currentCapturedBucket = null) {
   const currentSpend = hasSpend && metricInCapturedBucket(user.spendRow, currentCapturedBucket);
   const canDerive = currentEpic && currentSpend;
   const rawEstimate = estimatePullsFromSpend(spendValue, isVip);
-  const estimate = canDerive ? rawEstimate : emptyEstimate(rawEstimate.spendUsd, currentEstimateStatus({
-    hasEpic,
-    hasSpend,
-    currentEpic,
-    currentSpend,
-    currentCapturedBucket
-  }));
-  const estimateStatus = estimate.estimateStatus;
+  const estimate = rawEstimate;
+  const estimateStatus = canDerive
+    ? estimate.estimateStatus
+    : currentEstimateStatus({
+      hasEpic,
+      hasSpend,
+      currentEpic,
+      currentSpend,
+      currentCapturedBucket
+    });
   const probability = canDerive
     ? estimateLegendProbability({ epicTotal, spendValue, isVip })
     : null;
@@ -972,10 +969,12 @@ function buildEnrichedEntry(row, pair, board, rankOverride = undefined) {
   const rawEstimate = estimatePullsFromSpend(spendValue, isVip);
   const hasPair = epicTotal != null && Number.isFinite(epicTotal)
     && spendValue != null && Number.isFinite(spendValue);
-  const estimate = hasPair ? rawEstimate : emptyEstimate(rawEstimate.spendUsd, null);
-  let estimateStatus = estimate.estimateStatus;
-  if (epicTotal == null || !Number.isFinite(epicTotal)) estimateStatus = 'missing_epic';
-  else if (spendValue == null || !Number.isFinite(spendValue)) estimateStatus = 'missing_spend';
+  const estimate = rawEstimate;
+  let estimateStatus = !Number.isFinite(spendValue)
+    ? 'missing_spend'
+    : !Number.isFinite(epicTotal)
+      ? 'missing_epic'
+      : hasPair ? estimate.estimateStatus : 'missing_pair';
   const probability = estimateStatus === 'missing_epic' || estimateStatus === 'missing_spend'
     ? null
     : estimateLegendProbability({ epicTotal, spendValue, isVip });

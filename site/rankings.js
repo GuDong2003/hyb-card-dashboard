@@ -245,9 +245,9 @@
         return {
             ...point,
             spendUsd: estimate.spendUsd,
-            paidPulls: canDerive ? estimate.paidPulls : null,
-            freePulls: canDerive ? estimate.freePulls : null,
-            estimatedPulls: canDerive ? estimate.estimatedPulls : null,
+            paidPulls: estimate.paidPulls,
+            freePulls: estimate.freePulls,
+            estimatedPulls: estimate.estimatedPulls,
             estimatedLegendProbability: canDerive
                 ? estimatedProbability(point.epicTotal, point.spendValue, point.isVip)
                 : null
@@ -1046,21 +1046,16 @@
         const canDerive = Boolean(pairEpic && pairSpend);
         const pairIsVip = Boolean(user.isVip || rowIsVip(pairEpic) || rowIsVip(pairSpend));
         const rawEstimate = estimateFromSpend(spendValue, user.isVip);
-        let estimate;
-        let estimateStatus;
-        if (canDerive) {
-            estimate = estimateFromSpend(rowValue(pairSpend), pairIsVip);
-            estimateStatus = estimate.estimateStatus;
-        } else {
-            estimateStatus = !hasEpic && !hasSpend
-                ? 'missing_pair'
+        const estimate = rawEstimate;
+        const estimateStatus = !hasEpic && !hasSpend
+            ? 'missing_pair'
+            : !hasSpend
+                ? 'missing_spend'
                 : !hasEpic
                     ? 'missing_epic'
-                    : !hasSpend
-                        ? 'missing_spend'
-                        : 'missing_common_day';
-            estimate = emptyLocalEstimate(rawEstimate.spendUsd, estimateStatus);
-        }
+                    : !canDerive
+                        ? 'missing_common_day'
+                        : rawEstimate.estimateStatus;
         const probability = canDerive
             ? estimatedProbability(rowValue(pairEpic), rowValue(pairSpend), pairIsVip)
             : null;
@@ -1160,16 +1155,16 @@
         const currentSpend = hasSpend && rowInCapturedBucket(pair && pair.spendRow || (board === 'spend' ? rawRow : null), currentCapturedBucket);
         const canDerive = currentEpic && currentSpend;
         const rawEstimate = estimateFromSpend(spendValue, isVip);
-        const estimate = canDerive
-            ? rawEstimate
-            : emptyLocalEstimate(rawEstimate.spendUsd, localEstimateStatus({
+        const estimate = rawEstimate;
+        const estimateStatus = canDerive
+            ? estimate.estimateStatus
+            : localEstimateStatus({
                 hasEpic,
                 hasSpend,
                 currentEpic,
                 currentSpend,
                 currentCapturedBucket
-            }));
-        const estimateStatus = estimate.estimateStatus;
+            });
         const probability = canDerive
             ? estimatedProbability(epicTotal, spendValue, isVip)
             : null;
@@ -1235,16 +1230,16 @@
             const currentSpend = hasSpend && rowInCapturedBucket(user.spendRow, currentCapturedBucket);
             const canDerive = currentEpic && currentSpend;
             const rawEstimate = estimateFromSpend(spendValue, user.isVip);
-            const estimate = canDerive
-                ? rawEstimate
-                : emptyLocalEstimate(rawEstimate.spendUsd, localEstimateStatus({
+            const estimate = rawEstimate;
+            const estimateStatus = canDerive
+                ? estimate.estimateStatus
+                : localEstimateStatus({
                     hasEpic,
                     hasSpend,
                     currentEpic,
                     currentSpend,
                     currentCapturedBucket
-                }));
-            const estimateStatus = estimate.estimateStatus;
+                });
             const probability = canDerive
                 ? estimatedProbability(epicTotal, spendValue, user.isVip)
                 : null;

@@ -1147,7 +1147,7 @@ body.modal-open {
 }
 
 .trend-point-tooltip text {
-    fill: var(--ink);
+    fill: var(--text);
     font-size: 11px;
     font-variant-numeric: tabular-nums;
 }
