@@ -7,6 +7,7 @@
     const BRIDGE_TIMEOUT_MS = 22000;
     const HOURLY_REFRESH_MS = 60 * 60 * 1000;
     const SETTINGS_STORAGE_KEY = 'hyb-card-rankings-settings-v1';
+    const PINS_STORAGE_KEY = 'hyb-card-rankings-pins-v1';
     const SPEND_VALUE_PER_USD = 500000;
     const VIP_DAILY_SPEND_USD = 6000;
     const VIP_DAILY_PULLS = 650;
@@ -40,6 +41,34 @@
         }
     }
 
+    function pinSeasonKey(seasonId) {
+        return String(seasonId || 'default').trim() || 'default';
+    }
+
+    function loadPinnedUsers(seasonId) {
+        try {
+            const stored = JSON.parse(window.localStorage.getItem(PINS_STORAGE_KEY) || '{}') || {};
+            const values = stored[pinSeasonKey(seasonId)];
+            return new Set(Array.isArray(values)
+                ? values.map((value) => String(value || '').trim()).filter(Boolean)
+                : []);
+        } catch (_) {
+            return new Set();
+        }
+    }
+
+    function savePinnedUsers(seasonId, userIds) {
+        try {
+            const stored = JSON.parse(window.localStorage.getItem(PINS_STORAGE_KEY) || '{}') || {};
+            stored[pinSeasonKey(seasonId)] = Array.from(userIds || [])
+                .map((value) => String(value || '').trim())
+                .filter(Boolean);
+            window.localStorage.setItem(PINS_STORAGE_KEY, JSON.stringify(stored));
+        } catch (_) {
+            // Private browsing or storage restrictions must not block rankings viewing.
+        }
+    }
+
     const state = {
         view: 'calculator',
         board: 'users',
@@ -48,6 +77,9 @@
         sortDirection: 'desc',
         settings: loadSettings(),
         latest: null,
+        seasonId: '',
+        pinnedSeasonId: '',
+        pinnedUserIds: new Set(),
         localSnapshots: [],
         loaded: false,
         busy: false,
@@ -1064,6 +1096,73 @@
         });
     }
 
+    function syncPinnedSeason(seasonId) {
+        const normalized = String(seasonId || '').trim();
+        if (!normalized) return;
+        state.seasonId = normalized;
+        if (state.pinnedSeasonId === normalized) return;
+        state.pinnedSeasonId = normalized;
+        state.pinnedUserIds = loadPinnedUsers(normalized);
+    }
+
+    function renderPinnedUsers() {
+        const strip = $('#rankingsPinnedStrip');
+        const list = $('#rankingsPinnedList');
+        if (!strip || !list) return;
+        const pinnedRows = Array.from(state.pinnedUserIds).map((userId) => {
+            const row = state.rows.find((item) => item.userId === userId);
+            return { userId, row };
+        });
+        strip.classList.toggle('is-hidden', pinnedRows.length === 0);
+        const panel = $('.rankings-table-panel');
+        if (panel) panel.classList.toggle('has-pinned-users', pinnedRows.length > 0);
+        if (!pinnedRows.length) {
+            list.innerHTML = '';
+            return;
+        }
+        list.innerHTML = pinnedRows.map(({ userId, row }) => {
+            const userName = row && (row.userName || row.userId) || userId;
+            const avatar = row && row.avatar
+                ? `<img class="rankings-pinned-avatar" src="${escapeHtml(row.avatar)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
+                : `<span class="rankings-pinned-avatar rankings-pinned-avatar-fallback">${initials(userName)}</span>`;
+            const probability = row && row.estimatedLegendProbability != null
+                ? `出卡率 ${formatOptionalProbability(row.estimatedLegendProbability)}`
+                : '';
+            return `<button class="rankings-pinned-user" type="button" data-unpin-user="${escapeHtml(userId)}" aria-label="取消置顶 ${escapeHtml(userName)}" title="取消置顶">
+                ${avatar}
+                <span class="rankings-pinned-name">${escapeHtml(userName)}</span>
+                <span class="rankings-pinned-meta">${probability}</span>
+                <span class="rankings-pinned-remove" aria-hidden="true">×</span>
+            </button>`;
+        }).join('');
+        list.querySelectorAll('[data-unpin-user]').forEach((button) => {
+            button.addEventListener('click', () => togglePinnedUser(button.dataset.unpinUser));
+        });
+    }
+
+    function updatePinButtons() {
+        document.querySelectorAll('[data-pin-user]').forEach((button) => {
+            const userId = String(button.dataset.pinUser || '');
+            const pinned = state.pinnedUserIds.has(userId);
+            const userName = button.dataset.userName || userId;
+            button.classList.toggle('is-pinned', pinned);
+            button.setAttribute('aria-pressed', String(pinned));
+            button.setAttribute('aria-label', pinned ? `取消置顶 ${userName}` : `置顶 ${userName}`);
+            button.title = pinned ? '取消置顶' : '置顶用户';
+        });
+    }
+
+    function togglePinnedUser(userId) {
+        const normalized = String(userId || '').trim();
+        if (!normalized) return;
+        const seasonId = state.pinnedSeasonId || state.seasonId || 'default';
+        if (state.pinnedUserIds.has(normalized)) state.pinnedUserIds.delete(normalized);
+        else state.pinnedUserIds.add(normalized);
+        savePinnedUsers(seasonId, state.pinnedUserIds);
+        renderPinnedUsers();
+        updatePinButtons();
+    }
+
     function localLeaderboardPayload(snapshotOrBundle) {
         const source = mergeLocalSnapshots(normalizeSnapshotsForUpload(snapshotOrBundle));
         const leaderboards = source && source.leaderboards;
@@ -1188,6 +1287,7 @@
         const latest = await apiGet('/api/rankings/latest');
         state.latest = latest;
         if (latest.snapshot) {
+            syncPinnedSeason(latest.snapshot.seasonId);
             const updated = $('#rankingsUpdatedAt');
             if (updated) updated.textContent = `更新于 ${formatDate(latest.snapshot.capturedAt)}`;
         }
@@ -1322,12 +1422,16 @@
         const title = $('#rankingsBoardTitle');
         const updated = $('#rankingsUpdatedAt');
         if (title) title.textContent = boardLabel;
+        syncPinnedSeason(payload && payload.snapshot && payload.snapshot.seasonId
+            || state.latest && state.latest.snapshot && state.latest.snapshot.seasonId
+            || state.seasonId);
         if (updated && payload.snapshot) updated.textContent = `更新于 ${formatDate(payload.snapshot.capturedAt)}`;
         renderSortHeaders();
         renderTrendUserOptions();
         renderTrendSelection();
         renderTrendPeriodControl();
         renderTrendChart();
+        renderPinnedUsers();
 
         const body = $('#rankingsTableBody');
         if (!body) return;
@@ -1354,7 +1458,7 @@
                 return `<tr class="${rowClass}" data-user-id="${escapeHtml(row.userId)}">
                     <td class="rank-number">${formatNumber(index + 1)}</td>
                     <td>${row.isVip ? '<span class="rank-vip">VIP</span>' : ''}</td>
-                    <td class="rank-user-cell"><span class="rank-user-button">${avatar}<span>${escapeHtml(row.userName || row.userId)}</span></span></td>
+                    <td class="rank-user-cell"><span class="rank-user-button"><button class="rankings-pin-button" type="button" data-pin-user="${escapeHtml(row.userId)}" data-user-name="${escapeHtml(row.userName || row.userId)}" aria-pressed="false" aria-label="置顶 ${escapeHtml(row.userName || row.userId)}" title="置顶用户"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5.2 2.3 1.1 1.1-.8 2.2 2.1 2.1 2.2-.8 1.1 1.1-2.4 2.4 2.1 2.1-.9.9-2.1-2.1-2.4 2.4-.9-.9 2.4-2.4-2.1-2.1-.9.9-1.1-1.1 2.4-2.4-2.1-2.1.8-2.2-1.1-1.1Z"/></svg></button>${avatar}<span>${escapeHtml(row.userName || row.userId)}</span></span></td>
                     <td class="rank-legend">${formatOptionalNumber(row.epicTotal)}</td>
                     <td class="rank-spend">${formatOptionalUsd(row.spendUsd)}</td>
                     <td class="rank-pulls">${formatOptionalNumber(row.estimatedPulls)}</td>
@@ -1376,6 +1480,13 @@
         body.querySelectorAll('[data-trend-user]').forEach((button) => {
             button.addEventListener('click', () => openTrendModal(button.dataset.trendUser));
         });
+        body.querySelectorAll('[data-pin-user]').forEach((button) => {
+            button.addEventListener('click', (event) => {
+                event.stopPropagation();
+                togglePinnedUser(button.dataset.pinUser);
+            });
+        });
+        updatePinButtons();
         renderSummary(visibleRows);
     }
 

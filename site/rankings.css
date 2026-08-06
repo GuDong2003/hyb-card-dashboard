@@ -420,6 +420,96 @@
     white-space: nowrap;
 }
 
+.rankings-pinned-strip {
+    position: sticky;
+    top: 0;
+    z-index: 4;
+    display: flex;
+    min-height: 40px;
+    align-items: center;
+    gap: 8px;
+    margin: -4px 0 8px;
+    padding: 5px 8px;
+    overflow: hidden;
+    border: 1px solid var(--line-soft);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--surface) 94%, transparent);
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--ink) 8%, transparent);
+    backdrop-filter: blur(10px);
+}
+
+.rankings-pinned-label {
+    flex: 0 0 auto;
+    color: var(--muted);
+    font-size: .66rem;
+    font-weight: 800;
+    letter-spacing: .04em;
+}
+
+.rankings-pinned-list {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 6px;
+    overflow-x: auto;
+    scrollbar-width: thin;
+}
+
+.rankings-pinned-user {
+    display: inline-flex;
+    min-width: 0;
+    height: 28px;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 7px 2px 4px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--control-bg);
+    color: var(--text);
+    cursor: pointer;
+    font: inherit;
+    font-size: .68rem;
+}
+
+.rankings-pinned-user:hover,
+.rankings-pinned-user:focus-visible {
+    border-color: var(--blue);
+    color: var(--blue-strong);
+}
+
+.rankings-pinned-avatar {
+    display: inline-grid;
+    width: 20px;
+    height: 20px;
+    flex: 0 0 20px;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--blue-soft);
+    color: var(--blue-strong);
+    font-size: .58rem;
+    font-weight: 850;
+    object-fit: cover;
+}
+
+.rankings-pinned-name {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rankings-pinned-meta {
+    color: var(--muted);
+    font-size: .62rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.rankings-pinned-remove {
+    color: var(--muted);
+    font-size: .86rem;
+    line-height: 1;
+}
+
 .rankings-updated {
     align-self: center;
     justify-self: end;
@@ -484,6 +574,10 @@
     color: var(--text);
     font-size: .7rem;
     font-weight: 800;
+}
+
+.rankings-table-panel.has-pinned-users .rankings-table th {
+    top: 48px;
 }
 
 .rankings-sort-button {
@@ -564,6 +658,47 @@
     color: var(--text);
     font-weight: 760;
     text-align: left;
+}
+
+.rankings-pin-button {
+    display: inline-grid;
+    width: 18px;
+    height: 18px;
+    flex: 0 0 18px;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity .16s, background .16s, color .16s;
+}
+
+.rankings-pin-button svg {
+    width: 14px;
+    height: 14px;
+    fill: currentColor;
+}
+
+.rank-user-button:hover .rankings-pin-button,
+.rank-user-button:focus-within .rankings-pin-button,
+.rankings-pin-button.is-pinned,
+.rankings-pin-button:focus-visible {
+    opacity: .9;
+}
+
+.rankings-pin-button:hover,
+.rankings-pin-button:focus-visible,
+.rankings-pin-button.is-pinned {
+    background: var(--blue-soft);
+    color: var(--blue-strong);
+}
+
+.rankings-pin-button:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: 1px;
 }
 
 .rank-user-button > span:last-child {
