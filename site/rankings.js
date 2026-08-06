@@ -1105,41 +1105,6 @@
         state.pinnedUserIds = loadPinnedUsers(normalized);
     }
 
-    function renderPinnedUsers() {
-        const strip = $('#rankingsPinnedStrip');
-        const list = $('#rankingsPinnedList');
-        if (!strip || !list) return;
-        const pinnedRows = Array.from(state.pinnedUserIds).map((userId) => {
-            const row = state.rows.find((item) => item.userId === userId);
-            return { userId, row };
-        });
-        strip.classList.toggle('is-hidden', pinnedRows.length === 0);
-        const panel = $('.rankings-table-panel');
-        if (panel) panel.classList.toggle('has-pinned-users', pinnedRows.length > 0);
-        if (!pinnedRows.length) {
-            list.innerHTML = '';
-            return;
-        }
-        list.innerHTML = pinnedRows.map(({ userId, row }) => {
-            const userName = row && (row.userName || row.userId) || userId;
-            const avatar = row && row.avatar
-                ? `<img class="rankings-pinned-avatar" src="${escapeHtml(row.avatar)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
-                : `<span class="rankings-pinned-avatar rankings-pinned-avatar-fallback">${initials(userName)}</span>`;
-            const probability = row && row.estimatedLegendProbability != null
-                ? `出卡率 ${formatOptionalProbability(row.estimatedLegendProbability)}`
-                : '';
-            return `<button class="rankings-pinned-user" type="button" data-unpin-user="${escapeHtml(userId)}" aria-label="取消置顶 ${escapeHtml(userName)}" title="取消置顶">
-                ${avatar}
-                <span class="rankings-pinned-name">${escapeHtml(userName)}</span>
-                <span class="rankings-pinned-meta">${probability}</span>
-                <span class="rankings-pinned-remove" aria-hidden="true">×</span>
-            </button>`;
-        }).join('');
-        list.querySelectorAll('[data-unpin-user]').forEach((button) => {
-            button.addEventListener('click', () => togglePinnedUser(button.dataset.unpinUser));
-        });
-    }
-
     function updatePinButtons() {
         document.querySelectorAll('[data-pin-user]').forEach((button) => {
             const userId = String(button.dataset.pinUser || '');
@@ -1159,8 +1124,7 @@
         if (state.pinnedUserIds.has(normalized)) state.pinnedUserIds.delete(normalized);
         else state.pinnedUserIds.add(normalized);
         savePinnedUsers(seasonId, state.pinnedUserIds);
-        renderPinnedUsers();
-        updatePinButtons();
+        renderRankingsTableRows();
     }
 
     function localLeaderboardPayload(snapshotOrBundle) {
@@ -1417,6 +1381,88 @@
         }
     }
 
+    function renderRankingsRow(row, rankNumber, pinned = false, pinIndex = 0) {
+        const rowClass = [
+            row.isPartial ? 'is-partial' : '',
+            pinned ? 'is-pinned-row' : ''
+        ].filter(Boolean).join(' ');
+        const pinStyle = pinned ? ` style="--rankings-pinned-top: ${43 + pinIndex * 46}px;"` : '';
+        const avatar = row.avatar
+            ? `<img class="rank-avatar" data-initials="${initials(row.userName)}" src="${escapeHtml(row.avatar)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
+            : `<span class="rank-avatar-fallback">${initials(row.userName)}</span>`;
+        const status = formatEstimateStatus(row.estimateStatus, row.isPartial);
+        return `<tr class="${rowClass}"${pinStyle} data-user-id="${escapeHtml(row.userId)}">
+            <td class="rank-number">${formatNumber(rankNumber)}</td>
+            <td>${row.isVip ? '<span class="rank-vip">VIP</span>' : ''}</td>
+            <td class="rank-user-cell"><span class="rank-user-button"><button class="rankings-pin-button" type="button" data-pin-user="${escapeHtml(row.userId)}" data-user-name="${escapeHtml(row.userName || row.userId)}" aria-pressed="false" aria-label="置顶 ${escapeHtml(row.userName || row.userId)}" title="置顶用户"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5.2 2.3 1.1 1.1-.8 2.2 2.1 2.1 2.2-.8 1.1 1.1-2.4 2.4 2.1 2.1-.9.9-2.1-2.1-2.4 2.4-.9-.9 2.4-2.4-2.1-2.1-.9.9-1.1-1.1 2.4-2.4-2.1-2.1.8-2.2-1.1-1.1Z"/></svg></button>${avatar}<span>${escapeHtml(row.userName || row.userId)}</span></span></td>
+            <td class="rank-legend">${formatOptionalNumber(row.epicTotal)}</td>
+            <td class="rank-spend">${formatOptionalUsd(row.spendUsd)}</td>
+            <td class="rank-pulls">${formatOptionalNumber(row.estimatedPulls)}</td>
+            <td class="rank-sets">${formatOptionalNumber(row.exchangeCount)}</td>
+            <td class="rank-probability">${formatOptionalProbability(row.estimatedLegendProbability)}</td>
+            <td class="rank-status ${row.isPartial ? 'is-partial' : ''}">${status}</td>
+            <td class="rank-trend"><button class="rankings-trend-trigger" type="button" data-trend-user="${escapeHtml(row.userId)}" aria-label="查看 ${escapeHtml(row.userName || row.userId)} 趋势" title="查看趋势"><svg class="rankings-trend-trigger-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 12.5 5.5 9l2.5 2 5.5-6"/><path d="M10.5 5H14v3.5"/></svg></button></td>
+        </tr>`;
+    }
+
+    function bindRankingsTableEvents(container) {
+        if (!container) return;
+        container.querySelectorAll('img.rank-avatar').forEach((image) => {
+            image.addEventListener('error', () => {
+                const fallback = document.createElement('span');
+                fallback.className = 'rank-avatar-fallback';
+                fallback.textContent = image.dataset.initials || '?';
+                image.replaceWith(fallback);
+            }, { once: true });
+        });
+        container.querySelectorAll('[data-trend-user]').forEach((button) => {
+            button.addEventListener('click', () => openTrendModal(button.dataset.trendUser));
+        });
+        container.querySelectorAll('[data-pin-user]').forEach((button) => {
+            button.addEventListener('click', (event) => {
+                event.stopPropagation();
+                togglePinnedUser(button.dataset.pinUser);
+            });
+        });
+    }
+
+    function renderRankingsTableRows() {
+        const body = $('#rankingsTableBody');
+        const pinnedBody = $('#rankingsPinnedBody');
+        if (!body) return;
+
+        const sortedRows = sortRowsForDisplay(state.rows);
+        const rankByUserId = new Map(sortedRows.map((row, index) => [row.userId, index + 1]));
+        const pinnedRows = sortedRows.filter((row) => state.pinnedUserIds.has(row.userId));
+        const visibleRows = sortRowsForDisplay(filterUserRows(state.rows));
+        const normalRows = visibleRows.filter((row) => !state.pinnedUserIds.has(row.userId));
+
+        if (pinnedBody) {
+            pinnedBody.innerHTML = pinnedRows
+                .map((row, index) => renderRankingsRow(row, rankByUserId.get(row.userId) || index + 1, true, index))
+                .join('');
+        }
+        body.innerHTML = normalRows.length
+            ? normalRows.map((row) => renderRankingsRow(row, rankByUserId.get(row.userId) || 0)).join('')
+            : pinnedRows.length
+                ? ''
+                : `<tr><td class="rankings-empty" colspan="10">${state.userQuery ? '没有匹配的用户' : '暂无榜单数据'}</td></tr>`;
+
+        const rowsForSummary = [...pinnedRows, ...normalRows];
+        const partialNotice = $('#rankingsPartialNotice');
+        if (partialNotice) {
+            const incompleteCount = rowsForSummary.filter((row) => row.isPartial).length;
+            partialNotice.textContent = incompleteCount
+                ? `当前表格中有 ${formatNumber(incompleteCount)} 位用户的估算数据不完整，缺失项保持空白。`
+                : '';
+            partialNotice.classList.toggle('is-hidden', !incompleteCount);
+        }
+        bindRankingsTableEvents(pinnedBody);
+        bindRankingsTableEvents(body);
+        updatePinButtons();
+        renderSummary(rowsForSummary);
+    }
+
     function renderLeaderboard(payload) {
         const boardLabel = '用户总览';
         const title = $('#rankingsBoardTitle');
@@ -1431,63 +1477,7 @@
         renderTrendSelection();
         renderTrendPeriodControl();
         renderTrendChart();
-        renderPinnedUsers();
-
-        const body = $('#rankingsTableBody');
-        if (!body) return;
-        const visibleRows = sortRowsForDisplay(filterUserRows(state.rows));
-        const partialNotice = $('#rankingsPartialNotice');
-        if (partialNotice) {
-            const incompleteCount = visibleRows.filter((row) => row.isPartial).length;
-            partialNotice.textContent = incompleteCount
-                ? `当前表格中有 ${formatNumber(incompleteCount)} 位用户的估算数据不完整，缺失项保持空白。`
-                : '';
-            partialNotice.classList.toggle('is-hidden', !incompleteCount);
-        }
-        if (!visibleRows.length) {
-            body.innerHTML = `<tr><td class="rankings-empty" colspan="10">${state.userQuery ? '没有匹配的用户' : '暂无榜单数据'}</td></tr>`;
-        } else {
-            body.innerHTML = visibleRows.map((row, index) => {
-                const rowClass = [
-                    row.isPartial ? 'is-partial' : ''
-                ].filter(Boolean).join(' ');
-                const avatar = row.avatar
-                    ? `<img class="rank-avatar" data-initials="${initials(row.userName)}" src="${escapeHtml(row.avatar)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
-                    : `<span class="rank-avatar-fallback">${initials(row.userName)}</span>`;
-                const status = formatEstimateStatus(row.estimateStatus, row.isPartial);
-                return `<tr class="${rowClass}" data-user-id="${escapeHtml(row.userId)}">
-                    <td class="rank-number">${formatNumber(index + 1)}</td>
-                    <td>${row.isVip ? '<span class="rank-vip">VIP</span>' : ''}</td>
-                    <td class="rank-user-cell"><span class="rank-user-button"><button class="rankings-pin-button" type="button" data-pin-user="${escapeHtml(row.userId)}" data-user-name="${escapeHtml(row.userName || row.userId)}" aria-pressed="false" aria-label="置顶 ${escapeHtml(row.userName || row.userId)}" title="置顶用户"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5.2 2.3 1.1 1.1-.8 2.2 2.1 2.1 2.2-.8 1.1 1.1-2.4 2.4 2.1 2.1-.9.9-2.1-2.1-2.4 2.4-.9-.9 2.4-2.4-2.1-2.1-.9.9-1.1-1.1 2.4-2.4-2.1-2.1.8-2.2-1.1-1.1Z"/></svg></button>${avatar}<span>${escapeHtml(row.userName || row.userId)}</span></span></td>
-                    <td class="rank-legend">${formatOptionalNumber(row.epicTotal)}</td>
-                    <td class="rank-spend">${formatOptionalUsd(row.spendUsd)}</td>
-                    <td class="rank-pulls">${formatOptionalNumber(row.estimatedPulls)}</td>
-                    <td class="rank-sets">${formatOptionalNumber(row.exchangeCount)}</td>
-                    <td class="rank-probability">${formatOptionalProbability(row.estimatedLegendProbability)}</td>
-                    <td class="rank-status ${row.isPartial ? 'is-partial' : ''}">${status}</td>
-                    <td class="rank-trend"><button class="rankings-trend-trigger" type="button" data-trend-user="${escapeHtml(row.userId)}" aria-label="查看 ${escapeHtml(row.userName || row.userId)} 趋势" title="查看趋势"><svg class="rankings-trend-trigger-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 12.5 5.5 9l2.5 2 5.5-6"/><path d="M10.5 5H14v3.5"/></svg></button></td>
-                </tr>`;
-            }).join('');
-        }
-        body.querySelectorAll('img.rank-avatar').forEach((image) => {
-            image.addEventListener('error', () => {
-                const fallback = document.createElement('span');
-                fallback.className = 'rank-avatar-fallback';
-                fallback.textContent = image.dataset.initials || '?';
-                image.replaceWith(fallback);
-            }, { once: true });
-        });
-        body.querySelectorAll('[data-trend-user]').forEach((button) => {
-            button.addEventListener('click', () => openTrendModal(button.dataset.trendUser));
-        });
-        body.querySelectorAll('[data-pin-user]').forEach((button) => {
-            button.addEventListener('click', (event) => {
-                event.stopPropagation();
-                togglePinnedUser(button.dataset.pinUser);
-            });
-        });
-        updatePinButtons();
-        renderSummary(visibleRows);
+        renderRankingsTableRows();
     }
 
     function filterUserRows(rows = []) {

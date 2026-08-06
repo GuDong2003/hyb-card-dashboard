@@ -274,19 +274,23 @@ test('rankings refresh bypasses fresh snapshots and exposes running status', asy
   assert.match(css, /\.rankings-source-status\.is-busy::before/);
 });
 
-test('keeps subtle per-user pin controls and a sticky pinned strip', async () => {
+test('renders pinned users directly below the sticky table header', async () => {
   const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
   const css = await readFile(new URL('../site/rankings.css', import.meta.url), 'utf8');
 
-  assert.match(html, /id="rankingsPinnedStrip"/);
-  assert.match(html, /id="rankingsPinnedList"/);
+  assert.match(html, /id="rankingsPinnedBody"/);
+  assert.match(html, /id="rankingsPinnedBody"[\s\S]*id="rankingsTableBody"/);
+  assert.doesNotMatch(html, /id="rankingsPinnedStrip"/);
+  assert.doesNotMatch(html, /id="rankingsPinnedList"/);
   assert.match(source, /PINS_STORAGE_KEY/);
   assert.match(source, /pinnedUserIds/);
   assert.match(source, /data-pin-user/);
   assert.match(source, /function togglePinnedUser/);
-  assert.match(source, /function renderPinnedUsers/);
-  assert.match(css, /\.rankings-pinned-strip\s*\{[\s\S]*position\s*:\s*sticky/);
+  assert.match(source, /function renderRankingsTableRows/);
+  assert.match(source, /rankingsPinnedBody/);
+  assert.match(source, /is-pinned-row/);
+  assert.match(css, /\.rankings-table th\s*\{[\s\S]*position\s*:\s*sticky/);
+  assert.match(css, /\.rankings-pinned-row td\s*\{[\s\S]*position\s*:\s*sticky/);
   assert.match(css, /\.rankings-pin-button/);
-  assert.match(css, /\.rankings-table-panel\.has-pinned-users[\s\S]*\.rankings-table th/);
 });

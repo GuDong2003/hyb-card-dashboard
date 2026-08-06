@@ -738,10 +738,6 @@
                     </div>
                     <span class="rankings-updated" id="rankingsUpdatedAt">—</span>
                 </div>
-                <div class="rankings-pinned-strip is-hidden" id="rankingsPinnedStrip" aria-label="置顶用户">
-                    <span class="rankings-pinned-label">置顶</span>
-                    <div class="rankings-pinned-list" id="rankingsPinnedList"></div>
-                </div>
                 <div class="rankings-table-wrap">
                     <table class="rankings-table">
                         <colgroup>
@@ -770,6 +766,7 @@
                                 <th>趋势</th>
                             </tr>
                         </thead>
+                        <tbody id="rankingsPinnedBody" class="rankings-pinned-body" aria-label="置顶用户"></tbody>
                         <tbody id="rankingsTableBody">
                             <tr><td class="rankings-empty" colspan="10">暂无榜单数据</td></tr>
                         </tbody>
