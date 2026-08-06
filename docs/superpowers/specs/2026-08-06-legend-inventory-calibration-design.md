@@ -68,6 +68,13 @@
 - 保留现有字段读取兼容，不清空用户已有输入。
 - 计算器保存快照时同时保存新字段，字段变化立即触发重算。
 
+### 新用户默认值
+
+- 首次打开且没有本地快照时，`currentCards`、`redeemedSets`、`currentUsableCards`、`stardustBalance` 的输入框保持空白，要求用户手动填写。
+- `currentDay` 和 `currentTotalDraws` 仍使用动态默认值。
+- 不更换 `SNAPSHOT_STORAGE_KEY`；已有用户的本地快照继续恢复原值。
+- 空白输入在计算层按 0 处理，因此首次打开不会产生 NaN 或脚本错误。
+
 ## 布局
 
 - “预测基准”和“库存与星尘”均使用三列表单网格。

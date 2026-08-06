@@ -218,3 +218,34 @@ Only commit if the verification step required a correction; use a focused messag
 - [ ] **Step 5: Deploy only after verification succeeds**
 
 Run `npm run deploy` from `/Volumes/Samsung980PRO/CODE/LINUXDO-js/hyb-card-dashboard` and record the deployed result. Do not claim deployment until the command succeeds.
+
+### Task 5: Keep manual inventory inputs blank for new users
+
+**Files:**
+- Modify: `site/index.html:510-530` for labels and empty initial values
+- Modify: `test/legend-inventory.test.js` for first-visit defaults and cache-key assertions
+
+- [ ] **Step 1: Write the failing test**
+
+Assert that `currentCards`, `redeemedSets`, `currentUsableCards`, and `stardustBalance` use `value=""`; assert that the labels read `抽出传说` with `不含合成` and `当前可用传说` with `含合成`; assert that `SNAPSHOT_STORAGE_KEY` remains `legend-card-calculator-snapshot-v1`.
+
+- [ ] **Step 2: Run the focused test and verify it fails**
+
+Run `node --test test/legend-inventory.test.js`; expected: FAIL because the current HTML still contains the old labels and numeric defaults.
+
+- [ ] **Step 3: Implement the default and label changes**
+
+Change only the initial HTML values and labels. Keep `restoreSnapshot`, `saveSnapshot`, and the storage key unchanged so a saved browser snapshot still wins over the blank HTML defaults. Leave calculation parsing as `Number.parseInt(value, 10) || 0`.
+
+- [ ] **Step 4: Run focused and full tests**
+
+Run `node --test test/legend-inventory.test.js` and then `npm test`; expected: all tests pass.
+
+- [ ] **Step 5: Build and commit**
+
+Run `npm run build`, then:
+
+```bash
+git add site/index.html test/legend-inventory.test.js docs/superpowers/specs/2026-08-06-legend-inventory-calibration-design.md docs/superpowers/plans/2026-08-06-legend-inventory-calibration.md
+git commit -m "fix: leave manual inventory inputs blank for new users"
+```
