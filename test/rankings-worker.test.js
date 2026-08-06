@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { handleRankingsRequest } from '../src/rankings-worker.js';
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+const RESET_HOUR_MS = 4 * 60 * 60 * 1000;
+
 class FakeStatement {
   constructor(db, sql) {
     this.db = db;
@@ -64,6 +67,30 @@ class FakeD1 {
 
   async all(sql, params) {
     const normalized = sql.replace(/\s+/g, ' ').trim().toLowerCase();
+    if (normalized.includes('from rank_entries e') && normalized.includes('join rank_snapshots s') && normalized.includes('board_key in')) {
+      const [seasonId, ...keys] = params;
+      const snapshotsById = new Map(this.snapshots.map((row) => [row.id, row]));
+      return {
+        results: this.entries
+          .filter((entry) => {
+            const snapshot = snapshotsById.get(entry.snapshot_id);
+            return snapshot
+              && snapshot.season_id === seasonId
+              && keys.includes(entry.board_key);
+          })
+          .map((entry) => {
+            const snapshot = snapshotsById.get(entry.snapshot_id);
+            return {
+              ...entry,
+              scope: snapshot.scope,
+              captured_at: snapshot.captured_at,
+              captured_bucket: snapshot.captured_bucket,
+              snapshot_id: snapshot.id
+            };
+          })
+          .sort((left, right) => left.captured_at - right.captured_at || left.rank - right.rank)
+      };
+    }
     if (normalized.includes('from rank_entries e') && normalized.includes('join rank_snapshots s')) {
       const [seasonId, userId] = params;
       const snapshotsById = new Map(this.snapshots.map((row) => [row.id, row]));
@@ -255,9 +282,9 @@ test('pairs same-period epic and spend rows and marks partial or missing estimat
   assert.equal(missing.isPartial, true);
 });
 
-test('keeps historical raw values but does not pair metrics across capture batches', async () => {
+test('keeps historical raw values but does not pair metrics across different days', async () => {
   const environment = env();
-  const oldCapturedAt = Date.now() - 3_600_000;
+  const oldCapturedAt = Date.now() - DAY_MS - 1000;
   const currentCapturedAt = Date.now() - 1000;
   const post = (snapshot) => handleRankingsRequest(request('/api/rankings/snapshots', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(snapshot)
@@ -287,8 +314,56 @@ test('keeps historical raw values but does not pair metrics across capture batch
   assert.equal(row.freePulls, null);
   assert.equal(row.estimatedPulls, null);
   assert.equal(row.estimatedLegendProbability, null);
-  assert.equal(row.estimateStatus, 'missing_current_spend');
+  assert.equal(row.estimateStatus, 'missing_common_day');
   assert.equal(row.isPartial, true);
+});
+
+test('pairs the latest available rows within a day instead of requiring the same hour', async () => {
+  const environment = env();
+  const base = Math.floor((Date.now() - (2 * DAY_MS) - RESET_HOUR_MS) / DAY_MS) * DAY_MS
+    + RESET_HOUR_MS;
+  const firstCapture = base + 60 * 60 * 1000;
+  const laterSameDayCapture = base + 6 * 60 * 60 * 1000;
+  const nextDayCapture = base + DAY_MS + 60 * 60 * 1000;
+  const post = (snapshot) => handleRankingsRequest(request('/api/rankings/snapshots', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(snapshot)
+  }), environment);
+
+  await post({
+    season: { id: 'season-daily-pair', name: '按日配对测试' },
+    scope: 'global', capturedAt: firstCapture,
+    leaderboards: {
+      epic_total: [{ userId: 'u-1', userName: '日内用户', value: 30, rank: 1, isVip: true }],
+      spend_total: [{ userId: 'u-1', userName: '日内用户', value: 12_000_000_000, rank: 1, isVip: true }]
+    }
+  });
+  await post({
+    season: { id: 'season-daily-pair', name: '按日配对测试' },
+    scope: 'global', capturedAt: laterSameDayCapture,
+    leaderboards: {
+      epic_total: [{ userId: 'u-1', userName: '日内用户', value: 31, rank: 1, isVip: true }]
+    }
+  });
+  await post({
+    season: { id: 'season-daily-pair', name: '按日配对测试' },
+    scope: 'global', capturedAt: nextDayCapture,
+    leaderboards: {
+      sets_total: [{ userId: 'u-1', userName: '日内用户', value: 2, rank: 1, isVip: true }]
+    }
+  });
+
+  const response = await handleRankingsRequest(request('/api/rankings/leaderboard?period=total'), environment);
+  const payload = await response.json();
+  const row = payload.rows.find((item) => item.userId === 'u-1');
+  assert.equal(row.epicTotal, 31);
+  assert.equal(row.spendUsd, 24_000);
+  assert.equal(row.paidPulls, 2_400);
+  assert.equal(row.freePulls, 200);
+  assert.equal(row.estimatedPulls, 2_600);
+  assert.equal(row.estimatedLegendProbability, 31 / 2_600);
+  assert.equal(row.estimateDayStartAt, base);
+  assert.equal(row.estimateUsesHistoricalData, true);
+  assert.equal(row.estimateStatus, 'complete_days');
 });
 
 test('converts spend values to USD and exposes a probability-ranked luck board', async () => {

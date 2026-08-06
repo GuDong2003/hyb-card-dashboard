@@ -11,6 +11,7 @@ import {
 import { mergeMetric } from './rankings-merge.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const RESET_HOUR_MS = 4 * 60 * 60 * 1000;
 const DEFAULT_SEASON_START_AT = Date.parse('2026-08-02T04:00:00+08:00');
 const BOARD_GROUPS = new Set(['users', 'epic', 'spend', 'sets', 'luck']);
 const PERIODS = new Set(['today', 'week', 'month', 'total']);
@@ -391,7 +392,7 @@ async function getUsersLeaderboard(url, env, latest) {
   const limit = limitValue == null || limitValue === '' ? null : normalizeLimit(limitValue);
   const previous = await previousSnapshot(env, latest);
   const [currentMetricRows, previousEpicRows, previousSpendRows, previousSetsRows] = await Promise.all([
-    metricsForPeriod(env, latest.season_id, period),
+    dailyMetricsForPeriod(env, latest.season_id, period),
     previous ? entriesForSnapshot(env, previous.id, `epic_${period}`, null) : Promise.resolve([]),
     previous ? entriesForSnapshot(env, previous.id, `spend_${period}`, null) : Promise.resolve([]),
     previous ? entriesForSnapshot(env, previous.id, `sets_${period}`, null) : Promise.resolve([])
@@ -399,7 +400,7 @@ async function getUsersLeaderboard(url, env, latest) {
   const currentEpicRows = currentMetricRows.filter((row) => row.board_key === `epic_${period}`);
   const currentSpendRows = currentMetricRows.filter((row) => row.board_key === `spend_${period}`);
   const currentSetsRows = currentMetricRows.filter((row) => row.board_key === `sets_${period}`);
-  const currentUsers = summarizeUsers(currentEpicRows, currentSpendRows, currentSetsRows, sort, latest.captured_bucket)
+  const currentUsers = summarizeDailyUsers(currentMetricRows, sort, latest)
     .map((row) => ({ ...row, boardKey: `users_${period}` }));
   const previousUsers = summarizeUsers(previousEpicRows, previousSpendRows, previousSetsRows, sort)
     .map((row) => ({ ...row, boardKey: `users_${period}` }))
@@ -441,6 +442,166 @@ async function metricsForPeriod(env, seasonId, period) {
     WHERE season_id = ? AND board_key IN (?, ?, ?)
   `).bind(seasonId, ...keys).all();
   return result.results || [];
+}
+
+async function dailyMetricsForPeriod(env, seasonId, period) {
+  const keys = [`epic_${period}`, `spend_${period}`, `sets_${period}`];
+  const result = await env.RANKINGS_DB.prepare(`
+    SELECT e.snapshot_id, e.board_key, e.user_id, e.user_name, e.avatar_url, e.value, e.rank,
+      e.is_vip, e.active_name_decoration, e.name_display_preference,
+      s.scope, s.captured_at, s.captured_bucket
+    FROM rank_entries e
+    JOIN rank_snapshots s ON s.id = e.snapshot_id
+    WHERE s.season_id = ? AND e.board_key IN (?, ?, ?)
+    ORDER BY s.captured_at ASC, e.rank ASC
+  `).bind(seasonId, ...keys).all();
+  return result.results || [];
+}
+
+function summarizeDailyUsers(rows = [], sort = 'legend', latestSnapshot = null) {
+  const users = new Map();
+  const merge = (rawRow, kind) => {
+    if (!rawRow || typeof rawRow !== 'object') return;
+    const userId = String(rawRow.user_id || rawRow.userId || '').trim();
+    if (!userId) return;
+    const current = users.get(userId) || {
+      userId,
+      userName: '',
+      avatar: '',
+      isVip: false,
+      daily: {
+        epic: new Map(),
+        spend: new Map(),
+        sets: new Map()
+      }
+    };
+    const capturedAt = Number(rawRow.captured_at);
+    const dayStartAt = dayStartAtForCapturedAt(capturedAt);
+    if (!Number.isFinite(dayStartAt)) return;
+    const byDay = current.daily[kind];
+    const existing = byDay.get(dayStartAt);
+    if (!existing || shouldReplaceDailyRow(existing, rawRow, capturedAt, kind)) {
+      byDay.set(dayStartAt, { ...rawRow, captured_at: capturedAt, dayStartAt });
+    }
+    current.userName = current.userName || String(rawRow.user_name || rawRow.userName || '').trim();
+    current.avatar = current.avatar || String(rawRow.avatar_url || rawRow.avatar || '').trim();
+    current.isVip = current.isVip || Boolean(rawRow.is_vip ?? rawRow.isVip);
+    users.set(userId, current);
+  };
+
+  for (const rawRow of rows) {
+    const boardKey = String(rawRow && rawRow.board_key || '');
+    const kind = boardKey.startsWith('epic_')
+      ? 'epic'
+      : boardKey.startsWith('spend_')
+        ? 'spend'
+        : boardKey.startsWith('sets_') ? 'sets' : null;
+    if (kind) merge(rawRow, kind);
+  }
+
+  const latestDayStartAt = dayStartAtForCapturedAt(latestSnapshot && latestSnapshot.captured_at);
+  return Array.from(users.values())
+    .map((user) => buildDailyUserSummary(user, latestDayStartAt))
+    .sort((left, right) => compareUserRows(left, right, sort));
+}
+
+function shouldReplaceDailyRow(existing, incoming, capturedAt, kind) {
+  const existingCapturedAt = Number(existing.captured_at);
+  if (capturedAt > existingCapturedAt) return true;
+  if (capturedAt < existingCapturedAt) return false;
+  if (kind === 'epic' || kind === 'spend' || kind === 'sets') {
+    return Number(incoming.value) >= Number(existing.value);
+  }
+  return false;
+}
+
+function dayStartAtForCapturedAt(capturedAt) {
+  const value = Number(capturedAt);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return Math.floor((value - RESET_HOUR_MS) / DAY_MS) * DAY_MS + RESET_HOUR_MS;
+}
+
+function latestDailyRow(rowsByDay) {
+  if (!rowsByDay || !rowsByDay.size) return null;
+  return Array.from(rowsByDay.values())
+    .sort((left, right) => right.dayStartAt - left.dayStartAt || right.captured_at - left.captured_at)[0] || null;
+}
+
+function buildDailyUserSummary(user, latestDayStartAt = null) {
+  const latestEpic = latestDailyRow(user.daily.epic);
+  const latestSpend = latestDailyRow(user.daily.spend);
+  const latestSets = latestDailyRow(user.daily.sets);
+  const source = latestEpic || latestSpend || latestSets;
+  const epicTotal = latestEpic ? Number(latestEpic.value) : null;
+  const spendValue = latestSpend ? Number(latestSpend.value) : null;
+  const exchangeCount = latestSets ? Number(latestSets.value) : null;
+  const hasEpic = epicTotal != null && Number.isFinite(epicTotal);
+  const hasSpend = spendValue != null && Number.isFinite(spendValue);
+  const commonDays = Array.from(user.daily.epic.keys())
+    .filter((dayStartAt) => user.daily.spend.has(dayStartAt))
+    .sort((left, right) => right - left);
+  const estimateDayStartAt = commonDays.length ? commonDays[0] : null;
+  const pairEpic = estimateDayStartAt == null ? null : user.daily.epic.get(estimateDayStartAt);
+  const pairSpend = estimateDayStartAt == null ? null : user.daily.spend.get(estimateDayStartAt);
+  const canDerive = Boolean(pairEpic && pairSpend);
+  const pairIsVip = Boolean(
+    user.isVip
+      || (pairEpic && (pairEpic.is_vip ?? pairEpic.isVip))
+      || (pairSpend && (pairSpend.is_vip ?? pairSpend.isVip))
+  );
+  const rawEstimate = estimatePullsFromSpend(spendValue, user.isVip);
+  let estimateStatus;
+  let estimate;
+  if (canDerive) {
+    estimate = estimatePullsFromSpend(Number(pairSpend.value), pairIsVip);
+    estimateStatus = estimate.estimateStatus;
+  } else {
+    estimateStatus = !hasEpic && !hasSpend
+      ? 'missing_pair'
+      : !hasEpic
+        ? 'missing_epic'
+        : !hasSpend
+          ? 'missing_spend'
+          : 'missing_common_day';
+    estimate = emptyEstimate(rawEstimate.spendUsd, estimateStatus);
+  }
+  const probability = canDerive
+    ? estimateLegendProbability({
+      epicTotal: Number(pairEpic.value),
+      spendValue: Number(pairSpend.value),
+      isVip: pairIsVip
+    })
+    : null;
+  const estimateUsesHistoricalData = estimateDayStartAt != null
+    && latestDayStartAt != null
+    && estimateDayStartAt < latestDayStartAt;
+  return {
+    snapshotId: source ? Number(source.snapshot_id) : null,
+    boardKey: 'users',
+    userId: user.userId,
+    userName: user.userName || String(source && source.user_name || user.userId),
+    avatar: user.avatar,
+    value: spendValue ?? epicTotal ?? exchangeCount,
+    rank: null,
+    isVip: user.isVip,
+    epicTotal,
+    spendValue,
+    spendTotal: spendValue,
+    spendUsd: rawEstimate.spendUsd,
+    estimatedDays: estimate.estimatedDays,
+    paidPulls: estimate.paidPulls,
+    freePulls: estimate.freePulls,
+    estimatedPulls: estimate.estimatedPulls,
+    exchangeCount,
+    estimateStatus,
+    estimateDayStartAt,
+    estimateUsesHistoricalData,
+    isPartial: estimateStatus !== 'complete_days' || probability == null || estimateUsesHistoricalData,
+    estimatedLegendProbability: probability,
+    previousRank: null,
+    rankDelta: null,
+    event: ''
+  };
 }
 
 function summarizeUsers(epicRows = [], spendRows = [], setsRows = [], sort = 'legend', currentCapturedBucket = null) {

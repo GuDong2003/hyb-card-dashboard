@@ -185,6 +185,10 @@ test('rankings client uses same-origin Worker APIs and the Card bridge events', 
   assert.match(source, /paidPulls/);
   assert.match(source, /freePulls/);
   assert.match(source, /low_sample/);
+  assert.match(source, /estimateDayStartAt/);
+  assert.match(source, /estimateUsesHistoricalData/);
+  assert.match(source, /missing_common_day/);
+  assert.match(source, /dayStartAtForCapturedAt/);
   assert.match(source, /运气榜/);
   assert.match(source, /partialRows/);
 });

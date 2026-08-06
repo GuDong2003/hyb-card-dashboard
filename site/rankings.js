@@ -5,6 +5,8 @@
     const BRIDGE_REQUEST = 'HYB_CARD_RANKINGS_REQUEST';
     const BRIDGE_RESPONSE = 'HYB_CARD_RANKINGS_RESPONSE';
     const BRIDGE_TIMEOUT_MS = 22000;
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const RESET_HOUR_MS = 4 * 60 * 60 * 1000;
     const HOURLY_REFRESH_MS = 60 * 60 * 1000;
     const SETTINGS_STORAGE_KEY = 'hyb-card-rankings-settings-v1';
     const PINS_STORAGE_KEY = 'hyb-card-rankings-pins-v1';
@@ -953,6 +955,149 @@
         return 'missing_pair';
     }
 
+    function dayStartAtForCapturedAt(capturedAt) {
+        const value = Number(capturedAt);
+        if (!Number.isFinite(value) || value <= 0) return null;
+        return Math.floor((value - RESET_HOUR_MS) / DAY_MS) * DAY_MS + RESET_HOUR_MS;
+    }
+
+    function shouldReplaceLocalDailyRow(existing, incoming, capturedAt) {
+        const existingCapturedAt = Number(existing && existing.__capturedAt);
+        if (!Number.isFinite(existingCapturedAt) || capturedAt > existingCapturedAt) return true;
+        if (capturedAt < existingCapturedAt) return false;
+        return rowValue(incoming) >= rowValue(existing);
+    }
+
+    function latestLocalDailyRow(rowsByDay) {
+        if (!rowsByDay || !rowsByDay.size) return null;
+        return Array.from(rowsByDay.values())
+            .sort((left, right) => Number(right.__dayStartAt) - Number(left.__dayStartAt)
+                || Number(right.__capturedAt) - Number(left.__capturedAt))[0] || null;
+    }
+
+    function summarizeLocalUsersFromSnapshots(snapshots = [], period = 'total', sort = 'legend', latestCapturedAt = null) {
+        const users = new Map();
+        const boardKinds = [
+            [`epic_${period}`, 'epic'],
+            [`spend_${period}`, 'spend'],
+            [`sets_${period}`, 'sets']
+        ];
+        snapshots.forEach((snapshot) => {
+            const source = snapshotSource(snapshot);
+            if (!source) return;
+            const capturedAt = normalizeCapturedAt(source.capturedAt, null);
+            const dayStartAt = dayStartAtForCapturedAt(capturedAt);
+            if (!capturedAt || !dayStartAt) return;
+            boardKinds.forEach(([boardKey, kind]) => {
+                const rows = Array.isArray(source.leaderboards && source.leaderboards[boardKey])
+                    ? source.leaderboards[boardKey]
+                    : [];
+                rows.forEach((rawRow) => {
+                    const userId = rowUserId(rawRow);
+                    if (!userId) return;
+                    const current = users.get(userId) || {
+                        userId,
+                        userName: '',
+                        avatar: '',
+                        isVip: false,
+                        daily: { epic: new Map(), spend: new Map(), sets: new Map() }
+                    };
+                    const row = {
+                        ...rawRow,
+                        userId,
+                        userName: rowName(rawRow, userId),
+                        avatar: rowAvatar(rawRow),
+                        isVip: rowIsVip(rawRow),
+                        __capturedAt: capturedAt,
+                        __dayStartAt: dayStartAt
+                    };
+                    const existing = current.daily[kind].get(dayStartAt);
+                    if (!existing || shouldReplaceLocalDailyRow(existing, row, capturedAt)) {
+                        current.daily[kind].set(dayStartAt, row);
+                    }
+                    current.userName = current.userName || row.userName;
+                    current.avatar = current.avatar || row.avatar;
+                    current.isVip = current.isVip || row.isVip;
+                    users.set(userId, current);
+                });
+            });
+        });
+        const latestDayStartAt = dayStartAtForCapturedAt(latestCapturedAt);
+        return Array.from(users.values())
+            .map((user) => buildLocalDailyUserSummary(user, period, latestDayStartAt))
+            .sort((left, right) => compareLocalUsers(left, right, sort));
+    }
+
+    function buildLocalDailyUserSummary(user, period, latestDayStartAt = null) {
+        const latestEpic = latestLocalDailyRow(user.daily.epic);
+        const latestSpend = latestLocalDailyRow(user.daily.spend);
+        const latestSets = latestLocalDailyRow(user.daily.sets);
+        const epicTotal = rowValue(latestEpic);
+        const spendValue = rowValue(latestSpend);
+        const exchangeCount = rowValue(latestSets);
+        const hasEpic = epicTotal != null && Number.isFinite(epicTotal);
+        const hasSpend = spendValue != null && Number.isFinite(spendValue);
+        const commonDays = Array.from(user.daily.epic.keys())
+            .filter((dayStartAt) => user.daily.spend.has(dayStartAt))
+            .sort((left, right) => right - left);
+        const estimateDayStartAt = commonDays.length ? commonDays[0] : null;
+        const pairEpic = estimateDayStartAt == null ? null : user.daily.epic.get(estimateDayStartAt);
+        const pairSpend = estimateDayStartAt == null ? null : user.daily.spend.get(estimateDayStartAt);
+        const canDerive = Boolean(pairEpic && pairSpend);
+        const pairIsVip = Boolean(user.isVip || rowIsVip(pairEpic) || rowIsVip(pairSpend));
+        const rawEstimate = estimateFromSpend(spendValue, user.isVip);
+        let estimate;
+        let estimateStatus;
+        if (canDerive) {
+            estimate = estimateFromSpend(rowValue(pairSpend), pairIsVip);
+            estimateStatus = estimate.estimateStatus;
+        } else {
+            estimateStatus = !hasEpic && !hasSpend
+                ? 'missing_pair'
+                : !hasEpic
+                    ? 'missing_epic'
+                    : !hasSpend
+                        ? 'missing_spend'
+                        : 'missing_common_day';
+            estimate = emptyLocalEstimate(rawEstimate.spendUsd, estimateStatus);
+        }
+        const probability = canDerive
+            ? estimatedProbability(rowValue(pairEpic), rowValue(pairSpend), pairIsVip)
+            : null;
+        const estimateUsesHistoricalData = estimateDayStartAt != null
+            && latestDayStartAt != null
+            && estimateDayStartAt < latestDayStartAt;
+        return {
+            snapshotId: null,
+            boardKey: `users_${period}`,
+            userId: user.userId,
+            userName: user.userName || user.userId,
+            avatar: user.avatar,
+            value: spendValue ?? epicTotal ?? exchangeCount,
+            rank: null,
+            isVip: user.isVip,
+            previousRank: null,
+            previousValue: null,
+            rankDelta: null,
+            valueDelta: null,
+            event: '',
+            epicTotal,
+            spendValue,
+            spendTotal: spendValue,
+            spendUsd: rawEstimate.spendUsd,
+            estimatedDays: estimate.estimatedDays,
+            paidPulls: estimate.paidPulls,
+            freePulls: estimate.freePulls,
+            estimatedPulls: estimate.estimatedPulls,
+            exchangeCount,
+            estimateStatus,
+            estimateDayStartAt,
+            estimateUsesHistoricalData,
+            isPartial: estimateStatus !== 'complete_days' || probability == null || estimateUsesHistoricalData,
+            estimatedLegendProbability: probability
+        };
+    }
+
     function pairLocalRows(epicRows = [], spendRows = []) {
         const users = new Map();
         const merge = (rawRow, kind) => {
@@ -1225,7 +1370,8 @@
     }
 
     function localLeaderboardPayload(snapshotOrBundle) {
-        const source = mergeLocalSnapshots(normalizeSnapshotsForUpload(snapshotOrBundle));
+        const normalizedSnapshots = normalizeSnapshotsForUpload(snapshotOrBundle);
+        const source = mergeLocalSnapshots(normalizedSnapshots);
         const leaderboards = source && source.leaderboards;
         if (!source || !leaderboards || typeof leaderboards !== 'object') return null;
         const boardKey = `${state.board}_${state.period}`;
@@ -1239,7 +1385,7 @@
         const currentCapturedBucket = Math.floor(currentCapturedAt / HOURLY_REFRESH_MS);
         if (state.board === 'users') {
             const sort = state.sort || 'legend';
-            const rows = summarizeLocalUsers(epicRows, spendRows, setsRows, sort, currentCapturedBucket)
+            const rows = summarizeLocalUsersFromSnapshots(normalizedSnapshots, state.period, sort, currentCapturedAt)
                 .map((row, index) => ({ ...row, rank: index + 1 }));
             return {
                 ok: true,
@@ -1497,7 +1643,7 @@
         const avatar = row.avatar
             ? `<img class="rank-avatar" data-initials="${initials(row.userName)}" src="${escapeHtml(row.avatar)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
             : `<span class="rank-avatar-fallback">${initials(row.userName)}</span>`;
-        const status = formatEstimateStatus(row.estimateStatus, row.isPartial);
+        const status = formatEstimateStatus(row.estimateStatus, row.isPartial, row);
         return `<tr class="${rowClass}"${pinStyle} data-user-id="${escapeHtml(row.userId)}">
             <td class="rank-number">${formatNumber(rankNumber)}</td>
             <td>${row.isVip ? '<span class="rank-vip">VIP</span>' : ''}</td>
@@ -1595,17 +1741,26 @@
             .some((value) => String(value || '').toLowerCase().includes(query)));
     }
 
-    function formatEstimateStatus(status, isPartial) {
+    function formatEstimateDay(value) {
+        const time = Number(value);
+        if (!Number.isFinite(time) || time <= 0) return '';
+        return new Date(time).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
+    }
+
+    function formatEstimateStatus(status, isPartial, row = {}) {
+        const day = row && row.estimateUsesHistoricalData ? formatEstimateDay(row.estimateDayStartAt) : '';
+        const prefix = day ? `截至 ${day} · ` : '';
         if (status === 'missing_pair') return '缺少欧皇榜与消费榜';
         if (status === 'missing_current_pair') return '当前批次缺少双榜';
         if (status === 'missing_spend') return '缺少消费榜';
         if (status === 'missing_current_spend') return '当前批次缺少消费榜';
         if (status === 'missing_epic') return '缺少欧皇榜';
         if (status === 'missing_current_epic') return '当前批次缺少欧皇榜';
-        if (status === 'low_sample') return '低样本 / 数据不足';
-        if (status === 'partial_day') return '非完整天数 / 估算';
-        if (isPartial) return '数据不完整';
-        return '完整天数';
+        if (status === 'missing_common_day') return '缺少共同日期';
+        if (status === 'low_sample') return `${prefix}低样本 / 数据不足`;
+        if (status === 'partial_day') return `${prefix}非完整天数 / 估算`;
+        if (isPartial) return `${prefix}数据不完整`;
+        return `${prefix}完整天数`;
     }
 
     function formatOptionalNumber(value) {
