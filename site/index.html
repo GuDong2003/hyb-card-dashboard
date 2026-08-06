@@ -608,11 +608,11 @@
                     <p class="panel-subtitle">SP 可以积攒到后续轮次统一使用；平时兑换默认不消耗 SP，系统按收益最高的轮次分配。</p>
                 </div>
                 <div class="sp-toolbar">
+                    <div class="sp-stats" id="spStats">预计 0 点 · 使用上限 0 点 · 已分配 0 点</div>
                     <label class="sp-cap-field" for="spPointCap">
                         <span>SP 点数上限</span>
                         <input id="spPointCap" type="number" min="0" step="1" inputmode="numeric" placeholder="自动估算" oninput="handleSPPointCapInput()">
                     </label>
-                    <div class="sp-stats" id="spStats">预计 0 点 · 使用上限 0 点 · 已分配 0 点</div>
                     <button class="btn" type="button" onclick="autoAllocateSP()">一键最优分配</button>
                     <button class="btn btn-secondary" type="button" onclick="clearSPAllocation()">清空分配</button>
                 </div>
@@ -640,6 +640,22 @@
             </div>
             <div class="table-container">
                 <table class="simulation-table">
+                    <colgroup>
+                        <col class="simulation-col-day">
+                        <col class="simulation-col-day-cards">
+                        <col class="simulation-col-cumulative-drawn">
+                        <col class="simulation-col-previous-additional">
+                        <col class="forge-column simulation-col-dust is-hidden">
+                        <col class="forge-column simulation-col-crafted is-hidden">
+                        <col class="forge-column simulation-col-crafted-sets is-hidden">
+                        <col class="forge-column simulation-col-dissolve-cost is-hidden">
+                        <col class="simulation-col-usable">
+                        <col class="simulation-col-sets">
+                        <col class="sp-column simulation-col-sp-bonus is-hidden">
+                        <col class="simulation-col-revenue">
+                        <col class="simulation-col-cost">
+                        <col class="simulation-col-profit">
+                    </colgroup>
                     <thead>
                         <tr>
                             <th>天数</th>
@@ -670,10 +686,14 @@
             <div class="rankings-primary-actions">
                 <button class="btn" type="button" id="rankingsRefreshButton" title="通过用户脚本立即获取榜单">↻ 立即刷新</button>
                 <button class="btn" type="button" id="rankingsUploadButton" disabled>上传云端</button>
-                <div class="rankings-source-status" id="rankingsStatus" aria-live="polite">等待榜单数据</div>
+                <div class="rankings-source-status" id="rankingsStatus" data-state="idle" aria-live="polite">等待榜单数据</div>
                 <span class="rankings-upload-status" id="rankingsUploadStatus">尚无待上传的本地快照</span>
             </div>
             <div class="rankings-secondary-actions">
+                <label class="rankings-upload-toggle">
+                    <span class="rankings-toggle-copy"><strong>每小时刷新</strong><small>页面打开时自动抓取</small></span>
+                    <span class="rankings-toggle-control"><input id="rankingsHourlyRefresh" type="checkbox"><span class="rankings-toggle-track"></span></span>
+                </label>
                 <label class="rankings-upload-toggle">
                     <span class="rankings-toggle-copy"><strong>自动上传</strong><small>抓取后写入共享榜单</small></span>
                     <span class="rankings-toggle-control"><input id="rankingsAutoUpload" type="checkbox"><span class="rankings-toggle-track"></span></span>
@@ -683,70 +703,119 @@
             </div>
         </section>
 
-        <section class="rankings-switcher panel" aria-label="榜单和周期选择">
-            <div class="rankings-table-intro">
-                <strong>用户总览</strong>
-                <span>按 userId 合并欧皇榜、消费榜和兑换榜；缺失数据保持空白。</span>
-            </div>
-            <div class="rankings-selectors">
-                <label>显示周期
-                    <select id="rankingsPeriodSelect">
-                        <option value="total" selected>整个赛季</option>
-                        <option value="today">今日</option>
-                        <option value="week">本周</option>
-                        <option value="month">本月</option>
-                    </select>
-                </label>
-                <label>排序方式
-                    <select id="rankingsSortSelect">
-                        <option value="probability" selected>出卡率</option>
-                        <option value="spend">消费金额</option>
-                        <option value="pulls">抽卡次数</option>
-                        <option value="sets">兑换次数</option>
-                        <option value="user">用户</option>
-                    </select>
-                </label>
-            </div>
-        </section>
-
         <section class="rankings-summary" id="rankingsSummary" aria-label="榜单摘要"></section>
 
         <section class="rankings-grid">
             <section class="panel rankings-table-panel">
-                <div class="rankings-overview-search">
-                    <label for="rankingsUserSearch">搜索用户名或用户 ID</label>
-                    <input id="rankingsUserSearch" type="search" placeholder="输入关键词筛选用户总览" autocomplete="off">
-                </div>
                 <div class="panel-header rankings-panel-header">
-                    <div>
-                        <span class="section-kicker" id="rankingsBoardKicker">users · total</span>
-                        <h2 id="rankingsBoardTitle">用户总览 · 整个赛季</h2>
+                    <div class="rankings-board-heading">
+                        <h2 id="rankingsBoardTitle">用户总览</h2>
+                        <label class="rankings-period-control" for="rankingsPeriodSelect">
+                            <span class="sr-only">显示周期</span>
+                            <select id="rankingsPeriodSelect">
+                                <option value="total" selected>整个赛季</option>
+                                <option value="today">今日</option>
+                                <option value="week">本周</option>
+                                <option value="month">本月</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="rankings-overview-search">
+                        <label class="sr-only" for="rankingsUserSearch">搜索用户名或用户 ID</label>
+                        <input id="rankingsUserSearch" type="search" placeholder="搜索用户或 ID" autocomplete="off">
                     </div>
                     <span class="rankings-updated" id="rankingsUpdatedAt">—</span>
                 </div>
                 <div class="rankings-table-wrap">
                     <table class="rankings-table">
+                        <colgroup>
+                            <col class="rankings-col-rank">
+                            <col class="rankings-col-vip">
+                            <col class="rankings-col-user">
+                            <col class="rankings-col-legend">
+                            <col class="rankings-col-spend">
+                            <col class="rankings-col-pulls">
+                            <col class="rankings-col-sets">
+                            <col class="rankings-col-probability">
+                            <col class="rankings-col-status">
+                            <col class="rankings-col-trend">
+                        </colgroup>
                         <thead>
                             <tr>
                                 <th>排名</th>
-                                <th>用户</th>
                                 <th>VIP</th>
-                                <th>传说卡数量</th>
-                                <th>消费金额</th>
-                                <th>抽卡次数</th>
-                                <th>兑换次数</th>
-                                <th>出卡率</th>
+                                <th><button class="rankings-sort-button" type="button" data-rank-sort="user" aria-sort="none">用户 <span class="sort-indicator" aria-hidden="true">↕</span></button></th>
+                                <th><button class="rankings-sort-button" type="button" data-rank-sort="legend" aria-sort="none">传说卡数量 <span class="sort-indicator" aria-hidden="true">↕</span></button></th>
+                                <th><button class="rankings-sort-button" type="button" data-rank-sort="spend" aria-sort="none">消费金额 <span class="sort-indicator" aria-hidden="true">↕</span></button></th>
+                                <th><button class="rankings-sort-button" type="button" data-rank-sort="pulls" aria-sort="none">抽卡次数 <span class="sort-indicator" aria-hidden="true">↕</span></button></th>
+                                <th><button class="rankings-sort-button" type="button" data-rank-sort="sets" aria-sort="none">兑换次数 <span class="sort-indicator" aria-hidden="true">↕</span></button></th>
+                                <th><button class="rankings-sort-button is-active" type="button" data-rank-sort="probability" aria-sort="descending">出卡率 <span class="sort-indicator" aria-hidden="true">↓</span></button></th>
                                 <th>状态</th>
+                                <th>趋势</th>
                             </tr>
                         </thead>
                         <tbody id="rankingsTableBody">
-                            <tr><td class="rankings-empty" colspan="9">暂无榜单数据</td></tr>
+                            <tr><td class="rankings-empty" colspan="10">暂无榜单数据</td></tr>
                         </tbody>
                     </table>
                 </div>
                 <div class="rankings-notice is-hidden" id="rankingsPartialNotice" aria-live="polite"></div>
             </section>
         </section>
+
+        <div class="rankings-trend-backdrop is-hidden" id="rankingsTrendBackdrop">
+            <section class="panel rankings-trend-panel rankings-trend-modal" id="rankingsTrendPanel" role="dialog" aria-modal="true" aria-labelledby="rankingsTrendTitle">
+                <div class="panel-header rankings-trend-header rankings-trend-modal-head">
+                    <div>
+                        <span class="section-kicker">User Trend</span>
+                        <h2 id="rankingsTrendTitle">用户趋势</h2>
+                        <p class="panel-subtitle">默认按整个赛季、北京时间凌晨 4 点聚合每天最后可见数据；缺失日期保持空白。</p>
+                    </div>
+                    <button class="rankings-trend-close" type="button" id="rankingsTrendCloseButton" aria-label="关闭用户趋势" title="关闭">×</button>
+                </div>
+                <div class="rankings-trend-modal-body">
+                    <div class="rankings-trend-actions">
+                        <label class="rankings-trend-metric" for="rankingsTrendPeriodSelect">
+                            <span>周期</span>
+                            <select id="rankingsTrendPeriodSelect">
+                                <option value="total" selected>整个赛季</option>
+                                <option value="today">今日</option>
+                                <option value="week">本周</option>
+                                <option value="month">本月</option>
+                            </select>
+                        </label>
+                        <label class="rankings-trend-metric" for="rankingsTrendMetric">
+                            <span>指标</span>
+                            <select id="rankingsTrendMetric">
+                                <option value="epicTotal" selected>传说卡数量</option>
+                                <option value="spendUsd">消费金额</option>
+                                <option value="estimatedPulls">抽卡次数</option>
+                                <option value="exchangeCount">兑换次数</option>
+                                <option value="estimatedLegendProbability">出卡率</option>
+                            </select>
+                        </label>
+                        <div class="rankings-trend-mode" role="group" aria-label="趋势粒度">
+                            <button class="rankings-trend-mode-button is-active" type="button" id="rankingsTrendModeDaily" data-trend-mode="daily" aria-pressed="true">按天</button>
+                            <button class="rankings-trend-mode-button" type="button" id="rankingsTrendModeSnapshot" data-trend-mode="snapshot" aria-pressed="false">实际抓取</button>
+                        </div>
+                    </div>
+                    <div class="rankings-trend-toolbar">
+                        <label class="rankings-trend-search" for="rankingsTrendUserSearch">
+                            <span>添加用户</span>
+                            <input id="rankingsTrendUserSearch" type="search" list="rankingsTrendUserOptions" placeholder="输入用户名或用户 ID" autocomplete="off">
+                            <datalist id="rankingsTrendUserOptions"></datalist>
+                        </label>
+                        <button class="btn rankings-trend-add" type="button" id="rankingsTrendAddButton">添加对比</button>
+                        <div class="rankings-trend-selected" id="rankingsTrendSelected" aria-live="polite"></div>
+                    </div>
+                    <div class="rankings-trend-chart-wrap">
+                        <svg id="rankingsTrendChart" class="rankings-trend-chart" viewBox="0 0 960 360" role="img" aria-label="用户趋势曲线"></svg>
+                        <div class="rankings-trend-empty" id="rankingsTrendEmpty">添加用户后显示趋势曲线</div>
+                    </div>
+                    <div class="rankings-trend-legend" id="rankingsTrendLegend" aria-label="趋势图例"></div>
+                </div>
+            </section>
+        </div>
 
     </section>
 </div>
@@ -916,6 +985,15 @@
         return Math.max(min, Math.min(max, Number.isFinite(parsed) ? parsed : min));
     }
 
+    function resolveSPPointCap(currentValue, availableLegendaryCards, syncSPPointCap) {
+        const availableCards = Math.max(0, Number(availableLegendaryCards) || 0);
+        const derivedCap = Math.floor(availableCards * 0.1);
+        if (syncSPPointCap) return derivedCap;
+
+        const parsed = Number.parseInt(currentValue, 10);
+        return Number.isFinite(parsed) && parsed >= 0 ? parsed : derivedCap;
+    }
+
     function getSPGridColumnCount(grid) {
         const columns = getComputedStyle(grid).gridTemplateColumns
             .split(/\s+/)
@@ -1049,26 +1127,26 @@
         if (!isSPAllocationFeasible(candidate, totalSets, spPointCap)) return;
         spAllocation.clear();
         candidate.forEach((points, targetRound) => spAllocation.set(targetRound, points));
-        calculate();
+        calculate(false, false);
     }
 
     function autoAllocateSP() {
         const optimal = getOptimalSPAllocation(latestProjection.totalSets, latestProjection.spPointCap);
         spAllocation.clear();
         optimal.forEach((points, round) => spAllocation.set(round, points));
-        calculate();
+        calculate(false, false);
         const focusRound = getFirstSPFocusRound(spAllocation);
         if (focusRound !== null) focusSPRound(focusRound);
     }
 
     function handleSPPointCapInput() {
         spAllocation.clear();
-        calculate(true);
+        calculate(true, false);
     }
 
     function clearSPAllocation() {
         spAllocation.clear();
-        calculate();
+        calculate(false, false);
     }
 
     function createSPRoundCard(round, points, canIncrease, row, column) {
@@ -1256,7 +1334,7 @@
         renderSPWindow();
     }
 
-    function calculate(autoAllocateSPPoints = false) {
+    function calculate(autoAllocateSPPoints = false, syncSPPointCap = true) {
         const currentDay = clampInteger(document.getElementById('currentDay').value, 1, 90);
         const currentCards = Math.max(0, Number.parseInt(document.getElementById('currentCards').value, 10) || 0);
         const currentTotalDraws = Math.max(0, Number.parseInt(document.getElementById('currentTotalDraws').value, 10) || 0);
@@ -1352,13 +1430,16 @@
 
         const lastPreliminaryRow = tableData[tableData.length - 1];
         const spPointCapInput = document.getElementById('spPointCap');
-        const parsedSPPointCap = Number.parseInt(spPointCapInput.value, 10);
-        const spPointCap = Number.isFinite(parsedSPPointCap) && parsedSPPointCap >= 0
-            ? parsedSPPointCap
-            : lastPreliminaryRow.earnedSP;
-        if (!Number.isFinite(parsedSPPointCap) || parsedSPPointCap < 0) {
+        const spPointCap = resolveSPPointCap(
+            spPointCapInput.value,
+            lastPreliminaryRow.usableCards,
+            syncSPPointCap
+        );
+        const isEditingSPPointCap = document.activeElement === spPointCapInput;
+        if (syncSPPointCap || (!isEditingSPPointCap && spPointCapInput.value === '')) {
             spPointCapInput.value = String(spPointCap);
         }
+        if (syncSPPointCap) saveSnapshot();
         latestProjection = {
             totalSets: lastPreliminaryRow.cumulativeSets,
             earnedSP: lastPreliminaryRow.earnedSP,
@@ -1477,7 +1558,7 @@
     restoreSnapshot();
     applyTheme();
     installThemeListener();
-    calculate();
+    calculate(false, false);
 </script>
 <script src="/rankings.js"></script>
 

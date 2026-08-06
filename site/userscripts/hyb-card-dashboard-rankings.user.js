@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HYB Card Dashboard 榜单同步
 // @namespace    https://card.gudong226.com/
-// @version      1.1.0
+// @version      1.2.0
 // @description  在 Card Dashboard 页面按需读取 CDK 卡牌榜单并回传给榜单统计视图。
 // @match        https://card.gudong226.com/*
 // @match        https://cdk.hybgzs.com/*
@@ -18,7 +18,12 @@
 
   const CARD_ORIGIN = 'https://card.gudong226.com';
   const CDK_ORIGIN = 'https://cdk.hybgzs.com';
-  const SOURCE_API = 'https://cdk.hybgzs.com/api/cards/leaderboard?scope=global';
+  const SOURCE_APIS = Object.freeze({
+    global: 'https://cdk.hybgzs.com/api/cards/leaderboard?scope=global',
+    friends: 'https://cdk.hybgzs.com/api/cards/leaderboard?scope=friends'
+  });
+  const SOURCE_ENTRIES = Object.freeze(Object.entries(SOURCE_APIS).map(([scope, url]) => ({ scope, url })));
+  const SOURCE_API = SOURCE_APIS.global;
   const BRIDGE_READY = 'HYB_CARD_RANKINGS_BRIDGE_READY';
   const BRIDGE_REQUEST = 'HYB_CARD_RANKINGS_REQUEST';
   const BRIDGE_RESPONSE = 'HYB_CARD_RANKINGS_RESPONSE';
@@ -60,20 +65,34 @@
       : null;
   }
 
-  function normalizeSnapshot(snapshot) {
+  function normalizeSnapshot(snapshot, scopeHint = '') {
     const source = snapshot && snapshot.data && snapshot.data.leaderboards
       ? snapshot.data
       : snapshot;
     if (!source || typeof source !== 'object') return snapshot;
     return {
       ...source,
+      scope: String(source.scope || scopeHint || '').trim(),
       capturedAt: normalizeCapturedAt(source.capturedAt, null)
         || normalizeCapturedAt(source.lastUpdatedAt, null)
         || Date.now()
     };
   }
 
-  function requestWithGm() {
+  function normalizeSnapshotBundle(bundle) {
+    const snapshots = Array.isArray(bundle && bundle.snapshots)
+      ? bundle.snapshots
+      : bundle && bundle.snapshot
+        ? [bundle.snapshot]
+        : [bundle];
+    return {
+      snapshots: snapshots.filter(Boolean).map((snapshot) => normalizeSnapshot(snapshot, snapshot && snapshot.scope)),
+      errors: Array.isArray(bundle && bundle.errors) ? bundle.errors : [],
+      partial: Boolean(bundle && bundle.partial)
+    };
+  }
+
+  function requestWithGm(url, scope) {
     if (typeof GM_xmlhttpRequest !== 'function') return null;
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -84,7 +103,7 @@
       };
       GM_xmlhttpRequest({
         method: 'GET',
-        url: SOURCE_API,
+        url,
         headers: { accept: 'application/json' },
         responseType: 'json',
         anonymous: false,
@@ -98,7 +117,7 @@
             return;
           }
           try {
-            finish(resolve, normalizeSnapshot(response.response || JSON.parse(response.responseText || '{}')));
+            finish(resolve, normalizeSnapshot(response.response || JSON.parse(response.responseText || '{}'), scope));
           } catch (error) {
             finish(reject, error);
           }
@@ -115,8 +134,8 @@
     });
   }
 
-  async function requestWithFetch() {
-    const response = await fetch(SOURCE_API, {
+  async function requestWithFetch(url, scope) {
+    const response = await fetch(url, {
       method: 'GET',
       credentials: 'include',
       cache: 'no-store',
@@ -127,7 +146,32 @@
       error.status = response.status;
       throw error;
     }
-    return normalizeSnapshot(await response.json());
+    return normalizeSnapshot(await response.json(), scope);
+  }
+
+  async function requestAllSources(requester) {
+    const results = await Promise.allSettled(SOURCE_ENTRIES.map(({ scope, url }) => requester(url, scope)));
+    const snapshots = [];
+    const errors = [];
+    results.forEach((result, index) => {
+      if (result.status === 'fulfilled' && result.value) {
+        snapshots.push(normalizeSnapshot(result.value, SOURCE_ENTRIES[index].scope));
+      } else {
+        const error = result.reason || new Error('榜单请求失败');
+        errors.push({
+          scope: SOURCE_ENTRIES[index].scope,
+          status: Number(error && error.status) || 0,
+          error: friendlyError(error)
+        });
+      }
+    });
+    if (!snapshots.length) {
+      const firstError = errors[0] || {};
+      const error = new Error(firstError.error || '两个榜单来源都请求失败');
+      error.status = firstError.status;
+      throw error;
+    }
+    return { snapshots, errors, partial: errors.length > 0 };
   }
 
   function setupRelayResponseListener() {
@@ -138,7 +182,9 @@
       if (!pending) return;
       relayPending.delete(value.requestId);
       window.clearTimeout(pending.timeoutId);
-      if (value.ok && value.snapshot) pending.resolve(value.snapshot);
+      if (value.ok && (Array.isArray(value.snapshots) || value.snapshot)) {
+        pending.resolve(normalizeSnapshotBundle(value));
+      }
       else pending.reject(Object.assign(new Error(value.error || 'CDK 榜单请求失败'), { status: value.status }));
     });
   }
@@ -161,7 +207,8 @@
       GM_setValue(RELAY_REQUEST_KEY, {
         requestId,
         requestedAt: Date.now(),
-        source: CARD_ORIGIN
+        source: CARD_ORIGIN,
+        sources: SOURCE_ENTRIES
       });
     });
     return promise;
@@ -171,8 +218,12 @@
     if (inFlight) return inFlight;
     inFlight = (async () => {
       const relay = requestWithCdkRelay();
-      if (relay) return relay.then(normalizeSnapshot);
-      return (requestWithGm() || requestWithFetch()).then(normalizeSnapshot);
+      if (relay) return relay;
+      return requestAllSources((url, scope) => (
+        typeof GM_xmlhttpRequest === 'function'
+          ? requestWithGm(url, scope)
+          : requestWithFetch(url, scope)
+      ));
     })().finally(() => {
       inFlight = null;
     });
@@ -186,12 +237,14 @@
       const data = event.data;
       if (!data || data.type !== BRIDGE_REQUEST || !data.requestId) return;
       try {
-        const snapshot = await loadSnapshot();
+        const bundle = await loadSnapshot();
         window.postMessage({
           type: BRIDGE_RESPONSE,
           requestId: data.requestId,
           ok: true,
-          snapshot
+          snapshots: bundle.snapshots,
+          errors: bundle.errors,
+          partial: bundle.partial
         }, CARD_ORIGIN);
       } catch (error) {
         window.postMessage({
@@ -215,11 +268,27 @@
       const confirmedClaim = typeof GM_getValue === 'function' ? GM_getValue(RELAY_CLAIM_KEY, null) : null;
       if (confirmedClaim && confirmedClaim.requestId === value.requestId && confirmedClaim.ownerId !== RELAY_OWNER_ID) return;
       try {
-        const snapshot = normalizeSnapshot(await requestWithFetch());
+        const sources = Array.isArray(value.sources) && value.sources.length
+          ? value.sources
+          : SOURCE_ENTRIES;
+        const results = await Promise.allSettled(sources.map(({ url, scope }) => requestWithFetch(url, scope)));
+        const snapshots = [];
+        const errors = [];
+        results.forEach((result, index) => {
+          if (result.status === 'fulfilled' && result.value) snapshots.push(normalizeSnapshot(result.value, sources[index].scope));
+          else errors.push({
+            scope: sources[index].scope,
+            status: Number(result.reason && result.reason.status) || 0,
+            error: friendlyError(result.reason)
+          });
+        });
+        if (!snapshots.length) throw Object.assign(new Error(errors[0]?.error || '两个榜单来源都请求失败'), { status: errors[0]?.status });
         GM_setValue(RELAY_RESPONSE_KEY, {
           requestId: value.requestId,
           ok: true,
-          snapshot,
+          snapshots,
+          errors,
+          partial: errors.length > 0,
           respondedAt: Date.now()
         });
       } catch (error) {

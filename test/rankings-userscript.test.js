@@ -13,6 +13,9 @@ test('userscript matches Card and CDK while keeping the bridge UI on Card', asyn
   assert.match(source, /GM_getValue/);
   assert.match(source, /GM_setValue/);
   assert.match(source, /https:\/\/cdk\.hybgzs\.com\/api\/cards\/leaderboard\?scope=global/);
+  assert.match(source, /https:\/\/cdk\.hybgzs\.com\/api\/cards\/leaderboard\?scope=friends/);
+  assert.match(source, /snapshots/);
+  assert.match(source, /Promise\.allSettled/);
   assert.match(source, /HYB_CARD_RANKINGS_BRIDGE_READY/);
   assert.match(source, /HYB_CARD_RANKINGS_REQUEST/);
   assert.match(source, /HYB_CARD_RANKINGS_RESPONSE/);

@@ -5,9 +5,10 @@ import {
   diffBoardRows,
   estimatePullsFromSpend,
   estimateLegendProbability,
-  normalizeLeaderboardSnapshot,
+  normalizeSnapshotBundle,
   pairLeaderboardRows
 } from './rankings-core.js';
+import { mergeMetric } from './rankings-merge.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_SEASON_START_AT = Date.parse('2026-08-02T04:00:00+08:00');
@@ -74,39 +75,68 @@ async function postSnapshot(request, env) {
   }
 
   const now = Date.now();
-  const normalized = normalizeLeaderboardSnapshot(body && body.snapshot ? body.snapshot : body, now);
-  if (!normalized.ok) return jsonResponse({ ok: false, error: 'invalid_snapshot', reason: normalized.reason }, 400);
-  if (!normalized.entries.length) return jsonResponse({ ok: false, error: 'invalid_snapshot', reason: 'empty_entries' }, 400);
-
-  const signatureInput = {
-    seasonId: normalized.seasonId,
-    seasonName: normalized.seasonName,
-    scope: normalized.scope,
-    capturedAt: normalized.capturedAt,
-    entries: normalized.entries.map((entry) => ({
-      boardKey: entry.boardKey,
-      userId: entry.userId,
-      userName: entry.userName,
-      avatar: entry.avatar,
-      value: entry.value,
-      rank: entry.rank,
-      isVip: entry.isVip,
-      activeNameDecoration: entry.activeNameDecoration,
-      nameDisplayPreference: entry.nameDisplayPreference
-    }))
-  };
-  const signature = await computeSnapshotSignature(signatureInput);
-  const existing = await env.RANKINGS_DB.prepare(`
-    SELECT id, season_id, season_name, scope, captured_at, captured_bucket, source, signature, created_at
-    FROM rank_snapshots
-    WHERE season_id = ? AND scope = ? AND captured_bucket = ?
-    LIMIT 1
-  `).bind(normalized.seasonId, normalized.scope, normalized.capturedBucket).first();
-  if (existing) {
-    return jsonResponse({ ok: true, status: 'duplicate', snapshot: serializeSnapshot(existing) });
+  const bundle = normalizeSnapshotBundle(body, now);
+  if (!bundle.snapshots.length) {
+    return jsonResponse({
+      ok: false,
+      error: 'invalid_snapshot',
+      reason: bundle.errors[0] && bundle.errors[0].reason || 'invalid_snapshot'
+    }, 400);
   }
 
   const source = String(body && body.source || 'card-dashboard-userscript').slice(0, 64);
+  const stored = [];
+  const errors = bundle.errors.slice();
+  let duplicateSnapshots = 0;
+  let storedEntries = 0;
+  for (const normalized of bundle.snapshots) {
+    try {
+      const result = await storeNormalizedSnapshot(normalized, source, now, env);
+      if (result.duplicate) {
+        duplicateSnapshots += 1;
+        continue;
+      }
+      stored.push(result.snapshot);
+      storedEntries += result.storedEntries;
+    } catch (error) {
+      errors.push({ scope: normalized.scope, reason: String(error && error.message || error) });
+    }
+  }
+
+  if (!stored.length && !duplicateSnapshots) {
+    return jsonResponse({
+      ok: false,
+      error: 'invalid_snapshot',
+      reason: errors[0] && errors[0].reason || 'snapshot_insert_failed',
+      errors
+    }, 400);
+  }
+
+  return jsonResponse({
+    ok: true,
+    status: errors.length ? 'partial' : duplicateSnapshots && !stored.length ? 'duplicate' : 'accepted',
+    snapshot: stored[stored.length - 1] || null,
+    snapshots: stored,
+    storedSnapshots: stored.length,
+    duplicateSnapshots,
+    storedEntries,
+    partial: errors.length > 0,
+    errors
+  });
+}
+
+async function storeNormalizedSnapshot(normalized, source, now, env) {
+  if (!normalized.entries.length) throw new Error('empty_entries');
+  const signature = await computeSnapshotSignature(snapshotSignatureInput(normalized));
+  const duplicate = await env.RANKINGS_DB.prepare(`
+    SELECT id, season_id, season_name, scope, captured_at, captured_bucket,
+      source, signature, created_at
+    FROM rank_snapshots
+    WHERE season_id = ? AND signature = ?
+    LIMIT 1
+  `).bind(normalized.seasonId, signature).first();
+  if (duplicate) return { duplicate: true };
+
   const insertResult = await env.RANKINGS_DB.prepare(`
     INSERT INTO rank_snapshots (
       season_id, season_name, scope, captured_at, captured_bucket,
@@ -148,9 +178,8 @@ async function postSnapshot(request, env) {
     await env.RANKINGS_DB.batch(statements);
   }
 
-  return jsonResponse({
-    ok: true,
-    status: 'accepted',
+  await mergeSnapshotMetrics(env, normalized, snapshotId);
+  return {
     snapshot: serializeSnapshot({
       id: snapshotId,
       season_id: normalized.seasonId,
@@ -163,7 +192,133 @@ async function postSnapshot(request, env) {
       created_at: now
     }),
     storedEntries: normalized.entries.length
-  });
+  };
+}
+
+function snapshotSignatureInput(normalized) {
+  return {
+    seasonId: normalized.seasonId,
+    seasonName: normalized.seasonName,
+    scope: normalized.scope,
+    capturedAt: normalized.capturedAt,
+    entries: normalized.entries.map((entry) => ({
+      boardKey: entry.boardKey,
+      userId: entry.userId,
+      userName: entry.userName,
+      avatar: entry.avatar,
+      value: entry.value,
+      rank: entry.rank,
+      isVip: entry.isVip,
+      activeNameDecoration: entry.activeNameDecoration,
+      nameDisplayPreference: entry.nameDisplayPreference
+    }))
+  };
+}
+
+async function mergeSnapshotMetrics(env, normalized, snapshotId) {
+  const result = await env.RANKINGS_DB.prepare(`
+    SELECT * FROM rank_user_metrics WHERE season_id = ?
+  `).bind(normalized.seasonId).all();
+  const existing = (result.results || []).map(metricFromDbRow);
+  const incoming = normalized.entries.map((entry) => ({
+    seasonId: normalized.seasonId,
+    userId: entry.userId,
+    boardKey: entry.boardKey,
+    userName: entry.userName,
+    avatar: entry.avatar,
+    value: entry.value,
+    rank: entry.rank,
+    isVip: entry.isVip,
+    activeNameDecoration: entry.activeNameDecoration,
+    nameDisplayPreference: entry.nameDisplayPreference,
+    snapshotId,
+    scope: normalized.scope,
+    capturedAt: normalized.capturedAt
+  }));
+  const existingByKey = new Map(existing.map((row) => [metricKey(row), row]));
+  const merged = [];
+  for (const row of incoming) {
+    const key = metricKey(row);
+    const value = mergeMetric(existingByKey.get(key), row);
+    existingByKey.set(key, value);
+    merged.push(value);
+  }
+  for (const chunk of chunks(merged, 50)) {
+    const statements = chunk.map((row) => env.RANKINGS_DB.prepare(`
+      INSERT INTO rank_user_metrics (
+        season_id, user_id, board_key, user_name, avatar_url, value, rank,
+        is_vip, active_name_decoration, name_display_preference,
+        value_snapshot_id, value_scope, value_captured_at,
+        last_snapshot_id, last_scope, last_captured_at, first_captured_at, source_scopes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (season_id, user_id, board_key) DO UPDATE SET
+        user_name = excluded.user_name,
+        avatar_url = excluded.avatar_url,
+        value = excluded.value,
+        rank = excluded.rank,
+        is_vip = excluded.is_vip,
+        active_name_decoration = excluded.active_name_decoration,
+        name_display_preference = excluded.name_display_preference,
+        value_snapshot_id = excluded.value_snapshot_id,
+        value_scope = excluded.value_scope,
+        value_captured_at = excluded.value_captured_at,
+        last_snapshot_id = excluded.last_snapshot_id,
+        last_scope = excluded.last_scope,
+        last_captured_at = excluded.last_captured_at,
+        first_captured_at = excluded.first_captured_at,
+        source_scopes = excluded.source_scopes
+    `).bind(
+      row.seasonId,
+      row.userId,
+      row.boardKey,
+      row.userName,
+      row.avatar,
+      row.value,
+      row.rank,
+      row.isVip ? 1 : 0,
+      row.activeNameDecoration,
+      row.nameDisplayPreference,
+      row.valueSnapshotId,
+      row.valueScope,
+      row.valueCapturedAt,
+      row.lastSnapshotId,
+      row.lastScope,
+      row.lastCapturedAt,
+      row.firstCapturedAt,
+      row.sourceScopes
+    ));
+    await env.RANKINGS_DB.batch(statements);
+  }
+}
+
+function metricFromDbRow(row) {
+  return {
+    seasonId: String(row.season_id || ''),
+    userId: String(row.user_id || ''),
+    boardKey: String(row.board_key || ''),
+    userName: String(row.user_name || ''),
+    avatar: String(row.avatar_url || ''),
+    value: Number(row.value),
+    rank: Number(row.rank),
+    isVip: Boolean(row.is_vip),
+    activeNameDecoration: row.active_name_decoration == null ? null : String(row.active_name_decoration),
+    nameDisplayPreference: row.name_display_preference == null ? null : String(row.name_display_preference),
+    snapshotId: Number(row.last_snapshot_id),
+    scope: String(row.last_scope || ''),
+    capturedAt: Number(row.last_captured_at),
+    valueSnapshotId: Number(row.value_snapshot_id),
+    valueScope: String(row.value_scope || ''),
+    valueCapturedAt: Number(row.value_captured_at),
+    firstCapturedAt: Number(row.first_captured_at),
+    lastCapturedAt: Number(row.last_captured_at),
+    lastSnapshotId: Number(row.last_snapshot_id),
+    lastScope: String(row.last_scope || ''),
+    sourceScopes: String(row.source_scopes || '')
+  };
+}
+
+function metricKey(row) {
+  return `${row.seasonId}\u0000${row.userId}\u0000${row.boardKey}`;
 }
 
 async function getLeaderboard(url, env) {
@@ -235,14 +390,15 @@ async function getUsersLeaderboard(url, env, latest) {
   const limitValue = url.searchParams.get('limit');
   const limit = limitValue == null || limitValue === '' ? null : normalizeLimit(limitValue);
   const previous = await previousSnapshot(env, latest);
-  const [currentEpicRows, currentSpendRows, currentSetsRows, previousEpicRows, previousSpendRows, previousSetsRows] = await Promise.all([
-    entriesForSnapshot(env, latest.id, `epic_${period}`, null),
-    entriesForSnapshot(env, latest.id, `spend_${period}`, null),
-    entriesForSnapshot(env, latest.id, `sets_${period}`, null),
+  const [currentMetricRows, previousEpicRows, previousSpendRows, previousSetsRows] = await Promise.all([
+    metricsForPeriod(env, latest.season_id, period),
     previous ? entriesForSnapshot(env, previous.id, `epic_${period}`, null) : Promise.resolve([]),
     previous ? entriesForSnapshot(env, previous.id, `spend_${period}`, null) : Promise.resolve([]),
     previous ? entriesForSnapshot(env, previous.id, `sets_${period}`, null) : Promise.resolve([])
   ]);
+  const currentEpicRows = currentMetricRows.filter((row) => row.board_key === `epic_${period}`);
+  const currentSpendRows = currentMetricRows.filter((row) => row.board_key === `spend_${period}`);
+  const currentSetsRows = currentMetricRows.filter((row) => row.board_key === `sets_${period}`);
   const currentUsers = summarizeUsers(currentEpicRows, currentSpendRows, currentSetsRows, sort)
     .map((row) => ({ ...row, boardKey: `users_${period}` }));
   const previousUsers = summarizeUsers(previousEpicRows, previousSpendRows, previousSetsRows, sort)
@@ -271,6 +427,20 @@ async function getUsersLeaderboard(url, env, latest) {
     rows,
     partialRows: []
   });
+}
+
+async function metricsForPeriod(env, seasonId, period) {
+  const keys = [`epic_${period}`, `spend_${period}`, `sets_${period}`];
+  const result = await env.RANKINGS_DB.prepare(`
+    SELECT season_id, user_id, board_key, user_name, avatar_url, value, rank,
+      is_vip, active_name_decoration, name_display_preference,
+      value_snapshot_id AS snapshot_id, value_scope AS scope,
+      value_captured_at AS captured_at,
+      last_snapshot_id, last_scope, last_captured_at, first_captured_at, source_scopes
+    FROM rank_user_metrics
+    WHERE season_id = ? AND board_key IN (?, ?, ?)
+  `).bind(seasonId, ...keys).all();
+  return result.results || [];
 }
 
 function summarizeUsers(epicRows = [], spendRows = [], setsRows = [], sort = 'probability') {
@@ -350,6 +520,7 @@ function compareUserRows(left, right, sort) {
 }
 
 function userSortValue(row, sort) {
+  if (sort === 'legend') return row.epicTotal;
   if (sort === 'spend') return row.spendUsd;
   if (sort === 'pulls') return row.estimatedPulls;
   if (sort === 'sets') return row.exchangeCount;
@@ -357,7 +528,7 @@ function userSortValue(row, sort) {
 }
 
 function normalizeUserSort(value) {
-  return new Set(['probability', 'spend', 'pulls', 'sets', 'user']).has(value)
+  return new Set(['probability', 'legend', 'spend', 'pulls', 'sets', 'user']).has(value)
     ? value
     : 'probability';
 }
@@ -377,7 +548,9 @@ async function getHistory(url, env) {
     WHERE s.season_id = ? AND e.user_id = ?
     ORDER BY s.captured_at ASC, s.id ASC
   `).bind(latest.season_id, userId).all();
-  const filtered = (rows.results || []).filter((row) => !board || row.board_key.startsWith(`${board}_`));
+  const filtered = dedupeHistoryRows(
+    (rows.results || []).filter((row) => !board || row.board_key.startsWith(`${board}_`))
+  );
   const serialized = filtered.map((row) => ({
     ...serializeEntry(row),
     boardKey: row.board_key,
@@ -395,17 +568,44 @@ async function getHistory(url, env) {
   });
 }
 
+function dedupeHistoryRows(rows = []) {
+  const grouped = new Map();
+  for (const row of rows) {
+    const capturedAt = Number(row.captured_at);
+    const bucket = Number.isFinite(Number(row.captured_bucket))
+      ? Number(row.captured_bucket)
+      : Math.floor(capturedAt / REFRESH_INTERVAL_MS);
+    const key = `${String(row.board_key || '')}\u0000${bucket}`;
+    const existing = grouped.get(key);
+    if (!existing) {
+      grouped.set(key, row);
+      continue;
+    }
+    const total = String(row.board_key || '').endsWith('_total');
+    const currentValue = Number(row.value);
+    const existingValue = Number(existing.value);
+    const replace = total
+      ? currentValue > existingValue
+        || (currentValue === existingValue && capturedAt >= Number(existing.captured_at))
+      : capturedAt >= Number(existing.captured_at);
+    if (replace) grouped.set(key, row);
+  }
+  return Array.from(grouped.values()).sort((left, right) => {
+    return Number(left.captured_at) - Number(right.captured_at)
+      || Number(left.snapshot_id) - Number(right.snapshot_id);
+  });
+}
+
 async function getUsers(url, env) {
   const query = String(url.searchParams.get('query') || '').trim().toLowerCase();
   if (query.length < 1) return jsonResponse({ ok: true, users: [] });
   const latest = await latestSnapshot(env);
   if (!latest) return jsonResponse({ ok: true, users: [] });
   const rows = await env.RANKINGS_DB.prepare(`
-    SELECT e.user_id, e.user_name, e.avatar_url, e.is_vip, MAX(s.captured_at) AS last_seen_at
-    FROM rank_entries e
-    JOIN rank_snapshots s ON s.id = e.snapshot_id
-    WHERE s.season_id = ?
-    GROUP BY e.user_id, e.user_name, e.avatar_url, e.is_vip
+    SELECT user_id, user_name, avatar_url, is_vip, MAX(last_captured_at) AS last_seen_at
+    FROM rank_user_metrics
+    WHERE season_id = ?
+    GROUP BY user_id, user_name, avatar_url, is_vip
     ORDER BY last_seen_at DESC
     LIMIT 2000
   `).bind(latest.season_id).all();

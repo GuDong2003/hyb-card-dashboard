@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   BOARD_KEYS,
   normalizeLeaderboardSnapshot,
+  normalizeSnapshotBundle,
   computeSnapshotSignature,
   estimatePullsFromSpend,
   estimateLegendProbability,
@@ -26,6 +27,32 @@ test('accepts all server leaderboard keys and keeps dynamic row counts', () => {
   assert.equal(result.ok, true);
   assert.deepEqual(result.boardKeys, BOARD_KEYS);
   assert.equal(result.entries.length, 112);
+});
+
+test('accepts friends scope while preserving the source scope', () => {
+  const result = normalizeLeaderboardSnapshot({
+    season: { id: 'season-friends', name: '好友榜测试' },
+    scope: 'friends',
+    leaderboards: { epic_total: [row()] },
+    capturedAt: 1785922892568
+  }, 1785922892568);
+  assert.equal(result.ok, true);
+  assert.equal(result.scope, 'friends');
+});
+
+test('normalizes a legacy snapshot and a multi-source snapshot bundle', () => {
+  const global = {
+    season: { id: 'season-bundle', name: 'Bundle 测试' },
+    scope: 'global', leaderboards: { epic_total: [row()] }, capturedAt: 1785922892568
+  };
+  const friends = {
+    season: { id: 'season-bundle', name: 'Bundle 测试' },
+    scope: 'friends', leaderboards: { epic_total: [row({ userId: 'u-2' })] }, capturedAt: 1785922892568
+  };
+  assert.equal(normalizeSnapshotBundle(global, 1785922892568).snapshots.length, 1);
+  const bundle = normalizeSnapshotBundle({ snapshots: [global, friends] }, 1785922892568);
+  assert.equal(bundle.ok, true);
+  assert.deepEqual(bundle.snapshots.map((snapshot) => snapshot.scope), ['global', 'friends']);
 });
 
 test('rejects unknown boards and future captures', () => {

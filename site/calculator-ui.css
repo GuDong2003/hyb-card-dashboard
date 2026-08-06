@@ -563,12 +563,12 @@ select {
 }
 
 .sp-toolbar {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
     gap: 9px;
     align-items: center;
-    justify-content: flex-end;
-    flex: 0 1 auto;
+    min-width: min(100%, 520px);
+    flex: 1 1 auto;
 }
 
 .sp-cap-field {
@@ -580,10 +580,12 @@ select {
     font-size: 0.68rem;
     font-weight: 750;
     white-space: nowrap;
+    justify-self: end;
 }
 
 .sp-cap-field input {
-    width: 72px;
+    width: 88px;
+    flex: 0 0 88px;
     min-height: 30px;
     padding: 0 9px;
     border: 1px solid var(--border-bright);
@@ -599,10 +601,15 @@ select {
 }
 
 .sp-stats {
-    flex: 0 1 auto;
+    min-width: 0;
+    margin-right: 0;
+    justify-self: end;
     color: #d8b4fe;
     font-size: 0.82rem;
-    white-space: nowrap;
+    line-height: 1.35;
+    text-align: right;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
 .btn {
@@ -793,6 +800,7 @@ select {
 table.simulation-table {
     width: 100%;
     min-width: 1040px;
+    table-layout: fixed;
     border-collapse: separate;
     border-spacing: 0;
     color: var(--text-soft);
@@ -801,6 +809,21 @@ table.simulation-table {
     text-align: right;
 }
 
+table.simulation-table .simulation-col-day { width: 5%; }
+table.simulation-table .simulation-col-day-cards { width: 7%; }
+table.simulation-table .simulation-col-cumulative-drawn { width: 8%; }
+table.simulation-table .simulation-col-previous-additional { width: 8%; }
+table.simulation-table .simulation-col-dust { width: 6%; }
+table.simulation-table .simulation-col-crafted { width: 8%; }
+table.simulation-table .simulation-col-crafted-sets { width: 7%; }
+table.simulation-table .simulation-col-dissolve-cost { width: 7%; }
+table.simulation-table .simulation-col-usable { width: 8%; }
+table.simulation-table .simulation-col-sets { width: 7%; }
+table.simulation-table .simulation-col-sp-bonus { width: 7%; }
+table.simulation-table .simulation-col-revenue { width: 9%; }
+table.simulation-table .simulation-col-cost { width: 7%; }
+table.simulation-table .simulation-col-profit { width: 6%; }
+
 table.simulation-table th,
 table.simulation-table td {
     height: 42px;
@@ -808,6 +831,8 @@ table.simulation-table td {
     border: 0;
     border-right: 1px solid rgba(78, 96, 132, 0.12);
     border-bottom: 1px solid rgba(78, 96, 132, 0.15);
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
 }
 
@@ -2159,7 +2184,7 @@ table.simulation-table td {
     }
 
     .sp-toolbar {
-        justify-content: flex-start;
+        grid-template-columns: minmax(0, 1fr) auto auto;
         margin-top: 12px;
     }
 }
@@ -2170,12 +2195,19 @@ table.simulation-table td {
     }
 
     .sp-toolbar {
-        align-items: flex-start;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: start;
     }
 
     .sp-stats {
-        flex: 1 1 100%;
+        grid-column: 1 / -1;
+        justify-self: start;
+        text-align: left;
         white-space: normal;
+    }
+
+    .sp-cap-field {
+        justify-self: start;
     }
 }
 

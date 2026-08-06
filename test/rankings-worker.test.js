@@ -31,6 +31,7 @@ class FakeD1 {
   constructor() {
     this.snapshots = [];
     this.entries = [];
+    this.metrics = [];
     this.nextSnapshotId = 1;
   }
 
@@ -45,9 +46,9 @@ class FakeD1 {
 
   async first(sql, params) {
     const normalized = sql.replace(/\s+/g, ' ').trim().toLowerCase();
-    if (normalized.includes('where season_id = ?') && normalized.includes('captured_bucket = ?')) {
-      const [seasonId, scope, capturedBucket] = params;
-      return this.snapshots.find((row) => row.season_id === seasonId && row.scope === scope && row.captured_bucket === capturedBucket) || null;
+    if (normalized.includes('from rank_snapshots') && normalized.includes('where season_id = ? and signature = ?')) {
+      const [seasonId, signature] = params;
+      return this.snapshots.find((row) => row.season_id === seasonId && row.signature === signature) || null;
     }
     if (normalized.includes('where season_id = ? and scope = ? and captured_at < ?')) {
       const [seasonId, scope, capturedAt] = params;
@@ -63,6 +64,38 @@ class FakeD1 {
 
   async all(sql, params) {
     const normalized = sql.replace(/\s+/g, ' ').trim().toLowerCase();
+    if (normalized.includes('from rank_entries e') && normalized.includes('join rank_snapshots s')) {
+      const [seasonId, userId] = params;
+      const snapshotsById = new Map(this.snapshots.map((row) => [row.id, row]));
+      return {
+        results: this.entries
+          .filter((entry) => {
+            const snapshot = snapshotsById.get(entry.snapshot_id);
+            return snapshot && snapshot.season_id === seasonId && entry.user_id === userId;
+          })
+          .map((entry) => {
+            const snapshot = snapshotsById.get(entry.snapshot_id);
+            return {
+              ...entry,
+              season_id: snapshot.season_id,
+              season_name: snapshot.season_name,
+              captured_at: snapshot.captured_at,
+              captured_bucket: snapshot.captured_bucket,
+              scope: snapshot.scope,
+              snapshot_id: snapshot.id
+            }
+          })
+          .sort((left, right) => left.captured_at - right.captured_at || left.snapshot_id - right.snapshot_id)
+      };
+    }
+    if (normalized.includes('from rank_user_metrics') && normalized.includes('board_key in')) {
+      const [seasonId, ...keys] = params;
+      return { results: this.metrics.filter((row) => row.season_id === seasonId && keys.includes(row.board_key)) };
+    }
+    if (normalized.includes('from rank_user_metrics') && normalized.includes('where season_id = ?')) {
+      const [seasonId] = params;
+      return { results: this.metrics.filter((row) => row.season_id === seasonId) };
+    }
     if (normalized.includes('select distinct board_key')) {
       const [snapshotId] = params;
       return { results: Array.from(new Set(this.entries.filter((row) => row.snapshot_id === snapshotId).map((row) => row.board_key))).map((board_key) => ({ board_key })) };
@@ -96,6 +129,22 @@ class FakeD1 {
       const [snapshot_id, board_key, user_id, user_name, avatar_url, value, rank, is_vip, active_name_decoration, name_display_preference, raw_json] = params;
       this.entries.push({ snapshot_id, board_key, user_id, user_name, avatar_url, value, rank, is_vip, active_name_decoration, name_display_preference, raw_json });
       return { success: true, meta: { last_row_id: this.entries.length } };
+    }
+    if (normalized.startsWith('insert into rank_user_metrics')) {
+      const [season_id, user_id, board_key, user_name, avatar_url, value, rank,
+        is_vip, active_name_decoration, name_display_preference,
+        value_snapshot_id, value_scope, value_captured_at,
+        last_snapshot_id, last_scope, last_captured_at, first_captured_at, source_scopes] = params;
+      const row = {
+        season_id, user_id, board_key, user_name, avatar_url, value, rank,
+        is_vip, active_name_decoration, name_display_preference,
+        value_snapshot_id, value_scope, value_captured_at,
+        last_snapshot_id, last_scope, last_captured_at, first_captured_at, source_scopes
+      };
+      const index = this.metrics.findIndex((item) => item.season_id === season_id && item.user_id === user_id && item.board_key === board_key);
+      if (index >= 0) this.metrics[index] = row;
+      else this.metrics.push(row);
+      return { success: true, meta: { last_row_id: this.metrics.length } };
     }
     return { success: true, meta: {} };
   }
@@ -132,7 +181,7 @@ test('returns an empty latest response before the first snapshot', async () => {
   });
 });
 
-test('rejects an invalid snapshot and deduplicates the same hourly bucket', async () => {
+test('rejects invalid snapshots and accepts multiple captures in the same hour', async () => {
   const environment = env();
   const invalidResponse = await handleRankingsRequest(request('/api/rankings/snapshots', {
     method: 'POST',
@@ -268,6 +317,11 @@ test('returns one dynamic user row with spend, pulls, exchanges and blank missin
   assert.equal(payload.rows[1].spendUsd, null);
   assert.equal(payload.rows[1].exchangeCount, 2);
 
+  const legendResponse = await handleRankingsRequest(request('/api/rankings/leaderboard?period=total&sort=legend'), environment);
+  const legendPayload = await legendResponse.json();
+  assert.equal(legendPayload.sort, 'legend');
+  assert.deepEqual(legendPayload.rows.map((row) => row.userId), ['u-1', 'sets-only']);
+
   const todayResponse = await handleRankingsRequest(request('/api/rankings/leaderboard?period=today'), environment);
   const todayPayload = await todayResponse.json();
   assert.equal(todayPayload.rows[0].userId, 'u-2');
@@ -293,8 +347,8 @@ test('recomputes user ranks against the previous snapshot in the selected period
     { userId: 'b', userName: 'B', epic: 10, spend: 12_000_000_000 }
   ];
   const secondRows = [
-    { userId: 'a', userName: 'A', epic: 10, spend: 12_000_000_000 },
-    { userId: 'b', userName: 'B', epic: 30, spend: 12_000_000_000 }
+    { userId: 'a', userName: 'A', epic: 40, spend: 12_000_000_000 },
+    { userId: 'b', userName: 'B', epic: 50, spend: 12_000_000_000 }
   ];
   for (const snapshot of [makeSnapshot(first, firstRows), makeSnapshot(Date.now() - 1000, secondRows)]) {
     const response = await handleRankingsRequest(request('/api/rankings/snapshots', {
@@ -308,4 +362,90 @@ test('recomputes user ranks against the previous snapshot in the selected period
   assert.equal(payload.rows[0].rank, 1);
   assert.equal(payload.rows[0].previousRank, 2);
   assert.equal(payload.rows[0].rankDelta, 1);
+});
+
+test('merges global and friends uploads into one user overview while retaining both snapshots', async () => {
+  const environment = env();
+  const baseTime = Date.now() - 2000;
+  const globalSnapshot = {
+    season: { id: 'season-merge', name: '多来源合并赛季' },
+    scope: 'global',
+    capturedAt: baseTime,
+    leaderboards: {
+      epic_total: [
+        { userId: 'u-1', userName: '用户一', value: 10, rank: 1, isVip: true },
+        { userId: 'u-2', userName: '用户二', value: 4, rank: 2, isVip: false }
+      ],
+      spend_total: [
+        { userId: 'u-1', userName: '用户一', value: 12_000_000_000, rank: 1, isVip: true }
+      ]
+    }
+  };
+  const friendsSnapshot = {
+    season: { id: 'season-merge', name: '多来源合并赛季' },
+    scope: 'friends',
+    capturedAt: baseTime + 1000,
+    leaderboards: {
+      epic_total: [
+        { userId: 'u-1', userName: '用户一', value: 12, rank: 1, isVip: true },
+        { userId: 'u-3', userName: '用户三', value: 2, rank: 2, isVip: false }
+      ],
+      spend_total: [
+        { userId: 'u-1', userName: '用户一', value: 12_000_000_000, rank: 1, isVip: true }
+      ]
+    }
+  };
+
+  for (const body of [
+    { snapshots: [globalSnapshot] },
+    { snapshots: [friendsSnapshot] }
+  ]) {
+    const response = await handleRankingsRequest(request('/api/rankings/snapshots', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body)
+    }), environment);
+    assert.equal(response.status, 200, await response.clone().text());
+  }
+
+  assert.equal(environment.RANKINGS_DB.snapshots.length, 2);
+  const response = await handleRankingsRequest(request('/api/rankings/leaderboard?board=users&period=total'), environment);
+  const payload = await response.json();
+  assert.deepEqual(payload.rows.map((row) => row.userId).sort(), ['u-1', 'u-2', 'u-3']);
+  assert.equal(payload.rows.find((row) => row.userId === 'u-1').epicTotal, 12);
+  assert.equal(payload.rows.find((row) => row.userId === 'u-2').epicTotal, 4);
+
+  const duplicateResponse = await handleRankingsRequest(request('/api/rankings/snapshots', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ snapshots: [friendsSnapshot] })
+  }), environment);
+  const duplicatePayload = await duplicateResponse.json();
+  assert.equal(duplicatePayload.duplicateSnapshots, 1);
+  assert.equal(environment.RANKINGS_DB.snapshots.length, 2);
+});
+
+test('deduplicates raw history rows from global and friends in the same capture bucket', async () => {
+  const environment = env();
+  const capturedAt = Date.now() - 5000;
+  for (const [scope, value] of [['global', 10], ['friends', 12]]) {
+    const response = await handleRankingsRequest(request('/api/rankings/snapshots', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        season: { id: 'season-history-merge', name: '历史合并测试' },
+        scope,
+        capturedAt,
+        leaderboards: {
+          epic_total: [{ userId: 'u-1', userName: '用户一', value, rank: 1, isVip: true }]
+        }
+      })
+    }), environment);
+    assert.equal(response.status, 200, await response.clone().text());
+  }
+  const response = await handleRankingsRequest(request('/api/rankings/history?userId=u-1'), environment);
+  const payload = await response.json();
+  const epicRows = payload.rows.filter((row) => row.boardKey === 'epic_total');
+  assert.equal(epicRows.length, 1);
+  assert.equal(epicRows[0].value, 12);
 });

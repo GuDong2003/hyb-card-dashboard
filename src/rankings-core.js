@@ -14,6 +14,7 @@ export const ORDINARY_DAILY_SPEND_USD = 4000;
 export const ORDINARY_DAILY_PULLS = 430;
 
 const BOARD_KEY_SET = new Set(BOARD_KEYS);
+const SNAPSHOT_SCOPES = new Set(['global', 'friends']);
 
 export function parseCapturedAt(value) {
   const numeric = Number(value);
@@ -33,7 +34,8 @@ export function normalizeLeaderboardSnapshot(payload, now = Date.now()) {
   const seasonId = String(season.id || '').trim();
   const seasonName = String(season.name || '').trim();
   if (!seasonId || !seasonName) return rejected('missing_season');
-  if (source.scope !== 'global') return rejected('invalid_scope');
+  const scope = String(source.scope || '').trim();
+  if (!SNAPSHOT_SCOPES.has(scope)) return rejected('invalid_scope');
 
   const capturedAt = parseCapturedAt(source.capturedAt);
   if (capturedAt == null) return rejected('invalid_captured_at');
@@ -64,12 +66,33 @@ export function normalizeLeaderboardSnapshot(payload, now = Date.now()) {
     ok: true,
     seasonId,
     seasonName,
-    scope: 'global',
+    scope,
     capturedAt,
     capturedBucket: Math.floor(capturedAt / REFRESH_INTERVAL_MS),
     boardKeys,
     entries,
     raw: source
+  };
+}
+
+export function normalizeSnapshotBundle(payload, now = Date.now()) {
+  const candidates = Array.isArray(payload && payload.snapshots)
+    ? payload.snapshots
+    : payload && payload.snapshot
+      ? [payload.snapshot]
+      : [payload];
+  const snapshots = [];
+  const errors = [];
+  candidates.forEach((candidate, index) => {
+    const normalized = normalizeLeaderboardSnapshot(candidate, now);
+    if (normalized.ok) snapshots.push(normalized);
+    else errors.push({ index, reason: normalized.reason });
+  });
+  return {
+    ok: snapshots.length > 0 && errors.length === 0,
+    partial: snapshots.length > 0 && errors.length > 0,
+    snapshots,
+    errors
   };
 }
 

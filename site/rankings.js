@@ -5,29 +5,35 @@
     const BRIDGE_REQUEST = 'HYB_CARD_RANKINGS_REQUEST';
     const BRIDGE_RESPONSE = 'HYB_CARD_RANKINGS_RESPONSE';
     const BRIDGE_TIMEOUT_MS = 22000;
+    const HOURLY_REFRESH_MS = 60 * 60 * 1000;
     const SETTINGS_STORAGE_KEY = 'hyb-card-rankings-settings-v1';
     const SPEND_VALUE_PER_USD = 500000;
     const VIP_DAILY_SPEND_USD = 6000;
     const VIP_DAILY_PULLS = 650;
     const ORDINARY_DAILY_SPEND_USD = 4000;
     const ORDINARY_DAILY_PULLS = 430;
+    const LOCAL_SOURCE_SCOPES = Object.freeze(['global', 'friends']);
+    const LOCAL_SOURCE_SCOPE_CONFIG = Object.freeze({ scope: 'global,friends', order: LOCAL_SOURCE_SCOPES });
 
     const BOARD_LABELS = Object.freeze({ epic: '欧皇榜', spend: '消费榜', sets: '兑换榜', luck: '运气榜' });
-    const PERIOD_LABELS = Object.freeze({ today: '今日', week: '本周', month: '本月', total: '整个赛季' });
 
     function loadSettings() {
         try {
             const stored = JSON.parse(window.localStorage.getItem(SETTINGS_STORAGE_KEY) || '{}') || {};
-            return { autoUpload: stored.autoUpload === true };
+            return {
+                autoUpload: stored.autoUpload === true,
+                hourlyRefresh: stored.hourlyRefresh === true
+            };
         } catch (_) {
-            return { autoUpload: false };
+            return { autoUpload: false, hourlyRefresh: false };
         }
     }
 
     function saveSettings(settings) {
         try {
             window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({
-                autoUpload: settings.autoUpload === true
+                autoUpload: settings.autoUpload === true,
+                hourlyRefresh: settings.hourlyRefresh === true
             }));
         } catch (_) {
             // Private browsing or storage restrictions must not block rankings viewing.
@@ -39,17 +45,27 @@
         board: 'users',
         period: 'total',
         sort: 'probability',
+        sortDirection: 'desc',
         settings: loadSettings(),
         latest: null,
-        localSnapshot: null,
+        localSnapshots: [],
         loaded: false,
         busy: false,
         bridgeReady: false,
         bridgeRequest: null,
+        hourlyRefreshTimer: null,
         rows: [],
         partialRows: [],
         userQuery: '',
-        status: '等待榜单数据'
+        status: '等待榜单数据',
+        trend: {
+            mode: 'daily',
+            period: 'total',
+            metric: 'epicTotal',
+            selectedIds: [],
+            histories: new Map(),
+            busy: false
+        }
     };
 
     const $ = (selector) => document.querySelector(selector);
@@ -83,12 +99,16 @@
         return body;
     }
 
-    function setStatus(message, isError = false) {
+    function setStatus(message, isError = false, isBusy = false) {
         state.status = message;
         const element = $('#rankingsStatus');
         if (!element) return;
         element.textContent = message;
-        element.classList.toggle('is-error', Boolean(isError));
+        const errorState = Boolean(isError);
+        const busyState = Boolean(isBusy && !errorState);
+        element.classList.toggle('is-error', errorState);
+        element.classList.toggle('is-busy', busyState);
+        element.dataset.state = errorState ? 'error' : busyState ? 'busy' : 'success';
     }
 
     function setBusy(busy) {
@@ -102,16 +122,18 @@
     }
 
     function renderUploadControls() {
+        const hourlyToggle = $('#rankingsHourlyRefresh');
+        if (hourlyToggle) hourlyToggle.checked = state.settings.hourlyRefresh === true;
         const toggle = $('#rankingsAutoUpload');
         if (toggle) toggle.checked = state.settings.autoUpload === true;
         const uploadButton = $('#rankingsUploadButton');
         if (uploadButton) {
-            uploadButton.disabled = state.busy || !state.localSnapshot;
+            uploadButton.disabled = state.busy || !state.localSnapshots.length;
             uploadButton.textContent = '上传云端';
         }
         const localStatus = $('#rankingsUploadStatus');
         if (localStatus) {
-            localStatus.textContent = state.localSnapshot
+            localStatus.textContent = state.localSnapshots.length
                 ? (state.settings.autoUpload ? '自动上传已开启' : '本次抓取仅保存在当前页面')
                 : '尚无待上传的本地快照';
         }
@@ -143,6 +165,486 @@
         const time = Number(value);
         if (!Number.isFinite(time) || time <= 0) return '—';
         return new Date(time).toLocaleString('zh-CN', { hour12: false });
+    }
+
+    const TREND_METRICS = Object.freeze({
+        epicTotal: '传说卡数量',
+        spendUsd: '消费金额',
+        estimatedPulls: '抽卡次数',
+        exchangeCount: '兑换次数',
+        estimatedLegendProbability: '出卡率'
+    });
+    const TREND_PERIODS = Object.freeze({
+        total: '整个赛季',
+        today: '今日',
+        week: '本周',
+        month: '本月'
+    });
+    const TREND_COLORS = ['#2563eb', '#db2777', '#059669', '#d97706', '#7c3aed', '#0891b2', '#dc2626', '#65a30d'];
+
+    function trendNumber(value) {
+        const number = Number(value);
+        return Number.isFinite(number) && number >= 0 ? number : null;
+    }
+
+    function getTrendDayKey(capturedAt) {
+        const timestamp = Number(capturedAt);
+        if (!Number.isFinite(timestamp)) return '';
+        const shifted = new Date(timestamp - (4 * 60 * 60 * 1000));
+        const parts = new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'Asia/Shanghai',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+        }).formatToParts(shifted);
+        const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+        return `${values.year}-${values.month}-${values.day}`;
+    }
+
+    function finalizeTrendPoint(point) {
+        const estimate = estimateFromSpend(point.spendValue, point.isVip);
+        return {
+            ...point,
+            spendUsd: estimate.spendUsd,
+            estimatedPulls: estimate.estimatedPulls,
+            estimatedLegendProbability: point.epicTotal != null
+                ? estimatedProbability(point.epicTotal, point.spendValue, point.isVip)
+                : null
+        };
+    }
+
+    function trendSnapshotPoints(rows = [], period = state.trend.period) {
+        period = normalizeTrendPeriod(period);
+        const snapshots = new Map();
+        rows.forEach((row) => {
+            const boardKey = String(row && row.boardKey || '');
+            if (!boardKey.endsWith(`_${period}`)) return;
+            const capturedAt = normalizeCapturedAt(row && row.capturedAt, null);
+            if (!capturedAt) return;
+            const point = snapshots.get(capturedAt) || {
+                capturedAt,
+                dayKey: getTrendDayKey(capturedAt),
+                epicTotal: null,
+                spendValue: null,
+                exchangeCount: null,
+                isVip: false
+            };
+            point.isVip = point.isVip || Boolean(row && row.isVip);
+            const value = trendNumber(row && row.value);
+            if (boardKey === 'epic_total') point.epicTotal = value;
+            if (boardKey === 'spend_total') point.spendValue = value;
+            if (boardKey === 'sets_total') point.exchangeCount = value;
+            snapshots.set(capturedAt, point);
+        });
+        return Array.from(snapshots.values())
+            .sort((left, right) => left.capturedAt - right.capturedAt)
+            .map(finalizeTrendPoint);
+    }
+
+    function aggregateTrendRows(rows = [], mode = 'daily', period = state.trend.period) {
+        const snapshots = trendSnapshotPoints(rows, period);
+        if (mode !== 'daily') return snapshots;
+
+        const days = new Map();
+        snapshots.forEach((point) => {
+            const dayKey = point.dayKey || getTrendDayKey(point.capturedAt);
+            if (!dayKey) return;
+            const current = days.get(dayKey) || {
+                capturedAt: 0,
+                dayKey,
+                epicTotal: null,
+                spendValue: null,
+                exchangeCount: null,
+                isVip: false
+            };
+            current.capturedAt = Math.max(current.capturedAt, point.capturedAt);
+            current.isVip = current.isVip || point.isVip;
+            ['epicTotal', 'spendValue', 'exchangeCount'].forEach((field) => {
+                if (point[field] == null) return;
+                if (current[field] == null || point[field] > current[field]) current[field] = point[field];
+            });
+            days.set(dayKey, current);
+        });
+        return Array.from(days.values())
+            .sort((left, right) => left.capturedAt - right.capturedAt)
+            .map(finalizeTrendPoint);
+    }
+
+    function trendMetricValue(point, metric = state.trend.metric) {
+        const value = point && point[metric];
+        return value == null || !Number.isFinite(Number(value)) ? null : Number(value);
+    }
+
+    function formatTrendValue(value, metric = state.trend.metric) {
+        if (value == null || !Number.isFinite(Number(value))) return '';
+        if (metric === 'spendUsd') return formatUsd(Number(value));
+        if (metric === 'estimatedLegendProbability') return formatProbability(Number(value));
+        return formatDecimal(Number(value));
+    }
+
+    function niceTrendStep(rawStep, integerOnly = false) {
+        const value = Number(rawStep);
+        if (!Number.isFinite(value) || value <= 0) return 1;
+        const exponent = Math.floor(Math.log10(value));
+        const magnitude = 10 ** exponent;
+        const fraction = value / magnitude;
+        const candidates = integerOnly ? [1, 2, 5, 10] : [1, 2, 2.5, 5, 10];
+        const niceFraction = candidates.find((candidate) => fraction <= candidate) || 10;
+        return niceFraction * magnitude;
+    }
+
+    function nextNiceTrendStep(step, integerOnly = false) {
+        const value = Number(step);
+        if (!Number.isFinite(value) || value <= 0) return 1;
+        const exponent = Math.floor(Math.log10(value));
+        const magnitude = 10 ** exponent;
+        const fraction = value / magnitude;
+        const candidates = integerOnly ? [1, 2, 5, 10] : [1, 2, 2.5, 5, 10];
+        const nextFraction = candidates.find((candidate) => candidate > fraction + 1e-10);
+        return nextFraction ? nextFraction * magnitude : 20 * magnitude;
+    }
+
+    function niceTrendAxis(minValue, maxValue, tickCount, integerOnly = false) {
+        const count = Math.max(2, Math.floor(Number(tickCount)) || 5);
+        const intervals = count - 1;
+        const minimum = Number(minValue);
+        const maximum = Number(maxValue);
+        const range = Math.max(Number.EPSILON, maximum - minimum);
+        const minimumStep = integerOnly ? 1 : 0.00001;
+        let step = Math.max(minimumStep, niceTrendStep(range / intervals, integerOnly));
+
+        for (let attempt = 0; attempt < 12; attempt += 1) {
+            const axisMin = Math.floor((minimum + step * 1e-10) / step) * step;
+            const axisMax = axisMin + intervals * step;
+            if (axisMax + step * 1e-9 >= maximum) {
+                const values = Array.from({ length: count }, (_, index) => axisMax - index * step)
+                    .map((value) => Math.abs(value) < step * 1e-9 ? 0 : value);
+                return { min: axisMin, max: axisMax, step, values };
+            }
+            step = nextNiceTrendStep(step, integerOnly);
+        }
+
+        const axisMin = Math.floor(minimum / step) * step;
+        const axisMax = axisMin + intervals * step;
+        return {
+            min: axisMin,
+            max: axisMax,
+            step,
+            values: Array.from({ length: count }, (_, index) => axisMax - index * step)
+        };
+    }
+
+    function trendAxisPrecision(values, step, metric = state.trend.metric) {
+        if (metric !== 'estimatedLegendProbability') return 0;
+        const numericStep = Math.abs(Number(step));
+        for (let digits = 0; digits <= 5; digits += 1) {
+            const labels = values.map((value) => Number(value).toFixed(digits));
+            const scaledStep = numericStep * (10 ** digits);
+            const stepIsExact = Math.abs(scaledStep - Math.round(scaledStep)) <= Math.max(1, scaledStep) * 1e-9;
+            if (stepIsExact && new Set(labels).size === labels.length) return digits;
+        }
+        return 3;
+    }
+
+    function trendAxisValue(value, metric = state.trend.metric) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return null;
+        return metric === 'estimatedLegendProbability' ? number * 100 : number;
+    }
+
+    function formatTrendAxisValue(value, metric, precision) {
+        metric = metric || state.trend.metric;
+        precision = Number.isFinite(Number(precision)) ? Number(precision) : 0;
+        const number = Number(value);
+        if (!Number.isFinite(number)) return '';
+        if (metric === 'estimatedLegendProbability') {
+            const digits = Math.max(0, Math.min(5, Number.parseInt(precision, 10) || 0));
+            return `${number.toFixed(digits)}%`;
+        }
+        const rounded = Math.round(number);
+        if (metric === 'spendUsd') return `$${rounded.toLocaleString('en-US')}`;
+        return rounded.toLocaleString('zh-CN');
+    }
+
+    function formatTrendAxisLabel(value, mode) {
+        if (mode === 'daily') {
+            const date = new Date(`${value}T00:00:00+08:00`);
+            return Number.isNaN(date.getTime())
+                ? value
+                : date.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
+        }
+        return formatDate(value).replace(/:\d{2}(?=$|\s)/, '');
+    }
+
+    function trendPointKey(point, mode) {
+        return mode === 'daily' ? point.dayKey : String(point.capturedAt);
+    }
+
+    function normalizeTrendPeriod(value) {
+        return Object.prototype.hasOwnProperty.call(TREND_PERIODS, value) ? value : 'total';
+    }
+
+    function renderTrendPeriodControl() {
+        const select = $('#rankingsTrendPeriodSelect');
+        if (select) select.value = normalizeTrendPeriod(state.trend.period);
+    }
+
+    function syncTrendPeriodFromOuter() {
+        state.trend.period = state.period;
+        renderTrendPeriodControl();
+        renderTrendChart();
+    }
+
+    function renderTrendUserOptions() {
+        const list = $('#rankingsTrendUserOptions');
+        if (!list) return;
+        const rows = Array.from(new Map(state.rows
+            .filter((row) => row && row.userId)
+            .map((row) => [row.userId, row])).values());
+        list.innerHTML = rows.map((row) => `<option value="${escapeHtml(row.userName || row.userId)}">${escapeHtml(row.userId)}</option>`).join('');
+    }
+
+    function trendUserRecord(userId) {
+        const row = state.rows.find((item) => item.userId === userId);
+        const history = state.trend.histories.get(userId);
+        return history || {
+            userId,
+            userName: row && row.userName || userId,
+            rows: []
+        };
+    }
+
+    function renderTrendSelection() {
+        const container = $('#rankingsTrendSelected');
+        if (!container) return;
+        container.innerHTML = state.trend.selectedIds.map((userId, index) => {
+            const record = trendUserRecord(userId);
+            const color = TREND_COLORS[index % TREND_COLORS.length];
+            return `<span class="rankings-trend-chip" style="--trend-color:${color}">
+                <i aria-hidden="true"></i><span>${escapeHtml(record.userName || userId)}</span>
+                <button type="button" data-trend-remove="${escapeHtml(userId)}" aria-label="移除 ${escapeHtml(record.userName || userId)}">×</button>
+            </span>`;
+        }).join('');
+        container.querySelectorAll('[data-trend-remove]').forEach((button) => {
+            button.addEventListener('click', () => removeTrendUser(button.dataset.trendRemove));
+        });
+    }
+
+    function renderTrendLegend(series) {
+        const legend = $('#rankingsTrendLegend');
+        if (!legend) return;
+        legend.innerHTML = series.map((item) => `<span class="rankings-trend-legend-item">
+            <i style="--trend-color:${item.color}" aria-hidden="true"></i>${escapeHtml(item.name)}
+        </span>`).join('');
+    }
+
+    function renderTrendModeButtons() {
+        document.querySelectorAll('[data-trend-mode]').forEach((button) => {
+            const active = button.dataset.trendMode === state.trend.mode;
+            button.classList.toggle('is-active', active);
+            button.setAttribute('aria-pressed', String(active));
+        });
+    }
+
+    function renderTrendChart() {
+        const svg = $('#rankingsTrendChart');
+        const empty = $('#rankingsTrendEmpty');
+        if (!svg || !empty) return;
+        const series = state.trend.selectedIds.map((userId, index) => {
+            const record = trendUserRecord(userId);
+            return {
+                userId,
+                name: record.userName || userId,
+                color: TREND_COLORS[index % TREND_COLORS.length],
+                points: aggregateTrendRows(record.rows, state.trend.mode, state.trend.period)
+            };
+        });
+        renderTrendLegend(series);
+        const hasData = series.some((item) => item.points.some((point) => trendMetricValue(point) != null));
+        if (!hasData) {
+            svg.innerHTML = '';
+            empty.textContent = state.trend.busy
+                ? '正在读取用户趋势…'
+                : state.trend.selectedIds.length ? '暂无可用趋势数据' : '添加用户后显示趋势曲线';
+            empty.classList.remove('is-hidden');
+            return;
+        }
+        empty.classList.add('is-hidden');
+
+        const labels = new Map();
+        series.forEach((item) => item.points.forEach((point) => {
+            const key = trendPointKey(point, state.trend.mode);
+            if (key) labels.set(key, point);
+        }));
+        const labelKeys = Array.from(labels.keys()).sort((left, right) => state.trend.mode === 'daily'
+            ? left.localeCompare(right)
+            : Number(left) - Number(right));
+        const width = 960;
+        const height = 360;
+        const padding = { top: 24, right: 24, bottom: 48, left: 74 };
+        const chartWidth = width - padding.left - padding.right;
+        const chartHeight = height - padding.top - padding.bottom;
+        const values = series.flatMap((item) => item.points
+            .map((point) => trendMetricValue(point))
+            .filter((value) => value != null));
+        const axisValues = values.map((value) => trendAxisValue(value)).filter((value) => value != null);
+        let minAxisValue = Math.min(...axisValues);
+        let maxAxisValue = Math.max(...axisValues);
+        if (minAxisValue === maxAxisValue) {
+            const equalRangePad = Math.max(Math.abs(maxAxisValue) * 0.1, state.trend.metric === 'estimatedLegendProbability' ? 0.1 : 1);
+            minAxisValue = Math.max(0, minAxisValue - equalRangePad);
+            maxAxisValue += equalRangePad;
+        }
+        const axisPadding = (maxAxisValue - minAxisValue) * 0.12;
+        minAxisValue = Math.max(0, minAxisValue - axisPadding);
+        maxAxisValue += axisPadding;
+        const integerAxis = state.trend.metric !== 'estimatedLegendProbability';
+        const yAxis = niceTrendAxis(minAxisValue, maxAxisValue, 5, integerAxis);
+        const axisMinValue = yAxis.min;
+        const axisMaxValue = yAxis.max;
+        const axisRange = Math.max(Number.EPSILON, axisMaxValue - axisMinValue);
+        const yTickPrecision = trendAxisPrecision(yAxis.values, yAxis.step);
+        const xFor = (index) => labelKeys.length <= 1
+            ? padding.left + chartWidth / 2
+            : padding.left + (index / (labelKeys.length - 1)) * chartWidth;
+        const yForAxis = (value) => padding.top + chartHeight - ((value - axisMinValue) / axisRange) * chartHeight;
+        const yFor = (value) => yForAxis(trendAxisValue(value));
+        const grid = [];
+        yAxis.values.forEach((value) => {
+            const y = yForAxis(value);
+            grid.push(`<line x1="${padding.left}" y1="${y.toFixed(2)}" x2="${width - padding.right}" y2="${y.toFixed(2)}" class="trend-grid-line"/>`);
+            grid.push(`<text x="${padding.left - 10}" y="${(y + 4).toFixed(2)}" text-anchor="end" class="trend-axis-label">${escapeHtml(formatTrendAxisValue(value, state.trend.metric, yTickPrecision))}</text>`);
+        });
+        const labelStep = labelKeys.length <= 7 ? 1 : Math.ceil(labelKeys.length / 6);
+        labelKeys.forEach((key, index) => {
+            if (index !== 0 && index !== labelKeys.length - 1 && index % labelStep !== 0) return;
+            const x = xFor(index);
+            grid.push(`<text x="${x.toFixed(2)}" y="${height - 16}" text-anchor="middle" class="trend-axis-label">${escapeHtml(formatTrendAxisLabel(key, state.trend.mode))}</text>`);
+        });
+
+        const lines = [];
+        series.forEach((item) => {
+            const byKey = new Map(item.points.map((point) => [trendPointKey(point, state.trend.mode), point]));
+            let segment = [];
+            const flush = () => {
+                if (segment.length >= 2) lines.push(`<polyline points="${segment.join(' ')}" fill="none" stroke="${item.color}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`);
+                segment = [];
+            };
+            labelKeys.forEach((key, index) => {
+                const value = trendMetricValue(byKey.get(key));
+                if (value == null) {
+                    flush();
+                    return;
+                }
+                segment.push(`${xFor(index).toFixed(2)},${yFor(value).toFixed(2)}`);
+            });
+            flush();
+            item.points.forEach((point) => {
+                const value = trendMetricValue(point);
+                if (value == null) return;
+                const index = labelKeys.indexOf(trendPointKey(point, state.trend.mode));
+                if (index < 0) return;
+                const pointLabel = `${item.name} · ${formatTrendAxisLabel(trendPointKey(point, state.trend.mode), state.trend.mode)} · ${TREND_METRICS[state.trend.metric]}：${formatTrendValue(value, state.trend.metric)}`;
+                const pointX = xFor(index);
+                const pointY = yFor(value);
+                const tooltipWidth = Math.min(340, Math.max(180, pointLabel.length * 7 + 24));
+                const tooltipX = Math.min(width - padding.right - tooltipWidth, Math.max(padding.left, pointX - tooltipWidth / 2));
+                const tooltipY = Math.max(4, pointY - 42);
+                lines.push(`<g class="trend-point-wrap" tabindex="0" role="img" aria-label="${escapeHtml(pointLabel)}">
+                    <circle cx="${pointX.toFixed(2)}" cy="${pointY.toFixed(2)}" r="12" class="trend-point-hit" fill="transparent" aria-hidden="true"/>
+                    <circle cx="${pointX.toFixed(2)}" cy="${pointY.toFixed(2)}" r="5" fill="${item.color}" class="trend-point" aria-hidden="true"><title>${escapeHtml(pointLabel)}</title></circle>
+                    <g class="trend-point-tooltip" transform="translate(${tooltipX.toFixed(2)} ${tooltipY.toFixed(2)})" aria-hidden="true">
+                        <rect width="${tooltipWidth.toFixed(2)}" height="32" rx="6"/>
+                        <text x="12" y="20">${escapeHtml(pointLabel)}</text>
+                    </g>
+                </g>`);
+            });
+        });
+        svg.innerHTML = `${grid.join('')}${lines.join('')}`;
+    }
+
+    function resolveTrendUser(query) {
+        const normalized = String(query || '').trim().toLowerCase();
+        if (!normalized) return null;
+        const exact = state.rows.find((row) => String(row.userId).toLowerCase() === normalized || String(row.userName).toLowerCase() === normalized);
+        const matched = exact || state.rows.find((row) => String(row.userId).toLowerCase().includes(normalized) || String(row.userName).toLowerCase().includes(normalized));
+        return matched
+            ? { userId: matched.userId, userName: matched.userName || matched.userId }
+            : { userId: String(query).trim(), userName: String(query).trim() };
+    }
+
+    function selectTrendUser(userId, userName = '') {
+        const normalizedId = String(userId || '').trim();
+        if (!normalizedId || state.trend.selectedIds.includes(normalizedId)) return false;
+        const row = state.rows.find((item) => item.userId === normalizedId);
+        state.trend.selectedIds.push(normalizedId);
+        state.trend.histories.set(normalizedId, {
+            userId: normalizedId,
+            userName: userName || row?.userName || normalizedId,
+            rows: []
+        });
+        return true;
+    }
+
+    function openTrendModal(userId) {
+        const row = state.rows.find((item) => item.userId === userId);
+        selectTrendUser(userId, row?.userName || userId);
+        const backdrop = $('#rankingsTrendBackdrop');
+        if (backdrop) backdrop.classList.remove('is-hidden');
+        document.body.classList.add('modal-open');
+        renderTrendSelection();
+        renderTrendChart();
+        refreshTrendHistories();
+    }
+
+    function closeTrendModal() {
+        const backdrop = $('#rankingsTrendBackdrop');
+        if (backdrop) backdrop.classList.add('is-hidden');
+        document.body.classList.remove('modal-open');
+    }
+
+    async function refreshTrendHistories() {
+        if (!state.trend.selectedIds.length) {
+            state.trend.busy = false;
+            renderTrendChart();
+            return;
+        }
+        state.trend.busy = true;
+        renderTrendChart();
+        const results = await Promise.allSettled(state.trend.selectedIds.map(async (userId) => {
+            const payload = await apiGet(`/api/rankings/history?userId=${encodeURIComponent(userId)}`);
+            return {
+                userId,
+                userName: state.rows.find((row) => row.userId === userId)?.userName || payload.userName || userId,
+                rows: Array.isArray(payload.rows) ? payload.rows : []
+            };
+        }));
+        results.forEach((result, index) => {
+            const userId = state.trend.selectedIds[index];
+            if (result.status === 'fulfilled' && state.trend.selectedIds.includes(userId)) {
+                state.trend.histories.set(userId, result.value);
+            }
+        });
+        state.trend.busy = false;
+        renderTrendSelection();
+        renderTrendChart();
+    }
+
+    function addTrendUser() {
+        const input = $('#rankingsTrendUserSearch');
+        const user = resolveTrendUser(input && input.value);
+        if (!user || !selectTrendUser(user.userId, user.userName)) return;
+        if (input) input.value = '';
+        renderTrendSelection();
+        renderTrendChart();
+        refreshTrendHistories();
+    }
+
+    function removeTrendUser(userId) {
+        state.trend.selectedIds = state.trend.selectedIds.filter((id) => id !== userId);
+        state.trend.histories.delete(userId);
+        renderTrendSelection();
+        renderTrendChart();
     }
 
     function escapeHtml(value) {
@@ -183,6 +685,115 @@
             capturedAt: normalizeCapturedAt(source.capturedAt, null)
                 || normalizeCapturedAt(source.lastUpdatedAt, null)
                 || Date.now()
+        };
+    }
+
+    function normalizeSnapshotsForUpload(payload) {
+        const candidates = Array.isArray(payload)
+            ? payload
+            : Array.isArray(payload && payload.snapshots)
+                ? payload.snapshots
+                : payload && payload.snapshot
+                    ? [payload.snapshot]
+                    : [payload];
+        return candidates
+            .filter((snapshot) => snapshot && typeof snapshot === 'object')
+            .map((snapshot) => normalizeSnapshotForUpload(snapshot))
+            .filter((snapshot) => {
+                const source = snapshotSource(snapshot);
+                return Boolean(source && source.leaderboards && typeof source.leaderboards === 'object');
+            });
+    }
+
+    function mergeLocalSnapshots(snapshots = []) {
+        const normalizedSnapshots = normalizeSnapshotsForUpload(snapshots);
+        const boardRows = new Map();
+        const scopes = new Set();
+        let latestSnapshot = null;
+
+        const preferIncoming = (existing, incoming, boardKey, capturedAt) => {
+            if (!existing) return true;
+            const existingCapturedAt = normalizeCapturedAt(existing.__capturedAt, 0) || 0;
+            const incomingValue = rowValue(incoming);
+            const existingValue = rowValue(existing);
+            if (String(boardKey).endsWith('_total')) {
+                return incomingValue != null && (existingValue == null
+                    || incomingValue > existingValue
+                    || (incomingValue === existingValue && capturedAt >= existingCapturedAt));
+            }
+            return capturedAt > existingCapturedAt
+                || (capturedAt === existingCapturedAt
+                    && incomingValue != null
+                    && (existingValue == null || incomingValue >= existingValue));
+        };
+
+        normalizedSnapshots.forEach((snapshot, snapshotIndex) => {
+            const source = snapshotSource(snapshot);
+            if (!source) return;
+            const capturedAt = normalizeCapturedAt(source.capturedAt, null) || Date.now();
+            const scope = String(source.scope || '').trim();
+            if (scope) scopes.add(scope);
+            if (!latestSnapshot || capturedAt >= latestSnapshot.capturedAt) {
+                latestSnapshot = {
+                    source,
+                    capturedAt,
+                    snapshotIndex
+                };
+            }
+            Object.entries(source.leaderboards || {}).forEach(([boardKey, rows]) => {
+                if (!Array.isArray(rows)) return;
+                const byUser = boardRows.get(boardKey) || new Map();
+                rows.forEach((rawRow) => {
+                    const userId = rowUserId(rawRow);
+                    if (!userId) return;
+                    const current = byUser.get(userId);
+                    const incoming = {
+                        ...rawRow,
+                        userId,
+                        userName: rowName(rawRow, userId),
+                        avatar: rowAvatar(rawRow),
+                        isVip: rowIsVip(rawRow),
+                        __capturedAt: capturedAt,
+                        __scope: scope
+                    };
+                    if (!current) {
+                        byUser.set(userId, incoming);
+                        return;
+                    }
+                    const useIncomingValue = preferIncoming(current, incoming, boardKey, capturedAt);
+                    const latestProfile = capturedAt >= (normalizeCapturedAt(current.__capturedAt, 0) || 0);
+                    byUser.set(userId, {
+                        ...(useIncomingValue ? incoming : current),
+                        userName: latestProfile && incoming.userName ? incoming.userName : current.userName || incoming.userName,
+                        avatar: latestProfile && incoming.avatar ? incoming.avatar : current.avatar || incoming.avatar,
+                        isVip: Boolean(current.isVip || incoming.isVip),
+                        __capturedAt: Math.max(capturedAt, normalizeCapturedAt(current.__capturedAt, 0) || 0),
+                        __scope: Array.from(new Set([current.__scope, incoming.__scope].filter(Boolean))).join(',')
+                    });
+                });
+                boardRows.set(boardKey, byUser);
+            });
+        });
+
+        const leaderboards = {};
+        boardRows.forEach((rows, boardKey) => {
+            leaderboards[boardKey] = Array.from(rows.values())
+                .map((row) => {
+                    const { __capturedAt, __scope, ...clean } = row;
+                    return clean;
+                })
+                .sort((left, right) => rowRank(left, Number.MAX_SAFE_INTEGER) - rowRank(right, Number.MAX_SAFE_INTEGER)
+                    || rowUserId(left).localeCompare(rowUserId(right)));
+        });
+
+        const source = latestSnapshot && latestSnapshot.source || {};
+        return {
+            ...source,
+            scope: LOCAL_SOURCE_SCOPE_CONFIG.scope.filter((scope) => scopes.has(scope)).join(',') || String(source.scope || 'global'),
+            capturedAt: latestSnapshot ? latestSnapshot.capturedAt : Date.now(),
+            leaderboards,
+            source: 'local-unsent',
+            sourceScopes: LOCAL_SOURCE_SCOPE_CONFIG.scope.filter((scope) => scopes.has(scope))
         };
     }
 
@@ -395,7 +1006,15 @@
 
     function compareLocalUsers(left, right, sort) {
         if (sort === 'user') return String(left.userName || left.userId).localeCompare(String(right.userName || right.userId)) || left.userId.localeCompare(right.userId);
-        const value = (row) => sort === 'spend' ? row.spendUsd : sort === 'pulls' ? row.estimatedPulls : sort === 'sets' ? row.exchangeCount : row.estimatedLegendProbability;
+        const value = (row) => sort === 'legend'
+            ? row.epicTotal
+            : sort === 'spend'
+                ? row.spendUsd
+                : sort === 'pulls'
+                    ? row.estimatedPulls
+                    : sort === 'sets'
+                        ? row.exchangeCount
+                        : row.estimatedLegendProbability;
         const leftValue = value(left);
         const rightValue = value(right);
         if (leftValue == null && rightValue == null) return left.userId.localeCompare(right.userId);
@@ -404,8 +1023,49 @@
         return rightValue - leftValue || left.userId.localeCompare(right.userId);
     }
 
-    function localLeaderboardPayload(snapshot) {
-        const source = snapshotSource(snapshot);
+    function compareDisplayRows(left, right) {
+        const direction = state.sortDirection === 'asc' ? 1 : -1;
+        if (state.sort === 'user') {
+            return direction * (
+                String(left.userName || left.userId).localeCompare(String(right.userName || right.userId))
+                || left.userId.localeCompare(right.userId)
+            );
+        }
+
+        const value = (row) => state.sort === 'legend'
+            ? row.epicTotal
+            : state.sort === 'spend'
+                ? row.spendUsd
+                : state.sort === 'pulls'
+                    ? row.estimatedPulls
+                    : state.sort === 'sets'
+                        ? row.exchangeCount
+                        : row.estimatedLegendProbability;
+        const leftValue = value(left);
+        const rightValue = value(right);
+        if (leftValue == null && rightValue == null) return left.userId.localeCompare(right.userId);
+        if (leftValue == null) return 1;
+        if (rightValue == null) return -1;
+        return direction * (Number(leftValue) - Number(rightValue)) || left.userId.localeCompare(right.userId);
+    }
+
+    function sortRowsForDisplay(rows = []) {
+        return rows.slice().sort(compareDisplayRows);
+    }
+
+    function renderSortHeaders() {
+        document.querySelectorAll('[data-rank-sort]').forEach((button) => {
+            const active = button.dataset.rankSort === state.sort;
+            const direction = active ? state.sortDirection : 'none';
+            button.classList.toggle('is-active', active);
+            button.setAttribute('aria-sort', direction === 'asc' ? 'ascending' : direction === 'desc' ? 'descending' : 'none');
+            const indicator = button.querySelector('.sort-indicator');
+            if (indicator) indicator.textContent = active ? (direction === 'asc' ? '↑' : '↓') : '↕';
+        });
+    }
+
+    function localLeaderboardPayload(snapshotOrBundle) {
+        const source = mergeLocalSnapshots(normalizeSnapshotsForUpload(snapshotOrBundle));
         const leaderboards = source && source.leaderboards;
         if (!source || !leaderboards || typeof leaderboards !== 'object') return null;
         const boardKey = `${state.board}_${state.period}`;
@@ -475,6 +1135,7 @@
 
     function setDashboardView(view) {
         state.view = view === 'rankings' ? 'rankings' : 'calculator';
+        if (state.view !== 'rankings') closeTrendModal();
         const calculator = $('#calculatorView');
         const rankings = $('#rankingsView');
         if (calculator) calculator.classList.toggle('is-hidden', state.view !== 'calculator');
@@ -484,7 +1145,7 @@
             button.classList.toggle('is-active', active);
             button.setAttribute('aria-pressed', String(active));
         });
-        if (state.view === 'rankings') loadRankingsView();
+        if (state.view === 'rankings' && !state.loaded) loadRankingsView({ refresh: false });
     }
 
     window.setDashboardView = setDashboardView;
@@ -505,7 +1166,13 @@
                 if (event.origin !== window.location.origin) return;
                 const data = event.data;
                 if (!data || data.type !== BRIDGE_RESPONSE || data.requestId !== requestId) return;
-                if (data.ok && data.snapshot) finish(resolve, data.snapshot);
+                if (data.ok && (Array.isArray(data.snapshots) || data.snapshot)) {
+                    finish(resolve, {
+                        snapshots: normalizeSnapshotsForUpload(data),
+                        errors: Array.isArray(data.errors) ? data.errors : [],
+                        partial: Boolean(data.partial)
+                    });
+                }
                 else finish(reject, new Error(data.error || '同步脚本请求失败'));
             };
             const timeoutId = window.setTimeout(() => finish(reject, new Error('未检测到同步脚本或请求超时')), BRIDGE_TIMEOUT_MS);
@@ -528,36 +1195,45 @@
     }
 
     async function uploadSnapshot(snapshot) {
-        const normalized = normalizeSnapshotForUpload(snapshot);
-        if (!normalized || !Number.isInteger(normalized.capturedAt) || normalized.capturedAt <= 0) {
+        const normalizedSnapshots = normalizeSnapshotsForUpload(snapshot);
+        if (!normalizedSnapshots.length || normalizedSnapshots.some((item) => !Number.isInteger(item.capturedAt) || item.capturedAt <= 0)) {
             throw new Error('榜单快照缺少有效抓取时间');
         }
-        return apiPost('/api/rankings/snapshots', { snapshot: normalized, source: 'card-dashboard-userscript' });
+        return apiPost('/api/rankings/snapshots', {
+            snapshots: normalizedSnapshots,
+            source: 'card-dashboard-userscript'
+        });
     }
 
     async function ensureFreshSnapshot(force = false) {
-        if (!force && state.localSnapshot && !state.settings.autoUpload) {
+        if (!force && state.localSnapshots.length && !state.settings.autoUpload) {
             setStatus('已显示本地抓取数据，尚未上传云端');
-            return { localOnly: true, snapshot: state.localSnapshot };
+            return { localOnly: true, snapshots: state.localSnapshots };
         }
         const latest = await loadLatestSnapshot();
-        if (latest.snapshot && !latest.stale) {
+        if (!force && latest.snapshot && !latest.stale) {
             setStatus(`数据新鲜 · ${formatDate(latest.snapshot.capturedAt)}`);
             return latest;
         }
 
-        setStatus(latest.snapshot ? '榜单超过 1 小时，正在检查更新…' : '暂无快照，正在请求榜单…');
+        setStatus(force
+            ? '正在检查云端榜单…'
+            : (latest.snapshot ? '榜单超过 1 小时，正在检查更新…' : '暂无快照，正在请求榜单…'), false, true);
         try {
-            const snapshot = await requestBridgeSnapshot();
+            setStatus(state.bridgeReady ? '正在请求最新榜单…' : '正在等待用户脚本连接…', false, true);
+            const bundle = await requestBridgeSnapshot();
             state.bridgeReady = true;
-            state.localSnapshot = normalizeSnapshotForUpload(snapshot);
+            setStatus('已收到榜单数据，正在整理…', false, true);
+            state.localSnapshots = normalizeSnapshotsForUpload(bundle);
+            if (!state.localSnapshots.length) throw new Error('同步脚本返回的榜单为空');
             if (!state.settings.autoUpload) {
                 setStatus('已抓取本地榜单，未上传云端');
                 renderUploadControls();
-                return { localOnly: true, snapshot };
+                return { localOnly: true, snapshots: state.localSnapshots };
             }
-            await uploadSnapshot(snapshot);
-            state.localSnapshot = null;
+            setStatus('正在上传榜单快照…', false, true);
+            await uploadSnapshot(bundle);
+            state.localSnapshots = [];
             const refreshed = await loadLatestSnapshot();
             setStatus(`已同步 · ${formatDate(refreshed.snapshot && refreshed.snapshot.capturedAt)}`);
             renderUploadControls();
@@ -577,22 +1253,44 @@
         renderLeaderboard(leaderboard);
     }
 
-    async function loadRankingsView(force = false) {
+    async function loadRankingsView(options = {}) {
+        const refresh = options === true || Boolean(options && options.refresh);
         if (state.busy) return;
         setBusy(true);
+        setStatus(refresh ? '正在检查云端榜单…' : '正在读取云端快照…', false, true);
         try {
-            const source = await ensureFreshSnapshot(force);
+            let source;
+            if (refresh) {
+                source = await ensureFreshSnapshot(true);
+            } else if (state.localSnapshots.length && !state.settings.autoUpload) {
+                setStatus('已显示本地抓取数据，尚未上传云端');
+                source = { localOnly: true, snapshots: state.localSnapshots };
+            } else {
+                const latest = await loadLatestSnapshot();
+                if (!latest.snapshot) {
+                    state.rows = [];
+                    state.partialRows = [];
+                    renderLeaderboard(latest || { rows: [] });
+                    if (state.trend.selectedIds.length) await refreshTrendHistories();
+                    setStatus('暂无云端快照，请点击立即刷新');
+                    state.loaded = true;
+                    return;
+                }
+                source = latest;
+                setStatus(`已读取云端快照 · ${formatDate(latest.snapshot.capturedAt)}`);
+            }
             if (source && source.localOnly) {
-                const payload = localLeaderboardPayload(source.snapshot);
+                const payload = localLeaderboardPayload(source.snapshots);
                 state.rows = payload ? payload.rows : [];
                 state.partialRows = payload ? payload.partialRows : [];
                 renderLeaderboard(payload || { rows: [] });
             } else {
                 await loadLeaderboard();
             }
+            if (state.trend.selectedIds.length) await refreshTrendHistories();
             state.loaded = true;
         } catch (error) {
-            setStatus(String(error && error.message || error), true);
+            setStatus(`读取失败：${String(error && error.message || error)}`, true);
             state.partialRows = [];
             renderLeaderboard({ rows: [] });
         } finally {
@@ -601,14 +1299,15 @@
     }
 
     async function uploadPendingSnapshot() {
-        if (!state.localSnapshot || state.busy) return;
+        if (!state.localSnapshots.length || state.busy) return;
         setBusy(true);
         setStatus('正在上传本次榜单快照…');
         try {
-            await uploadSnapshot(state.localSnapshot);
-            state.localSnapshot = null;
+            await uploadSnapshot({ snapshots: state.localSnapshots });
+            state.localSnapshots = [];
             const refreshed = await loadLatestSnapshot();
             await loadLeaderboard();
+            if (state.trend.selectedIds.length) await refreshTrendHistories();
             setStatus(`已上传并同步 · ${formatDate(refreshed.snapshot && refreshed.snapshot.capturedAt)}`);
         } catch (error) {
             setStatus(`上传失败：${String(error && error.message || error)}`, true);
@@ -620,17 +1319,19 @@
 
     function renderLeaderboard(payload) {
         const boardLabel = '用户总览';
-        const periodLabel = PERIOD_LABELS[state.period];
-        const kicker = $('#rankingsBoardKicker');
         const title = $('#rankingsBoardTitle');
         const updated = $('#rankingsUpdatedAt');
-        if (kicker) kicker.textContent = `users · ${state.period}`;
-        if (title) title.textContent = `${boardLabel} · ${periodLabel}`;
+        if (title) title.textContent = boardLabel;
         if (updated && payload.snapshot) updated.textContent = `更新于 ${formatDate(payload.snapshot.capturedAt)}`;
+        renderSortHeaders();
+        renderTrendUserOptions();
+        renderTrendSelection();
+        renderTrendPeriodControl();
+        renderTrendChart();
 
         const body = $('#rankingsTableBody');
         if (!body) return;
-        const visibleRows = filterUserRows(state.rows);
+        const visibleRows = sortRowsForDisplay(filterUserRows(state.rows));
         const partialNotice = $('#rankingsPartialNotice');
         if (partialNotice) {
             const incompleteCount = visibleRows.filter((row) => row.isPartial).length;
@@ -640,9 +1341,9 @@
             partialNotice.classList.toggle('is-hidden', !incompleteCount);
         }
         if (!visibleRows.length) {
-            body.innerHTML = `<tr><td class="rankings-empty" colspan="9">${state.userQuery ? '没有匹配的用户' : '暂无榜单数据'}</td></tr>`;
+            body.innerHTML = `<tr><td class="rankings-empty" colspan="10">${state.userQuery ? '没有匹配的用户' : '暂无榜单数据'}</td></tr>`;
         } else {
-            body.innerHTML = visibleRows.map((row) => {
+            body.innerHTML = visibleRows.map((row, index) => {
                 const rowClass = [
                     row.isPartial ? 'is-partial' : ''
                 ].filter(Boolean).join(' ');
@@ -651,15 +1352,16 @@
                     : `<span class="rank-avatar-fallback">${initials(row.userName)}</span>`;
                 const status = formatEstimateStatus(row.estimateStatus, row.isPartial);
                 return `<tr class="${rowClass}" data-user-id="${escapeHtml(row.userId)}">
-                    <td class="rank-number">${row.rank == null ? '—' : formatNumber(row.rank)}</td>
-                    <td class="rank-user-cell"><span class="rank-user-button">${avatar}<span>${escapeHtml(row.userName || row.userId)}</span></span></td>
+                    <td class="rank-number">${formatNumber(index + 1)}</td>
                     <td>${row.isVip ? '<span class="rank-vip">VIP</span>' : ''}</td>
+                    <td class="rank-user-cell"><span class="rank-user-button">${avatar}<span>${escapeHtml(row.userName || row.userId)}</span></span></td>
                     <td class="rank-legend">${formatOptionalNumber(row.epicTotal)}</td>
                     <td class="rank-spend">${formatOptionalUsd(row.spendUsd)}</td>
                     <td class="rank-pulls">${formatOptionalNumber(row.estimatedPulls)}</td>
                     <td class="rank-sets">${formatOptionalNumber(row.exchangeCount)}</td>
                     <td class="rank-probability">${formatOptionalProbability(row.estimatedLegendProbability)}</td>
                     <td class="rank-status ${row.isPartial ? 'is-partial' : ''}">${status}</td>
+                    <td class="rank-trend"><button class="rankings-trend-trigger" type="button" data-trend-user="${escapeHtml(row.userId)}" aria-label="查看 ${escapeHtml(row.userName || row.userId)} 趋势" title="查看趋势"><svg class="rankings-trend-trigger-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 12.5 5.5 9l2.5 2 5.5-6"/><path d="M10.5 5H14v3.5"/></svg></button></td>
                 </tr>`;
             }).join('');
         }
@@ -670,6 +1372,9 @@
                 fallback.textContent = image.dataset.initials || '?';
                 image.replaceWith(fallback);
             }, { once: true });
+        });
+        body.querySelectorAll('[data-trend-user]').forEach((button) => {
+            button.addEventListener('click', () => openTrendModal(button.dataset.trendUser));
         });
         renderSummary(visibleRows);
     }
@@ -725,6 +1430,18 @@
         summary.innerHTML = cards.map(([label, value]) => `<article class="rankings-summary-card"><span>${label}</span><strong>${value}</strong></article>`).join('');
     }
 
+    function configureHourlyRefresh() {
+        if (state.hourlyRefreshTimer) {
+            window.clearInterval(state.hourlyRefreshTimer);
+            state.hourlyRefreshTimer = null;
+        }
+        if (!state.settings.hourlyRefresh) return;
+        state.hourlyRefreshTimer = window.setInterval(() => {
+            if (state.view !== 'rankings' || state.busy) return;
+            loadRankingsView({ refresh: true });
+        }, HOURLY_REFRESH_MS);
+    }
+
     function bindControls() {
         document.querySelectorAll('[data-rank-board]').forEach((button) => {
             button.addEventListener('click', () => {
@@ -734,29 +1451,40 @@
                     item.classList.toggle('is-active', active);
                     item.setAttribute('aria-selected', String(active));
                 });
-                if (state.view === 'rankings') loadRankingsView();
+                if (state.view === 'rankings') loadRankingsView({ refresh: false });
             });
         });
         document.querySelectorAll('[data-rank-period]').forEach((button) => {
             button.addEventListener('click', () => {
                 state.period = button.dataset.rankPeriod;
+                syncTrendPeriodFromOuter();
                 document.querySelectorAll('[data-rank-period]').forEach((item) => {
                     const active = item === button;
                     item.classList.toggle('is-active', active);
                     item.setAttribute('aria-selected', String(active));
                 });
-                if (state.view === 'rankings') loadRankingsView();
+                if (state.view === 'rankings') loadRankingsView({ refresh: false });
             });
         });
         $('#rankingsPeriodSelect')?.addEventListener('change', (event) => {
             state.period = event.target.value || 'total';
-            if (state.view === 'rankings') loadRankingsView();
+            syncTrendPeriodFromOuter();
+            if (state.view === 'rankings') loadRankingsView({ refresh: false });
         });
-        $('#rankingsSortSelect')?.addEventListener('change', (event) => {
-            state.sort = event.target.value || 'probability';
-            if (state.view === 'rankings') loadRankingsView();
+        document.querySelectorAll('[data-rank-sort]').forEach((button) => {
+            button.addEventListener('click', () => {
+                const nextSort = button.dataset.rankSort || 'probability';
+                if (state.sort === nextSort) {
+                    state.sortDirection = state.sortDirection === 'desc' ? 'asc' : 'desc';
+                } else {
+                    state.sort = nextSort;
+                    state.sortDirection = 'desc';
+                }
+                renderSortHeaders();
+                if (state.view === 'rankings') loadRankingsView({ refresh: false });
+            });
         });
-        $('#rankingsRefreshButton')?.addEventListener('click', () => loadRankingsView(true));
+        $('#rankingsRefreshButton')?.addEventListener('click', () => loadRankingsView({ refresh: true }));
         $('#rankingsUploadButton')?.addEventListener('click', uploadPendingSnapshot);
         $('#rankingsAutoUpload')?.addEventListener('change', (event) => {
             state.settings.autoUpload = Boolean(event.target.checked);
@@ -766,9 +1494,49 @@
                 : '已关闭自动上传；只有手动点击上传才会提交云端。');
             renderUploadControls();
         });
+        $('#rankingsHourlyRefresh')?.addEventListener('change', (event) => {
+            state.settings.hourlyRefresh = Boolean(event.target.checked);
+            saveSettings(state.settings);
+            configureHourlyRefresh();
+            setStatus(state.settings.hourlyRefresh
+                ? '已开启每小时刷新；仅在榜单页停留时自动抓取。'
+                : '已关闭每小时刷新；请手动点击立即刷新。');
+            renderUploadControls();
+        });
         $('#rankingsUserSearch')?.addEventListener('input', (event) => {
             state.userQuery = String(event.target.value || '');
             renderLeaderboard({ snapshot: state.latest && state.latest.snapshot });
+        });
+        $('#rankingsTrendMetric')?.addEventListener('change', (event) => {
+            const metric = String(event.target.value || '');
+            if (!Object.prototype.hasOwnProperty.call(TREND_METRICS, metric)) return;
+            state.trend.metric = metric;
+            renderTrendChart();
+        });
+        $('#rankingsTrendPeriodSelect')?.addEventListener('change', (event) => {
+            state.trend.period = normalizeTrendPeriod(String(event.target.value || 'total'));
+            renderTrendChart();
+        });
+        document.querySelectorAll('[data-trend-mode]').forEach((button) => {
+            button.addEventListener('click', () => {
+                const mode = button.dataset.trendMode === 'snapshot' ? 'snapshot' : 'daily';
+                state.trend.mode = mode;
+                renderTrendModeButtons();
+                renderTrendChart();
+            });
+        });
+        $('#rankingsTrendAddButton')?.addEventListener('click', addTrendUser);
+        $('#rankingsTrendUserSearch')?.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter') return;
+            event.preventDefault();
+            addTrendUser();
+        });
+        $('#rankingsTrendCloseButton')?.addEventListener('click', closeTrendModal);
+        $('#rankingsTrendBackdrop')?.addEventListener('click', (event) => {
+            if (event.target === event.currentTarget) closeTrendModal();
+        });
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') closeTrendModal();
         });
     }
 
@@ -777,10 +1545,15 @@
             if (event.origin !== window.location.origin) return;
             if (event.data && event.data.type === BRIDGE_READY) {
                 state.bridgeReady = true;
+                if (state.busy) setStatus('用户脚本已连接，正在请求最新榜单…', false, true);
             }
         });
         bindControls();
+        renderSortHeaders();
+        renderTrendModeButtons();
+        renderTrendPeriodControl();
         renderUploadControls();
+        configureHourlyRefresh();
         setDashboardView('calculator');
     }
 
