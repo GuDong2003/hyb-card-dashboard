@@ -1323,13 +1323,18 @@
 
     async function loadRankingsView(options = {}) {
         const refresh = options === true || Boolean(options && options.refresh);
+        const autoRefresh = Boolean(options && options.autoRefresh);
         if (state.busy) return;
         setBusy(true);
-        setStatus(refresh ? '正在检查云端榜单…' : '正在读取云端快照…', false, true);
+        setStatus(refresh
+            ? '正在检查云端榜单…'
+            : autoRefresh
+                ? '正在检查榜单新鲜度…'
+                : '正在读取云端快照…', false, true);
         try {
             let source;
-            if (refresh) {
-                source = await ensureFreshSnapshot(true);
+            if (refresh || autoRefresh) {
+                source = await ensureFreshSnapshot(refresh);
             } else if (state.localSnapshots.length && !state.settings.autoUpload) {
                 setStatus('已显示本地抓取数据，尚未上传云端');
                 source = { localOnly: true, snapshots: state.localSnapshots };
@@ -1554,7 +1559,7 @@
             return;
         }
         try {
-            await loadRankingsView({ refresh: true });
+            await loadRankingsView({ autoRefresh: true });
         } finally {
             scheduleHourlyRefresh();
         }

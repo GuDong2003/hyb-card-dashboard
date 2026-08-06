@@ -280,10 +280,13 @@ test('rankings refresh bypasses fresh snapshots and exposes running status', asy
   const css = await readFile(new URL('../site/rankings.css', import.meta.url), 'utf8');
   assert.match(source, /if \(!force && latest\.snapshot && !latest\.stale\)/);
   assert.match(source, /正在检查云端榜单/);
+  assert.match(source, /正在检查榜单新鲜度/);
   assert.match(source, /正在等待用户脚本连接/);
   assert.match(source, /正在请求最新榜单/);
   assert.match(source, /!state\.loaded/);
   assert.match(source, /loadRankingsView\(\{ refresh: true \}\)/);
+  assert.match(source, /loadRankingsView\(\{ autoRefresh: true \}\)/);
+  assert.match(source, /if \(refresh \|\| autoRefresh\)/);
   assert.match(source, /is-busy/);
   assert.match(css, /\.rankings-source-status\.is-busy/);
   assert.match(css, /\.rankings-source-status\.is-busy::before/);
