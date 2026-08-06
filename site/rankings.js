@@ -1535,16 +1535,42 @@
         summary.innerHTML = cards.map(([label, value]) => `<article class="rankings-summary-card"><span>${label}</span><strong>${value}</strong></article>`).join('');
     }
 
-    function configureHourlyRefresh() {
+    function scheduleHourlyRefresh() {
         if (state.hourlyRefreshTimer) {
-            window.clearInterval(state.hourlyRefreshTimer);
+            window.clearTimeout(state.hourlyRefreshTimer);
             state.hourlyRefreshTimer = null;
         }
         if (!state.settings.hourlyRefresh) return;
-        state.hourlyRefreshTimer = window.setInterval(() => {
-            if (state.view !== 'rankings' || state.busy) return;
-            loadRankingsView({ refresh: true });
+        state.hourlyRefreshTimer = window.setTimeout(() => {
+            state.hourlyRefreshTimer = null;
+            runHourlyRefresh();
         }, HOURLY_REFRESH_MS);
+    }
+
+    async function runHourlyRefresh() {
+        if (!state.settings.hourlyRefresh) return;
+        if (state.busy) {
+            scheduleHourlyRefresh();
+            return;
+        }
+        try {
+            await loadRankingsView({ refresh: true });
+        } finally {
+            scheduleHourlyRefresh();
+        }
+    }
+
+    function configureHourlyRefresh(options = {}) {
+        if (state.hourlyRefreshTimer) {
+            window.clearTimeout(state.hourlyRefreshTimer);
+            state.hourlyRefreshTimer = null;
+        }
+        if (!state.settings.hourlyRefresh) return;
+        if (options.runNow) {
+            window.setTimeout(() => runHourlyRefresh(), Number(options.delayMs) || 0);
+            return;
+        }
+        scheduleHourlyRefresh();
     }
 
     function bindControls() {
@@ -1602,10 +1628,10 @@
         $('#rankingsHourlyRefresh')?.addEventListener('change', (event) => {
             state.settings.hourlyRefresh = Boolean(event.target.checked);
             saveSettings(state.settings);
-            configureHourlyRefresh();
             setStatus(state.settings.hourlyRefresh
-                ? '已开启每小时刷新；仅在榜单页停留时自动抓取。'
+                ? '已开启每小时刷新；正在首次抓取…'
                 : '已关闭每小时刷新；请手动点击立即刷新。');
+            configureHourlyRefresh({ runNow: state.settings.hourlyRefresh });
             renderUploadControls();
         });
         $('#rankingsUserSearch')?.addEventListener('input', (event) => {
@@ -1658,11 +1684,11 @@
         renderTrendModeButtons();
         renderTrendPeriodControl();
         renderUploadControls();
-        configureHourlyRefresh();
         const rankingsUnlocked = rankingsEntryUnlocked();
         const rankingsNavButton = $('#rankingsNavButton');
         if (rankingsNavButton) rankingsNavButton.classList.toggle('is-hidden', !rankingsUnlocked);
         setDashboardView(rankingsUnlocked ? 'rankings' : 'calculator');
+        configureHourlyRefresh({ runNow: true, delayMs: 600 });
     }
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true });

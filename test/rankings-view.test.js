@@ -249,6 +249,11 @@ test('rankings client persists upload consent and gates snapshot uploads', async
   assert.match(source, /autoUpload\s*:\s*false/);
   assert.match(source, /hourlyRefresh\s*:\s*false/);
   assert.match(source, /HOURLY_REFRESH_MS\s*=\s*60\s*\*\s*60\s*\*\s*1000/);
+  assert.match(source, /function scheduleHourlyRefresh/);
+  assert.match(source, /function runHourlyRefresh/);
+  assert.match(source, /configureHourlyRefresh\(\{ runNow: state\.settings\.hourlyRefresh \}\)/);
+  assert.match(source, /configureHourlyRefresh\(\{ runNow: true, delayMs: 600 \}\)/);
+  assert.doesNotMatch(source, /state\.view !== 'rankings' \|\| state\.busy/);
   assert.match(source, /rankingsUploadButton/);
   assert.match(source, /state\.settings\.autoUpload/);
   assert.match(source, /apiPost\('\/api\/rankings\/snapshots'/);
