@@ -245,12 +245,50 @@ test('pairs same-period epic and spend rows and marks partial or missing estimat
   const payload = await response.json();
   const complete = payload.rows.find((row) => row.userId === 'vip-1');
   const missing = payload.rows.find((row) => row.userId === 'missing-spend');
+  assert.equal(complete.paidPulls, 2_400);
+  assert.equal(complete.freePulls, 200);
   assert.equal(complete.estimatedPulls, 2600);
   assert.equal(complete.estimatedLegendProbability, 36 / 2600);
   assert.equal(complete.estimateStatus, 'complete_days');
   assert.equal(missing.estimatedLegendProbability, null);
   assert.equal(missing.estimateStatus, 'missing_spend');
   assert.equal(missing.isPartial, true);
+});
+
+test('keeps historical raw values but does not pair metrics across capture batches', async () => {
+  const environment = env();
+  const oldCapturedAt = Date.now() - 3_600_000;
+  const currentCapturedAt = Date.now() - 1000;
+  const post = (snapshot) => handleRankingsRequest(request('/api/rankings/snapshots', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(snapshot)
+  }), environment);
+
+  await post({
+    season: { id: 'season-current-batch', name: '当前批次配对测试' },
+    scope: 'global', capturedAt: oldCapturedAt,
+    leaderboards: {
+      spend_total: [{ userId: 'u-1', userName: '历史消费', value: 12_000_000_000, rank: 1, isVip: true }]
+    }
+  });
+  await post({
+    season: { id: 'season-current-batch', name: '当前批次配对测试' },
+    scope: 'global', capturedAt: currentCapturedAt,
+    leaderboards: {
+      epic_total: [{ userId: 'u-1', userName: '当前出卡', value: 36, rank: 1, isVip: true }]
+    }
+  });
+
+  const response = await handleRankingsRequest(request('/api/rankings/leaderboard?period=total'), environment);
+  const payload = await response.json();
+  const row = payload.rows.find((item) => item.userId === 'u-1');
+  assert.equal(row.epicTotal, 36);
+  assert.equal(row.spendUsd, 24_000);
+  assert.equal(row.paidPulls, null);
+  assert.equal(row.freePulls, null);
+  assert.equal(row.estimatedPulls, null);
+  assert.equal(row.estimatedLegendProbability, null);
+  assert.equal(row.estimateStatus, 'missing_current_spend');
+  assert.equal(row.isPartial, true);
 });
 
 test('converts spend values to USD and exposes a probability-ranked luck board', async () => {

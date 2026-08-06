@@ -14,7 +14,7 @@
 - 顶栏提供 Farm Dashboard、三态主题切换和 GitHub 仓库入口。
 - 增加同地址“榜单统计”视图：按用户合并欧皇榜、消费榜和兑换榜，支持今日、本周、本月和整个赛季周期，并可按出卡率、消费金额、抽卡次数、兑换次数或用户排序。
 - 榜单快照按当前赛季写入 Cloudflare D1，服务器约一小时刷新一次；同一小时重复快照自动去重。
-- 用户总览表显示排名、用户、VIP、传说卡数量、消费金额、估算抽数、兑换次数、出卡率和数据状态。
+- 用户总览表显示排名、用户、VIP、传说卡数量、消费金额、付费抽数、免费抽数、兑换次数、出卡率和数据状态。
 - 页面输入会缓存在浏览器本地，刷新后可继续上次的计算快照。
 
 ## 页面输入说明
@@ -110,14 +110,18 @@ spendUsd = spend.value / 500000
 用户总览表按同一周期、同一 `userId` 合并三类榜单后估算传说概率：
 
 ```text
-VIP：dailySpend = 6000 USD，dailyPulls = 650
-普通：dailySpend = 4000 USD，dailyPulls = 430
-estimatedDays = spendUsd / dailySpend
-estimatedPulls = estimatedDays × dailyPulls
+paidPulls = spendUsd / 10
+
+VIP：dailyPaidLimit = 600，dailyFreePulls = 50，minimumSpend = 6000 USD
+普通：dailyPaidLimit = 400，dailyFreePulls = 30，minimumSpend = 4000 USD
+
+estimatedDays = ceil(paidPulls / dailyPaidLimit)
+freePulls = estimatedDays × dailyFreePulls
+estimatedPulls = paidPulls + freePulls
 estimatedLegendProbability = epic_period / estimatedPulls
 ```
 
-消费金额不是完整日成本倍数时，页面标记“非完整天数 / 估算”；缺少同周期榜单时，对应单元格留空，不把缺失值当成 0。默认显示整个赛季，切换周期后会重新计算并排序。该概率只用于跨用户比较，不能视为服务器标注的真实抽卡概率。
+只有同一赛季、同一周期、同一 `userId` 且出现在同一抓取批次的欧皇榜和消费榜，才会计算付费抽数、免费抽数、总抽数和出卡率。消费低于对应最低样本门槛时，页面保留原始消费与传说卡数量，但派生列留空并标记“低样本 / 数据不足”。历史榜单数据不会删除；如果本次只出现单榜，则保留历史原始值，但不拿历史值与当前榜单拼接计算。消费金额不是完整日成本倍数时，页面标记“非完整天数 / 估算”。默认显示整个赛季，切换周期后会重新计算并排序。该概率只用于跨用户比较，不能视为服务器标注的真实抽卡概率。
 
 接口中的 `myRank`、`participants`、`cached`、`friendsTruncated` 和名称装饰字段会随原始快照保存在 D1，用于后续审计；当前用户总览不把它们混入核心统计表。`lastUpdatedAt` 会转换为页面顶部的“更新于”时间。
 

@@ -9,9 +9,13 @@ export const FUTURE_TOLERANCE_MS = 10 * 60 * 1000;
 export const MAX_ROWS_PER_BOARD = 1000;
 export const SPEND_VALUE_PER_USD = 500000;
 export const VIP_DAILY_SPEND_USD = 6000;
-export const VIP_DAILY_PULLS = 650;
+export const VIP_DAILY_PAID_PULLS = 600;
+export const VIP_DAILY_FREE_PULLS = 50;
+export const VIP_DAILY_PULLS = VIP_DAILY_PAID_PULLS + VIP_DAILY_FREE_PULLS;
 export const ORDINARY_DAILY_SPEND_USD = 4000;
-export const ORDINARY_DAILY_PULLS = 430;
+export const ORDINARY_DAILY_PAID_PULLS = 400;
+export const ORDINARY_DAILY_FREE_PULLS = 30;
+export const ORDINARY_DAILY_PULLS = ORDINARY_DAILY_PAID_PULLS + ORDINARY_DAILY_FREE_PULLS;
 
 const BOARD_KEY_SET = new Set(BOARD_KEYS);
 const SNAPSHOT_SCOPES = new Set(['global', 'friends']);
@@ -155,6 +159,8 @@ export function estimatePullsFromSpend(spendValue, isVip) {
     return {
       spendUsd: null,
       estimatedDays: null,
+      paidPulls: null,
+      freePulls: null,
       estimatedPulls: null,
       estimateStatus: 'missing_spend'
     };
@@ -164,19 +170,37 @@ export function estimatePullsFromSpend(spendValue, isVip) {
     return {
       spendUsd: null,
       estimatedDays: null,
+      paidPulls: null,
+      freePulls: null,
       estimatedPulls: null,
       estimateStatus: 'missing_spend'
     };
   }
   const spendUsd = rawValue / SPEND_VALUE_PER_USD;
   const dailySpendUsd = isVip ? VIP_DAILY_SPEND_USD : ORDINARY_DAILY_SPEND_USD;
-  const dailyPulls = isVip ? VIP_DAILY_PULLS : ORDINARY_DAILY_PULLS;
-  const estimatedDays = spendUsd / dailySpendUsd;
-  const estimatedPulls = estimatedDays * dailyPulls;
-  const completeDays = Math.abs(estimatedDays - Math.round(estimatedDays)) < 1e-9;
+  const dailyPaidPulls = isVip ? VIP_DAILY_PAID_PULLS : ORDINARY_DAILY_PAID_PULLS;
+  const dailyFreePulls = isVip ? VIP_DAILY_FREE_PULLS : ORDINARY_DAILY_FREE_PULLS;
+  if (spendUsd < dailySpendUsd) {
+    return {
+      spendUsd,
+      estimatedDays: null,
+      paidPulls: null,
+      freePulls: null,
+      estimatedPulls: null,
+      estimateStatus: 'low_sample'
+    };
+  }
+  const paidPulls = spendUsd / 10;
+  const paidDays = paidPulls / dailyPaidPulls;
+  const estimatedDays = Math.max(1, Math.ceil(paidDays));
+  const freePulls = estimatedDays * dailyFreePulls;
+  const estimatedPulls = paidPulls + freePulls;
+  const completeDays = Math.abs(paidDays - Math.round(paidDays)) < 1e-9;
   return {
     spendUsd,
     estimatedDays,
+    paidPulls,
+    freePulls,
     estimatedPulls,
     estimateStatus: completeDays ? 'complete_days' : 'partial_day'
   };

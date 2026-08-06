@@ -10,9 +10,13 @@
     const PINS_STORAGE_KEY = 'hyb-card-rankings-pins-v1';
     const SPEND_VALUE_PER_USD = 500000;
     const VIP_DAILY_SPEND_USD = 6000;
-    const VIP_DAILY_PULLS = 650;
+    const VIP_DAILY_PAID_PULLS = 600;
+    const VIP_DAILY_FREE_PULLS = 50;
+    const VIP_DAILY_PULLS = VIP_DAILY_PAID_PULLS + VIP_DAILY_FREE_PULLS;
     const ORDINARY_DAILY_SPEND_USD = 4000;
-    const ORDINARY_DAILY_PULLS = 430;
+    const ORDINARY_DAILY_PAID_PULLS = 400;
+    const ORDINARY_DAILY_FREE_PULLS = 30;
+    const ORDINARY_DAILY_PULLS = ORDINARY_DAILY_PAID_PULLS + ORDINARY_DAILY_FREE_PULLS;
     const LOCAL_SOURCE_SCOPES = Object.freeze(['global', 'friends']);
     const LOCAL_SOURCE_SCOPE_CONFIG = Object.freeze({ scope: 'global,friends', order: LOCAL_SOURCE_SCOPES });
 
@@ -235,11 +239,14 @@
 
     function finalizeTrendPoint(point) {
         const estimate = estimateFromSpend(point.spendValue, point.isVip);
+        const canDerive = point.epicTotal != null && point.spendValue != null;
         return {
             ...point,
             spendUsd: estimate.spendUsd,
-            estimatedPulls: estimate.estimatedPulls,
-            estimatedLegendProbability: point.epicTotal != null
+            paidPulls: canDerive ? estimate.paidPulls : null,
+            freePulls: canDerive ? estimate.freePulls : null,
+            estimatedPulls: canDerive ? estimate.estimatedPulls : null,
+            estimatedLegendProbability: canDerive
                 ? estimatedProbability(point.epicTotal, point.spendValue, point.isVip)
                 : null
         };
@@ -811,7 +818,7 @@
         boardRows.forEach((rows, boardKey) => {
             leaderboards[boardKey] = Array.from(rows.values())
                 .map((row) => {
-                    const { __capturedAt, __scope, ...clean } = row;
+                    const { __scope, ...clean } = row;
                     return clean;
                 })
                 .sort((left, right) => rowRank(left, Number.MAX_SAFE_INTEGER) - rowRank(right, Number.MAX_SAFE_INTEGER)
@@ -858,21 +865,51 @@
 
     function estimateFromSpend(spendValue, isVip) {
         if (spendValue == null || spendValue === '') {
-            return { spendUsd: null, estimatedDays: null, estimatedPulls: null, estimateStatus: 'missing_spend' };
+            return {
+                spendUsd: null,
+                estimatedDays: null,
+                paidPulls: null,
+                freePulls: null,
+                estimatedPulls: null,
+                estimateStatus: 'missing_spend'
+            };
         }
         const rawValue = Number(spendValue);
         if (!Number.isFinite(rawValue) || rawValue < 0) {
-            return { spendUsd: null, estimatedDays: null, estimatedPulls: null, estimateStatus: 'missing_spend' };
+            return {
+                spendUsd: null,
+                estimatedDays: null,
+                paidPulls: null,
+                freePulls: null,
+                estimatedPulls: null,
+                estimateStatus: 'missing_spend'
+            };
         }
         const spendUsd = rawValue / SPEND_VALUE_PER_USD;
         const dailySpendUsd = isVip ? VIP_DAILY_SPEND_USD : ORDINARY_DAILY_SPEND_USD;
-        const dailyPulls = isVip ? VIP_DAILY_PULLS : ORDINARY_DAILY_PULLS;
-        const estimatedDays = spendUsd / dailySpendUsd;
-        const estimatedPulls = estimatedDays * dailyPulls;
-        const completeDays = Math.abs(estimatedDays - Math.round(estimatedDays)) < 1e-9;
+        const dailyPaidPulls = isVip ? VIP_DAILY_PAID_PULLS : ORDINARY_DAILY_PAID_PULLS;
+        const dailyFreePulls = isVip ? VIP_DAILY_FREE_PULLS : ORDINARY_DAILY_FREE_PULLS;
+        if (spendUsd < dailySpendUsd) {
+            return {
+                spendUsd,
+                estimatedDays: null,
+                paidPulls: null,
+                freePulls: null,
+                estimatedPulls: null,
+                estimateStatus: 'low_sample'
+            };
+        }
+        const paidPulls = spendUsd / 10;
+        const paidDays = paidPulls / dailyPaidPulls;
+        const estimatedDays = Math.max(1, Math.ceil(paidDays));
+        const freePulls = estimatedDays * dailyFreePulls;
+        const estimatedPulls = paidPulls + freePulls;
+        const completeDays = Math.abs(paidDays - Math.round(paidDays)) < 1e-9;
         return {
             spendUsd,
             estimatedDays,
+            paidPulls,
+            freePulls,
             estimatedPulls,
             estimateStatus: completeDays ? 'complete_days' : 'partial_day'
         };
@@ -883,6 +920,37 @@
         return estimate.estimatedPulls > 0 && Number.isFinite(epicTotal)
             ? Number(epicTotal) / estimate.estimatedPulls
             : null;
+    }
+
+    function rowInCapturedBucket(row, capturedBucket) {
+        if (!row) return false;
+        if (capturedBucket == null) return true;
+        const capturedAt = Number(row.__capturedAt ?? row.capturedAt ?? row.captured_at);
+        return Number.isFinite(capturedAt)
+            && Math.floor(capturedAt / HOURLY_REFRESH_MS) === Number(capturedBucket);
+    }
+
+    function emptyLocalEstimate(spendUsd, estimateStatus) {
+        return {
+            spendUsd,
+            estimatedDays: null,
+            paidPulls: null,
+            freePulls: null,
+            estimatedPulls: null,
+            estimateStatus
+        };
+    }
+
+    function localEstimateStatus({ hasEpic, hasSpend, currentEpic, currentSpend, currentCapturedBucket }) {
+        if (currentCapturedBucket != null) {
+            if (!currentEpic && !currentSpend) return hasEpic || hasSpend ? 'missing_current_pair' : 'missing_pair';
+            if (!currentEpic) return hasEpic ? 'missing_current_epic' : 'missing_epic';
+            if (!currentSpend) return hasSpend ? 'missing_current_spend' : 'missing_spend';
+        }
+        if (!hasEpic && !hasSpend) return 'missing_pair';
+        if (!hasEpic) return 'missing_epic';
+        if (!hasSpend) return 'missing_spend';
+        return 'missing_pair';
     }
 
     function pairLocalRows(epicRows = [], spendRows = []) {
@@ -900,14 +968,16 @@
         return Array.from(users.values());
     }
 
-    function localPairViews(pairs, limit = 100) {
+    function localPairViews(pairs, limit = 100, currentCapturedBucket = null) {
         const complete = [];
         const partial = [];
         pairs.forEach((pair) => {
             const row = pair.epicRow || pair.spendRow;
             if (!row) return;
             const view = { row, pair, rankOverride: null };
-            if (pair.epicRow && pair.spendRow) complete.push(view);
+            if (pair.epicRow && pair.spendRow
+                && rowInCapturedBucket(pair.epicRow, currentCapturedBucket)
+                && rowInCapturedBucket(pair.spendRow, currentCapturedBucket)) complete.push(view);
             else partial.push(view);
         });
         complete.sort((left, right) => {
@@ -930,7 +1000,7 @@
         };
     }
 
-    function localEnrichedRow(rawRow, pair, board, rankOverride) {
+    function localEnrichedRow(rawRow, pair, board, rankOverride, currentCapturedBucket = null) {
         const userId = rowUserId(rawRow);
         const epicTotal = pair && pair.epicRow
             ? rowValue(pair.epicRow)
@@ -939,13 +1009,25 @@
             ? rowValue(pair.spendRow)
             : board === 'spend' ? rowValue(rawRow) : null;
         const isVip = rowIsVip(rawRow) || Boolean(pair && pair.isVip);
-        const estimate = estimateFromSpend(spendValue, isVip);
-        let estimateStatus = estimate.estimateStatus;
-        if (epicTotal == null) estimateStatus = 'missing_epic';
-        else if (spendValue == null) estimateStatus = 'missing_spend';
-        const probability = estimateStatus === 'missing_epic' || estimateStatus === 'missing_spend'
-            ? null
-            : estimatedProbability(epicTotal, spendValue, isVip);
+        const hasEpic = epicTotal != null && Number.isFinite(epicTotal);
+        const hasSpend = spendValue != null && Number.isFinite(spendValue);
+        const currentEpic = hasEpic && rowInCapturedBucket(pair && pair.epicRow || (board === 'epic' ? rawRow : null), currentCapturedBucket);
+        const currentSpend = hasSpend && rowInCapturedBucket(pair && pair.spendRow || (board === 'spend' ? rawRow : null), currentCapturedBucket);
+        const canDerive = currentEpic && currentSpend;
+        const rawEstimate = estimateFromSpend(spendValue, isVip);
+        const estimate = canDerive
+            ? rawEstimate
+            : emptyLocalEstimate(rawEstimate.spendUsd, localEstimateStatus({
+                hasEpic,
+                hasSpend,
+                currentEpic,
+                currentSpend,
+                currentCapturedBucket
+            }));
+        const estimateStatus = estimate.estimateStatus;
+        const probability = canDerive
+            ? estimatedProbability(epicTotal, spendValue, isVip)
+            : null;
         return {
             snapshotId: null,
             boardKey: `${board}_${state.period}`,
@@ -963,8 +1045,10 @@
             epicTotal,
             spendValue,
             spendTotal: spendValue,
-            spendUsd: estimate.spendUsd,
+            spendUsd: rawEstimate.spendUsd,
             estimatedDays: estimate.estimatedDays,
+            paidPulls: estimate.paidPulls,
+            freePulls: estimate.freePulls,
             estimatedPulls: estimate.estimatedPulls,
             estimateStatus,
             isPartial: estimateStatus !== 'complete_days' || probability == null,
@@ -972,7 +1056,7 @@
         };
     }
 
-    function summarizeLocalUsers(epicRows = [], spendRows = [], setsRows = [], sort = 'legend') {
+    function summarizeLocalUsers(epicRows = [], spendRows = [], setsRows = [], sort = 'legend', currentCapturedBucket = null) {
         const users = new Map();
         const merge = (rawRow, kind) => {
             const userId = rowUserId(rawRow);
@@ -1000,14 +1084,25 @@
             const epicTotal = rowValue(user.epicRow);
             const spendValue = rowValue(user.spendRow);
             const exchangeCount = rowValue(user.setsRow);
-            const estimate = estimateFromSpend(spendValue, user.isVip);
-            let estimateStatus = estimate.estimateStatus;
-            if (epicTotal == null && spendValue == null) estimateStatus = 'missing_pair';
-            else if (epicTotal == null) estimateStatus = 'missing_epic';
-            else if (spendValue == null) estimateStatus = 'missing_spend';
-            const probability = estimateStatus === 'missing_pair' || estimateStatus === 'missing_epic' || estimateStatus === 'missing_spend'
-                ? null
-                : estimatedProbability(epicTotal, spendValue, user.isVip);
+            const hasEpic = epicTotal != null && Number.isFinite(epicTotal);
+            const hasSpend = spendValue != null && Number.isFinite(spendValue);
+            const currentEpic = hasEpic && rowInCapturedBucket(user.epicRow, currentCapturedBucket);
+            const currentSpend = hasSpend && rowInCapturedBucket(user.spendRow, currentCapturedBucket);
+            const canDerive = currentEpic && currentSpend;
+            const rawEstimate = estimateFromSpend(spendValue, user.isVip);
+            const estimate = canDerive
+                ? rawEstimate
+                : emptyLocalEstimate(rawEstimate.spendUsd, localEstimateStatus({
+                    hasEpic,
+                    hasSpend,
+                    currentEpic,
+                    currentSpend,
+                    currentCapturedBucket
+                }));
+            const estimateStatus = estimate.estimateStatus;
+            const probability = canDerive
+                ? estimatedProbability(epicTotal, spendValue, user.isVip)
+                : null;
             return {
                 snapshotId: null,
                 boardKey: `users_${state.period}`,
@@ -1025,8 +1120,10 @@
                 epicTotal,
                 spendValue,
                 spendTotal: spendValue,
-                spendUsd: estimate.spendUsd,
+                spendUsd: rawEstimate.spendUsd,
                 estimatedDays: estimate.estimatedDays,
+                paidPulls: estimate.paidPulls,
+                freePulls: estimate.freePulls,
                 estimatedPulls: estimate.estimatedPulls,
                 exchangeCount,
                 estimateStatus,
@@ -1136,9 +1233,14 @@
         const epicRows = Array.isArray(leaderboards[`epic_${state.period}`]) ? leaderboards[`epic_${state.period}`] : [];
         const spendRows = Array.isArray(leaderboards[`spend_${state.period}`]) ? leaderboards[`spend_${state.period}`] : [];
         const setsRows = Array.isArray(leaderboards[`sets_${state.period}`]) ? leaderboards[`sets_${state.period}`] : [];
+        const currentCapturedAt = normalizeCapturedAt(source.capturedAt, null)
+            || normalizeCapturedAt(source.lastUpdatedAt, null)
+            || Date.now();
+        const currentCapturedBucket = Math.floor(currentCapturedAt / HOURLY_REFRESH_MS);
         if (state.board === 'users') {
             const sort = state.sort || 'legend';
-            const rows = summarizeLocalUsers(epicRows, spendRows, setsRows, sort).map((row, index) => ({ ...row, rank: index + 1 }));
+            const rows = summarizeLocalUsers(epicRows, spendRows, setsRows, sort, currentCapturedBucket)
+                .map((row, index) => ({ ...row, rank: index + 1 }));
             return {
                 ok: true,
                 board: 'users',
@@ -1150,9 +1252,7 @@
                     seasonId: String(source.season && source.season.id || ''),
                     seasonName: String(source.season && source.season.name || ''),
                     scope: String(source.scope || 'global'),
-                    capturedAt: normalizeCapturedAt(source.capturedAt, null)
-                        || normalizeCapturedAt(source.lastUpdatedAt, null)
-                        || Date.now(),
+                    capturedAt: currentCapturedAt,
                     source: 'local-unsent'
                 },
                 previousSnapshot: null,
@@ -1164,14 +1264,14 @@
         }
         const pairs = pairLocalRows(epicRows, spendRows);
         const pairByUser = new Map(pairs.map((pair) => [pair.userId, pair]));
-        const luck = state.board === 'luck' ? localPairViews(pairs, 100) : null;
+        const luck = state.board === 'luck' ? localPairViews(pairs, 100, currentCapturedBucket) : null;
         const views = state.board === 'luck'
             ? luck.complete
             : rawRows.slice(0, 100).map((rawRow) => ({ row: rawRow, pair: pairByUser.get(rowUserId(rawRow)) || null }));
-        const rows = views.map((view) => localEnrichedRow(view.row, view.pair, state.board, view.rankOverride === null ? undefined : view.rankOverride))
+        const rows = views.map((view) => localEnrichedRow(view.row, view.pair, state.board, view.rankOverride === null ? undefined : view.rankOverride, currentCapturedBucket))
             .filter((row) => row.userId && Number.isFinite(row.value));
         const partialRows = state.board === 'luck'
-            ? luck.partial.map((view) => localEnrichedRow(view.row, view.pair, state.board, null))
+            ? luck.partial.map((view) => localEnrichedRow(view.row, view.pair, state.board, null, currentCapturedBucket))
             : rows.filter((row) => row.isPartial);
         return {
             ok: true,
@@ -1183,9 +1283,7 @@
                 seasonId: String(source.season && source.season.id || ''),
                 seasonName: String(source.season && source.season.name || ''),
                 scope: String(source.scope || 'global'),
-                capturedAt: normalizeCapturedAt(source.capturedAt, null)
-                    || normalizeCapturedAt(source.lastUpdatedAt, null)
-                    || Date.now(),
+                    capturedAt: currentCapturedAt,
                 source: 'local-unsent'
             },
             previousSnapshot: null,
@@ -1406,7 +1504,8 @@
             <td class="rank-user-cell"><span class="rank-user-button"><button class="rankings-pin-button" type="button" data-pin-user="${escapeHtml(row.userId)}" data-user-name="${escapeHtml(row.userName || row.userId)}" aria-pressed="false" aria-label="置顶 ${escapeHtml(row.userName || row.userId)}" title="置顶用户"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.25 2.75h3.5L9 6.75l2.75 2.75H4.25L7 6.75l-.75-4Z"/><path d="M8 9.5v3.75M6.25 13.25h3.5"/></svg></button>${avatar}<span>${escapeHtml(row.userName || row.userId)}</span></span></td>
             <td class="rank-legend">${formatOptionalNumber(row.epicTotal)}</td>
             <td class="rank-spend">${formatOptionalUsd(row.spendUsd)}</td>
-            <td class="rank-pulls">${formatOptionalNumber(row.estimatedPulls)}</td>
+            <td class="rank-paid-pulls">${formatOptionalNumber(row.paidPulls)}</td>
+            <td class="rank-free-pulls">${formatOptionalNumber(row.freePulls)}</td>
             <td class="rank-sets">${formatOptionalNumber(row.exchangeCount)}</td>
             <td class="rank-probability">${formatOptionalProbability(row.estimatedLegendProbability)}</td>
             <td class="rank-status ${row.isPartial ? 'is-partial' : ''}">${status}</td>
@@ -1455,7 +1554,7 @@
             ? normalRows.map((row) => renderRankingsRow(row, rankByUserId.get(row.userId) || 0)).join('')
             : pinnedRows.length
                 ? ''
-                : `<tr><td class="rankings-empty" colspan="10">${state.userQuery ? '没有匹配的用户' : '暂无榜单数据'}</td></tr>`;
+                : `<tr><td class="rankings-empty" colspan="11">${state.userQuery ? '没有匹配的用户' : '暂无榜单数据'}</td></tr>`;
 
         const rowsForSummary = [...pinnedRows, ...normalRows];
         const partialNotice = $('#rankingsPartialNotice');
@@ -1498,8 +1597,12 @@
 
     function formatEstimateStatus(status, isPartial) {
         if (status === 'missing_pair') return '缺少欧皇榜与消费榜';
+        if (status === 'missing_current_pair') return '当前批次缺少双榜';
         if (status === 'missing_spend') return '缺少消费榜';
+        if (status === 'missing_current_spend') return '当前批次缺少消费榜';
         if (status === 'missing_epic') return '缺少欧皇榜';
+        if (status === 'missing_current_epic') return '当前批次缺少欧皇榜';
+        if (status === 'low_sample') return '低样本 / 数据不足';
         if (status === 'partial_day') return '非完整天数 / 估算';
         if (isPartial) return '数据不完整';
         return '完整天数';

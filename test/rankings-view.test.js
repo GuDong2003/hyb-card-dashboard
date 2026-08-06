@@ -146,13 +146,13 @@ test('user overview shows ranking and all core metrics', async () => {
   assert.match(table, />趋势</);
   assert.match(source, /data-trend-user/);
   assert.match(table, />排名</);
-  for (const label of ['用户', 'VIP', '传说卡数量', '消费金额', '抽卡次数', '兑换次数', '出卡率', '状态', '趋势']) {
+  for (const label of ['用户', 'VIP', '传说卡数量', '消费金额', '付费抽数', '免费抽数', '兑换次数', '出卡率', '状态', '趋势']) {
     assert.match(table, new RegExp(`>${label}`));
   }
   for (const sortKey of ['user', 'legend', 'spend', 'pulls', 'sets', 'probability']) {
     assert.match(table, new RegExp(`data-rank-sort="${sortKey}"`));
   }
-  assert.match(table, /colspan="10"/);
+  assert.match(table, /colspan="11"/);
   assert.match(css, /\.rankings-table\s*\{[\s\S]*table-layout\s*:\s*fixed/);
   assert.match(css, /\.rankings-col-rank\s*\{[\s\S]*width\s*:\s*5%/);
   assert.match(css, /\.rankings-col-vip\s*\{[\s\S]*width\s*:\s*6%/);
@@ -178,6 +178,13 @@ test('rankings client uses same-origin Worker APIs and the Card bridge events', 
   assert.match(source, /function sortRowsForDisplay/);
   assert.match(source, /function renderSortHeaders/);
   assert.match(source, /SPEND_VALUE_PER_USD\s*=\s*500000/);
+  assert.match(source, /VIP_DAILY_PAID_PULLS\s*=\s*600/);
+  assert.match(source, /VIP_DAILY_FREE_PULLS\s*=\s*50/);
+  assert.match(source, /ORDINARY_DAILY_PAID_PULLS\s*=\s*400/);
+  assert.match(source, /ORDINARY_DAILY_FREE_PULLS\s*=\s*30/);
+  assert.match(source, /paidPulls/);
+  assert.match(source, /freePulls/);
+  assert.match(source, /low_sample/);
   assert.match(source, /运气榜/);
   assert.match(source, /partialRows/);
 });

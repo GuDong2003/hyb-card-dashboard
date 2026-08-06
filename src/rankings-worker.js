@@ -399,7 +399,7 @@ async function getUsersLeaderboard(url, env, latest) {
   const currentEpicRows = currentMetricRows.filter((row) => row.board_key === `epic_${period}`);
   const currentSpendRows = currentMetricRows.filter((row) => row.board_key === `spend_${period}`);
   const currentSetsRows = currentMetricRows.filter((row) => row.board_key === `sets_${period}`);
-  const currentUsers = summarizeUsers(currentEpicRows, currentSpendRows, currentSetsRows, sort)
+  const currentUsers = summarizeUsers(currentEpicRows, currentSpendRows, currentSetsRows, sort, latest.captured_bucket)
     .map((row) => ({ ...row, boardKey: `users_${period}` }));
   const previousUsers = summarizeUsers(previousEpicRows, previousSpendRows, previousSetsRows, sort)
     .map((row) => ({ ...row, boardKey: `users_${period}` }))
@@ -443,7 +443,7 @@ async function metricsForPeriod(env, seasonId, period) {
   return result.results || [];
 }
 
-function summarizeUsers(epicRows = [], spendRows = [], setsRows = [], sort = 'legend') {
+function summarizeUsers(epicRows = [], spendRows = [], setsRows = [], sort = 'legend', currentCapturedBucket = null) {
   const users = new Map();
   const merge = (rawRow, kind) => {
     if (!rawRow || typeof rawRow !== 'object') return;
@@ -467,23 +467,34 @@ function summarizeUsers(epicRows = [], spendRows = [], setsRows = [], sort = 'le
   epicRows.forEach((row) => merge(row, 'epic'));
   spendRows.forEach((row) => merge(row, 'spend'));
   setsRows.forEach((row) => merge(row, 'sets'));
-  return Array.from(users.values()).map((user) => buildUserSummary(user)).sort((left, right) => compareUserRows(left, right, sort));
+  return Array.from(users.values())
+    .map((user) => buildUserSummary(user, currentCapturedBucket))
+    .sort((left, right) => compareUserRows(left, right, sort));
 }
 
-function buildUserSummary(user) {
+function buildUserSummary(user, currentCapturedBucket = null) {
   const source = user.epicRow || user.spendRow || user.setsRow;
   const epicTotal = user.epicRow ? Number(user.epicRow.value) : null;
   const spendValue = user.spendRow ? Number(user.spendRow.value) : null;
   const exchangeCount = user.setsRow ? Number(user.setsRow.value) : null;
   const isVip = Boolean(user.isVip);
-  const estimate = estimatePullsFromSpend(spendValue, isVip);
-  let estimateStatus = estimate.estimateStatus;
-  if (epicTotal == null && spendValue == null) estimateStatus = 'missing_pair';
-  else if (epicTotal == null) estimateStatus = 'missing_epic';
-  else if (spendValue == null) estimateStatus = 'missing_spend';
-  const probability = estimateStatus === 'missing_pair' || estimateStatus === 'missing_epic' || estimateStatus === 'missing_spend'
-    ? null
-    : estimateLegendProbability({ epicTotal, spendValue, isVip });
+  const hasEpic = epicTotal != null && Number.isFinite(epicTotal);
+  const hasSpend = spendValue != null && Number.isFinite(spendValue);
+  const currentEpic = hasEpic && metricInCapturedBucket(user.epicRow, currentCapturedBucket);
+  const currentSpend = hasSpend && metricInCapturedBucket(user.spendRow, currentCapturedBucket);
+  const canDerive = currentEpic && currentSpend;
+  const rawEstimate = estimatePullsFromSpend(spendValue, isVip);
+  const estimate = canDerive ? rawEstimate : emptyEstimate(rawEstimate.spendUsd, currentEstimateStatus({
+    hasEpic,
+    hasSpend,
+    currentEpic,
+    currentSpend,
+    currentCapturedBucket
+  }));
+  const estimateStatus = estimate.estimateStatus;
+  const probability = canDerive
+    ? estimateLegendProbability({ epicTotal, spendValue, isVip })
+    : null;
   return {
     snapshotId: source ? Number(source.snapshot_id) : null,
     boardKey: 'users',
@@ -496,8 +507,10 @@ function buildUserSummary(user) {
     epicTotal,
     spendValue,
     spendTotal: spendValue,
-    spendUsd: estimate.spendUsd,
+    spendUsd: rawEstimate.spendUsd,
     estimatedDays: estimate.estimatedDays,
+    paidPulls: estimate.paidPulls,
+    freePulls: estimate.freePulls,
     estimatedPulls: estimate.estimatedPulls,
     exchangeCount,
     estimateStatus,
@@ -506,6 +519,37 @@ function buildUserSummary(user) {
     previousRank: null,
     rankDelta: null,
     event: ''
+  };
+}
+
+function metricInCapturedBucket(row, capturedBucket) {
+  if (!row) return false;
+  if (capturedBucket == null) return true;
+  const capturedAt = Number(row.value_captured_at ?? row.captured_at);
+  return Number.isFinite(capturedAt)
+    && Math.floor(capturedAt / REFRESH_INTERVAL_MS) === Number(capturedBucket);
+}
+
+function currentEstimateStatus({ hasEpic, hasSpend, currentEpic, currentSpend, currentCapturedBucket }) {
+  if (currentCapturedBucket != null) {
+    if (!currentEpic && !currentSpend) return hasEpic || hasSpend ? 'missing_current_pair' : 'missing_pair';
+    if (!currentEpic) return hasEpic ? 'missing_current_epic' : 'missing_epic';
+    if (!currentSpend) return hasSpend ? 'missing_current_spend' : 'missing_spend';
+  }
+  if (!hasEpic && !hasSpend) return 'missing_pair';
+  if (!hasEpic) return 'missing_epic';
+  if (!hasSpend) return 'missing_spend';
+  return 'missing_pair';
+}
+
+function emptyEstimate(spendUsd, estimateStatus) {
+  return {
+    spendUsd,
+    estimatedDays: null,
+    paidPulls: null,
+    freePulls: null,
+    estimatedPulls: null,
+    estimateStatus
   };
 }
 
@@ -764,7 +808,10 @@ function buildEnrichedEntry(row, pair, board, rankOverride = undefined) {
       || (pair && pair.epicRow && pair.epicRow.is_vip)
       || (pair && pair.spendRow && pair.spendRow.is_vip)
   );
-  const estimate = estimatePullsFromSpend(spendValue, isVip);
+  const rawEstimate = estimatePullsFromSpend(spendValue, isVip);
+  const hasPair = epicTotal != null && Number.isFinite(epicTotal)
+    && spendValue != null && Number.isFinite(spendValue);
+  const estimate = hasPair ? rawEstimate : emptyEstimate(rawEstimate.spendUsd, null);
   let estimateStatus = estimate.estimateStatus;
   if (epicTotal == null || !Number.isFinite(epicTotal)) estimateStatus = 'missing_epic';
   else if (spendValue == null || !Number.isFinite(spendValue)) estimateStatus = 'missing_spend';
@@ -781,6 +828,8 @@ function buildEnrichedEntry(row, pair, board, rankOverride = undefined) {
     spendTotal: spendValue,
     spendUsd: estimate.spendUsd,
     estimatedDays: estimate.estimatedDays,
+    paidPulls: estimate.paidPulls,
+    freePulls: estimate.freePulls,
     estimatedPulls: estimate.estimatedPulls,
     estimateStatus,
     isPartial,

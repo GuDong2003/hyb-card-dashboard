@@ -465,7 +465,8 @@
 .rankings-col-user { width: 18%; }
 .rankings-col-legend { width: 11%; }
 .rankings-col-spend { width: 13%; }
-.rankings-col-pulls { width: 11%; }
+.rankings-col-paid-pulls { width: 6%; }
+.rankings-col-free-pulls { width: 5%; }
 .rankings-col-sets { width: 9%; }
 .rankings-col-probability { width: 10%; }
 .rankings-col-status { width: 11%; }

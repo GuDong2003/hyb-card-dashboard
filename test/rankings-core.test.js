@@ -77,21 +77,42 @@ test('signature is stable when object key order changes', async () => {
   assert.equal(await computeSnapshotSignature(left), await computeSnapshotSignature(right));
 });
 
-test('estimates pull count from raw spend with VIP and ordinary quotas', () => {
+test('splits paid and free pulls using VIP and ordinary quotas', () => {
   const vip = estimatePullsFromSpend(12_000_000_000, true);
   assert.equal(vip.spendUsd, 24_000);
   assert.equal(vip.estimatedDays, 4);
+  assert.equal(vip.paidPulls, 2_400);
+  assert.equal(vip.freePulls, 200);
   assert.equal(vip.estimatedPulls, 2_600);
   assert.equal(vip.estimateStatus, 'complete_days');
 
   const ordinary = estimatePullsFromSpend(2_000_000_000, false);
   assert.equal(ordinary.spendUsd, 4_000);
   assert.equal(ordinary.estimatedDays, 1);
+  assert.equal(ordinary.paidPulls, 400);
+  assert.equal(ordinary.freePulls, 30);
   assert.equal(ordinary.estimatedPulls, 430);
   assert.equal(ordinary.estimateStatus, 'complete_days');
 
+  const partial = estimatePullsFromSpend(3_500_000_000, true);
+  assert.equal(partial.spendUsd, 7_000);
+  assert.equal(partial.estimatedDays, 2);
+  assert.equal(partial.paidPulls, 700);
+  assert.equal(partial.freePulls, 100);
+  assert.equal(partial.estimatedPulls, 800);
+  assert.equal(partial.estimateStatus, 'partial_day');
+
+  const lowSample = estimatePullsFromSpend(250_000_000, true);
+  assert.equal(lowSample.spendUsd, 500);
+  assert.equal(lowSample.paidPulls, null);
+  assert.equal(lowSample.freePulls, null);
+  assert.equal(lowSample.estimatedPulls, null);
+  assert.equal(lowSample.estimateStatus, 'low_sample');
+
   const missing = estimatePullsFromSpend(null, true);
   assert.equal(missing.spendUsd, null);
+  assert.equal(missing.paidPulls, null);
+  assert.equal(missing.freePulls, null);
   assert.equal(missing.estimatedPulls, null);
   assert.equal(missing.estimateStatus, 'missing_spend');
 });
