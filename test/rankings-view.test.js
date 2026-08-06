@@ -15,7 +15,7 @@ test('index contains an in-page rankings view without a new URL route', async ()
   assert.match(html, /id="rankingsPeriodSelect"/);
   assert.doesNotMatch(html, /id="rankingsSortSelect"/);
   assert.match(html, /data-rank-sort="probability"/);
-  assert.match(html, /data-rank-sort="probability"[^>]*aria-sort="descending"/);
+  assert.match(html, /data-rank-sort="legend"[^>]*aria-sort="descending"/);
   assert.match(html, /消费金额/);
   assert.match(html, /传说卡数量/);
   assert.match(html, /id="rankingsPartialNotice"/);
@@ -164,6 +164,7 @@ test('rankings client uses same-origin Worker APIs and the Card bridge events', 
   assert.match(source, /rank-legend/);
   assert.match(source, /rankingsPeriodSelect/);
   assert.doesNotMatch(source, /rankingsSortSelect/);
+  assert.match(source, /sort:\s*'legend'/);
   assert.match(source, /sortDirection\s*:\s*'desc'/);
   assert.match(source, /function sortRowsForDisplay/);
   assert.match(source, /function renderSortHeaders/);

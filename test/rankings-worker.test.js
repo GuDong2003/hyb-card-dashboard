@@ -324,6 +324,7 @@ test('returns one dynamic user row with spend, pulls, exchanges and blank missin
 
   const todayResponse = await handleRankingsRequest(request('/api/rankings/leaderboard?period=today'), environment);
   const todayPayload = await todayResponse.json();
+  assert.equal(todayPayload.sort, 'legend');
   assert.equal(todayPayload.rows[0].userId, 'u-2');
   assert.equal(todayPayload.rows[0].spendUsd, null);
   assert.equal(todayPayload.rows[0].estimatedPulls, null);

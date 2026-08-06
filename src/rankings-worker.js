@@ -443,7 +443,7 @@ async function metricsForPeriod(env, seasonId, period) {
   return result.results || [];
 }
 
-function summarizeUsers(epicRows = [], spendRows = [], setsRows = [], sort = 'probability') {
+function summarizeUsers(epicRows = [], spendRows = [], setsRows = [], sort = 'legend') {
   const users = new Map();
   const merge = (rawRow, kind) => {
     if (!rawRow || typeof rawRow !== 'object') return;
@@ -530,7 +530,7 @@ function userSortValue(row, sort) {
 function normalizeUserSort(value) {
   return new Set(['probability', 'legend', 'spend', 'pulls', 'sets', 'user']).has(value)
     ? value
-    : 'probability';
+    : 'legend';
 }
 
 async function getHistory(url, env) {

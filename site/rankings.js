@@ -73,7 +73,7 @@
         view: 'calculator',
         board: 'users',
         period: 'total',
-        sort: 'probability',
+        sort: 'legend',
         sortDirection: 'desc',
         settings: loadSettings(),
         latest: null,
@@ -972,7 +972,7 @@
         };
     }
 
-    function summarizeLocalUsers(epicRows = [], spendRows = [], setsRows = [], sort = 'probability') {
+    function summarizeLocalUsers(epicRows = [], spendRows = [], setsRows = [], sort = 'legend') {
         const users = new Map();
         const merge = (rawRow, kind) => {
             const userId = rowUserId(rawRow);
@@ -1137,7 +1137,7 @@
         const spendRows = Array.isArray(leaderboards[`spend_${state.period}`]) ? leaderboards[`spend_${state.period}`] : [];
         const setsRows = Array.isArray(leaderboards[`sets_${state.period}`]) ? leaderboards[`sets_${state.period}`] : [];
         if (state.board === 'users') {
-            const sort = state.sort || 'probability';
+            const sort = state.sort || 'legend';
             const rows = summarizeLocalUsers(epicRows, spendRows, setsRows, sort).map((row, index) => ({ ...row, rank: index + 1 }));
             return {
                 ok: true,
