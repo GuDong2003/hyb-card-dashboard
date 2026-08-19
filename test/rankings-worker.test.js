@@ -366,6 +366,48 @@ test('pairs the latest available rows within a day instead of requiring the same
   assert.equal(row.estimateStatus, 'complete_days');
 });
 
+test('uses the latest complete common day when the newest common day is partial', async () => {
+  const environment = env();
+  const base = Math.floor((Date.now() - (3 * DAY_MS) - RESET_HOUR_MS) / DAY_MS) * DAY_MS
+    + RESET_HOUR_MS;
+  const completeCapture = base + 60 * 60 * 1000;
+  const partialCapture = base + DAY_MS + 60 * 60 * 1000;
+  const post = (snapshot) => handleRankingsRequest(request('/api/rankings/snapshots', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(snapshot)
+  }), environment);
+
+  await post({
+    season: { id: 'season-complete-fallback', name: '完整日回退测试' },
+    scope: 'global', capturedAt: completeCapture,
+    leaderboards: {
+      epic_total: [{ userId: 'u-1', userName: '回退用户', value: 30, rank: 1, isVip: true }],
+      spend_total: [{ userId: 'u-1', userName: '回退用户', value: 12_000_000_000, rank: 1, isVip: true }]
+    }
+  });
+  await post({
+    season: { id: 'season-complete-fallback', name: '完整日回退测试' },
+    scope: 'global', capturedAt: partialCapture,
+    leaderboards: {
+      epic_total: [{ userId: 'u-1', userName: '回退用户', value: 54, rank: 1, isVip: true }],
+      spend_total: [{ userId: 'u-1', userName: '回退用户', value: 14_000_000_000, rank: 1, isVip: true }]
+    }
+  });
+
+  const response = await handleRankingsRequest(request('/api/rankings/leaderboard?period=total'), environment);
+  const payload = await response.json();
+  const row = payload.rows.find((item) => item.userId === 'u-1');
+  assert.equal(row.epicTotal, 30);
+  assert.equal(row.spendUsd, 24_000);
+  assert.equal(row.paidPulls, 2_400);
+  assert.equal(row.freePulls, 200);
+  assert.equal(row.estimatedPulls, 2_600);
+  assert.equal(row.estimatedLegendProbability, 30 / 2_600);
+  assert.equal(row.estimateStatus, 'complete_days');
+  assert.equal(row.estimateDayStartAt, base);
+  assert.equal(row.estimateUsesHistoricalData, true);
+  assert.equal(row.isPartial, false);
+});
+
 test('converts spend values to USD and exposes a probability-ranked luck board', async () => {
   const environment = env();
   const capturedAt = Date.now() - 1000;

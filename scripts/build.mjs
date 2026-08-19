@@ -19,6 +19,8 @@ await mkdir(outputDirectory, { recursive: true });
 await Promise.all([
     copyAsset('index.html'),
     copyAsset('calculator-ui.css'),
+    copyAsset('calculator-import.js'),
+    copyAsset('profit-metrics.js'),
     copyAsset('rankings.css'),
     copyAsset('rankings.js'),
     copyAsset('stardust-rules.js'),

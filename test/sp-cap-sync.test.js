@@ -23,8 +23,8 @@ test('SP cap sync distinguishes left-side recalculation from manual cap input', 
   );
   assert.match(
     html,
-    /lastPreliminaryRow\.usableCards,\s*syncSPPointCap\n\s*\);/,
-    'left-side recalculation should derive the cap from the latest available legendary total'
+    /lastPreliminaryRow\.cumulativeDrawn,\s*syncSPPointCap\n\s*\);/,
+    'left-side recalculation should derive the cap from naturally drawn legendary SP'
   );
 
   const toolbarStart = html.indexOf('<div class="sp-toolbar">');
@@ -48,6 +48,23 @@ test('SP cap sync distinguishes left-side recalculation from manual cap input', 
   assert.equal(context.resolveSPPointCap('', 425, false), 42);
 });
 
+test('calculator import replaces the SP cap and undo restores the previous cap input', async () => {
+  const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
+  const importFunction = html.match(
+    /    function applyCalculatorImport\(data, options = \{\}\) \{[\s\S]*?\n    \}/
+  )?.[0];
+  const undoFunction = html.match(
+    /    function undoCalculatorImport\(\) \{[\s\S]*?\n    \}/
+  )?.[0];
+
+  assert.ok(importFunction, 'calculator import function should be present');
+  assert.ok(undoFunction, 'calculator undo function should be present');
+  assert.match(importFunction, /calculate\(false, true\)/, 'calculator import should resync the derived SP cap');
+  assert.match(undoFunction, /calculate\(false, false\)/, 'calculator undo should preserve the restored SP cap input');
+  assert.match(html, /const CALCULATOR_IMPORT_UNDO_FIELDS = \[[\s\S]*['"]spPointCap['"]/,
+    'calculator undo should snapshot the SP cap input');
+});
+
 test('calculator keeps cashflow columns fixed and anchors SP stats near the cap input', async () => {
   const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
   const css = await readFile(new URL('../site/calculator-ui.css', import.meta.url), 'utf8');
@@ -69,4 +86,32 @@ test('calculator keeps cashflow columns fixed and anchors SP stats near the cap 
   );
   assert.match(css, /\.sp-stats\s*\{[\s\S]*?justify-self:\s*end;/, 'SP stats should align toward the cap input');
   assert.match(css, /\.sp-stats\s*\{[\s\S]*?text-align:\s*right;/, 'SP stats should be right-aligned');
+});
+
+test('cashflow table gives short metrics less width while keeping dust and money columns readable', async () => {
+  const css = await readFile(new URL('../site/calculator-ui.css', import.meta.url), 'utf8');
+  const widths = {
+    day: '3%',
+    'day-cards': '5%',
+    'cumulative-drawn': '8%',
+    'previous-additional': '8%',
+    dust: '7%',
+    crafted: '8%',
+    'crafted-sets': '8%',
+    'dissolve-cost': '8%',
+    usable: '8%',
+    sets: '6%',
+    'sp-bonus': '8%',
+    revenue: '9%',
+    cost: '7%',
+    profit: '7%'
+  };
+
+  for (const [column, width] of Object.entries(widths)) {
+    assert.match(
+      css,
+      new RegExp(`simulation-col-${column}\\s*\\{\\s*width:\\s*${width.replace('%', '\\%')}`),
+      `${column} column should use the planned fixed width`
+    );
+  }
 });

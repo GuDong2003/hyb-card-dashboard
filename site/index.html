@@ -459,8 +459,8 @@
             <h1>HYB Card Dashboard</h1>
         </div>
         <nav class="topbar-nav" aria-label="页面切换">
-            <button class="topbar-view-btn" type="button" data-view="calculator" onclick="setDashboardView('calculator')" aria-pressed="true">收益表</button>
-            <button class="topbar-view-btn is-hidden" id="rankingsNavButton" type="button" data-view="rankings" onclick="setDashboardView('rankings')" aria-pressed="false">榜单统计</button>
+            <button class="topbar-view-btn is-active" id="rankingsNavButton" type="button" data-view="rankings" onclick="setDashboardView('rankings')" aria-pressed="true">榜单统计</button>
+            <button class="topbar-view-btn" type="button" data-view="calculator" onclick="setDashboardView('calculator')" aria-pressed="false">收益表</button>
         </nav>
         <nav class="topbar-actions" aria-label="项目链接与主题">
             <a class="farm-link" href="https://hyb.gudong226.com/" target="_blank" rel="noreferrer" aria-label="打开 HYB Farm Dashboard" title="HYB Farm Dashboard">
@@ -494,10 +494,13 @@
             </div>
 
             <div class="control-scroll">
-                <section class="control-section">
-                    <div class="input-section">
-                        <h3 class="input-section-title">预测基准</h3>
-                        <div class="form-grid three">
+                        <section class="control-section">
+                            <div class="input-section">
+                                <div class="input-section-title-row">
+                                    <h3 class="input-section-title">预测基准</h3>
+                                    <button class="calculator-import-undo" id="calculatorImportUndoButton" type="button" hidden>↶ 撤销导入</button>
+                                </div>
+                                <div class="form-grid three">
                             <div class="form-group">
                                 <label for="currentDay">当前天数 <span class="field-hint">1～90</span></label>
                                 <input type="number" id="currentDay" min="1" max="90" value="1" inputmode="numeric" oninput="syncTotalDrawsWithDay()">
@@ -510,6 +513,30 @@
                                 <label for="currentCards">抽出传说 <span class="field-hint">不含合成</span></label>
                                 <input type="number" id="currentCards" min="0" value="" inputmode="numeric" oninput="calculate()">
                             </div>
+                        </div>
+                        <div class="boost-event-card" id="boostEventCard">
+                            <div class="boost-event-heading">
+                                <label class="boost-event-toggle" for="enableBoost">
+                                    <input type="checkbox" id="enableBoost" checked onchange="handleBoostSettingsChange()">
+                                    <span>限时翻倍活动</span>
+                                </label>
+                                <span class="boost-event-status" id="boostEventStatus">等待开始</span>
+                            </div>
+                            <div class="boost-event-meta">
+                                <span>开始：2026/8/20 04:00</span>
+                                <label for="boostEndMode">结束：
+                                    <select id="boostEndMode" onchange="handleBoostSettingsChange()">
+                                        <option value="season">赛季末</option>
+                                        <option value="days">自定义持续天数</option>
+                                    </select>
+                                </label>
+                            </div>
+                            <div class="boost-duration-row is-hidden" id="boostDurationRow">
+                                <label for="boostDurationDays">持续天数</label>
+                                <input type="number" id="boostDurationDays" min="1" max="72" value="72" inputmode="numeric" onchange="handleBoostSettingsChange()">
+                                <span>天</span>
+                            </div>
+                            <small class="boost-event-day" id="boostEventDayText">活动开始后显示当前第几天</small>
                         </div>
                     </div>
 
@@ -586,29 +613,38 @@
 
         <section class="results-column">
             <section class="summary-grid" aria-label="赛季收益摘要">
-                <article class="metric-card featured">
-                    <span class="metric-label">90 天最终净利润</span>
-                    <strong class="metric-value profit-value" id="sumProfit">0</strong>
-                </article>
-                <article class="metric-card">
-                    <span class="metric-label">可用传说总量</span>
+                <article class="metric-card summary-jump-card" data-summary-target="last" role="button" tabindex="0" aria-label="跳转到第90天演算行">
+                    <span class="metric-label">预计累计获取传说</span>
                     <strong class="metric-value" id="sumCards">0 张</strong>
                 </article>
-                <article class="metric-card">
+                <article class="metric-card summary-jump-card" data-summary-target="last" role="button" tabindex="0" aria-label="跳转到第90天演算行">
                     <span class="metric-label">预计兑换总套数</span>
                     <strong class="metric-value" id="sumSets">0 套</strong>
                 </article>
-                <article class="metric-card">
+                <article class="metric-card summary-jump-card" data-summary-target="breakeven" role="button" tabindex="0" aria-label="跳转到首次回本演算行">
                     <span class="metric-label">首次回本</span>
                     <strong class="metric-value" id="sumBreakEven">—</strong>
                 </article>
-                <article class="metric-card loss">
-                    <span class="metric-label">最大资金缺口</span>
+                <article class="metric-card loss summary-jump-card" data-summary-target="drawdown" role="button" tabindex="0" aria-label="跳转到最大资金缺口演算行">
+                    <div class="metric-heading">
+                        <span class="metric-label">最大资金缺口</span>
+                        <span class="profit-metric-context" id="sumDrawdownContext"></span>
+                    </div>
                     <strong class="metric-value profit-value" id="sumDrawdown">—</strong>
                 </article>
-                <article class="metric-card peak">
-                    <span class="metric-label">最高利润点</span>
+                <article class="metric-card peak summary-jump-card" data-summary-target="max-profit" role="button" tabindex="0" aria-label="跳转到最高利润演算行">
+                    <div class="metric-heading">
+                        <span class="metric-label">最高利润点</span>
+                        <span class="profit-metric-context" id="sumMaxProfitContext"></span>
+                    </div>
                     <strong class="metric-value profit-value" id="sumMaxProfit">0</strong>
+                </article>
+                <article class="metric-card featured summary-jump-card" data-summary-target="last" role="button" tabindex="0" aria-label="跳转到第90天演算行">
+                    <div class="metric-heading">
+                        <span class="metric-label">90 天最终净利润</span>
+                        <span class="profit-metric-context" id="sumProfitContext"></span>
+                    </div>
+                    <strong class="metric-value profit-value" id="sumProfit">0</strong>
                 </article>
             </section>
 
@@ -717,6 +753,11 @@
 
         <section class="rankings-summary" id="rankingsSummary" aria-label="榜单摘要"></section>
 
+        <section class="rankings-free-pulls-notice" id="rankingsFreePullsNotice" aria-label="免费抽数说明">
+            <strong>免费抽数按付费天数估算</strong>
+            <span>根据消费金额反推付费天数，并按 VIP / 普通玩家的每日免费额度计入总抽数；出卡率仅供参考。</span>
+        </section>
+
         <section class="rankings-grid">
             <section class="panel rankings-table-panel">
                 <div class="panel-header rankings-panel-header">
@@ -731,10 +772,13 @@
                                 <option value="month">本月</option>
                             </select>
                         </label>
-                    </div>
-                    <div class="rankings-overview-search">
-                        <label class="sr-only" for="rankingsUserSearch">搜索用户名或用户 ID</label>
-                        <input id="rankingsUserSearch" type="search" placeholder="搜索用户或 ID" autocomplete="off">
+                        <div class="rankings-overview-search">
+                            <button class="rankings-search-toggle" type="button" id="rankingsSearchToggle" aria-label="展开搜索" aria-expanded="false" title="搜索用户">
+                                <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"></circle><path d="m12.5 12.5 4 4"></path></svg>
+                            </button>
+                            <label class="sr-only" for="rankingsUserSearch">搜索用户名或用户 ID</label>
+                            <input id="rankingsUserSearch" type="search" placeholder="搜索用户或 ID" autocomplete="off">
+                        </div>
                     </div>
                     <span class="rankings-updated" id="rankingsUpdatedAt">—</span>
                 </div>
@@ -752,6 +796,7 @@
                             <col class="rankings-col-probability">
                             <col class="rankings-col-status">
                             <col class="rankings-col-trend">
+                            <col class="rankings-col-calculator">
                         </colgroup>
                         <thead>
                             <tr>
@@ -764,15 +809,38 @@
                                 <th>免费抽数</th>
                                 <th><button class="rankings-sort-button" type="button" data-rank-sort="sets" aria-sort="none">兑换次数 <span class="sort-indicator" aria-hidden="true">↕</span></button></th>
                                 <th><button class="rankings-sort-button" type="button" data-rank-sort="probability" aria-sort="none">出卡率 <span class="sort-indicator" aria-hidden="true">↕</span></button></th>
-                                <th>状态</th>
+                                <th class="rank-status-header">
+                                    <label class="rank-status-filter" for="rankingsCompleteDaysOnly" title="只显示完整天数用户">
+                                        <span>状态</span>
+                                        <span class="rank-status-filter-control"><input id="rankingsCompleteDaysOnly" type="checkbox"><span>仅完整</span></span>
+                                    </label>
+                                </th>
                                 <th>趋势</th>
+                                <th class="rank-calculator-header">收益表</th>
                             </tr>
                         </thead>
                         <tbody id="rankingsPinnedBody" class="rankings-pinned-body" aria-label="置顶用户"></tbody>
                         <tbody id="rankingsTableBody">
-                            <tr><td class="rankings-empty" colspan="11">暂无榜单数据</td></tr>
+                            <tr><td class="rankings-empty" colspan="12">暂无榜单数据</td></tr>
                         </tbody>
                     </table>
+                </div>
+                <div class="rankings-table-footer" id="rankingsPagination" aria-label="榜单分页">
+                    <span class="rankings-pagination-summary" id="rankingsPaginationSummary">共 0 位用户</span>
+                    <div class="rankings-pagination-controls" id="rankingsPaginationControls">
+                        <label class="rankings-page-size" for="rankingsPageSize">
+                            <span>每页</span>
+                            <select id="rankingsPageSize">
+                                <option value="50" selected>50</option>
+                                <option value="100">100</option>
+                                <option value="all">全部</option>
+                            </select>
+                            <span>条</span>
+                        </label>
+                        <button class="rankings-page-button" type="button" id="rankingsPreviousPage">‹ 上一页</button>
+                        <span class="rankings-page-indicator" id="rankingsPageIndicator" aria-live="polite">1 / 1</span>
+                        <button class="rankings-page-button" type="button" id="rankingsNextPage">下一页 ›</button>
+                    </div>
                 </div>
                 <div class="rankings-notice is-hidden" id="rankingsPartialNotice" aria-live="polite"></div>
             </section>
@@ -823,9 +891,12 @@
                         <button class="btn rankings-trend-add" type="button" id="rankingsTrendAddButton">添加对比</button>
                         <div class="rankings-trend-selected" id="rankingsTrendSelected" aria-live="polite"></div>
                     </div>
-                    <div class="rankings-trend-chart-wrap">
-                        <svg id="rankingsTrendChart" class="rankings-trend-chart" viewBox="0 0 960 360" role="img" aria-label="用户趋势曲线"></svg>
-                        <div class="rankings-trend-empty" id="rankingsTrendEmpty">添加用户后显示趋势曲线</div>
+                    <div class="rankings-trend-chart-layout">
+                        <div class="rankings-trend-y-axis" id="rankingsTrendYAxis" aria-hidden="true"></div>
+                        <div class="rankings-trend-chart-wrap">
+                            <svg id="rankingsTrendChart" class="rankings-trend-chart" viewBox="0 0 960 360" preserveAspectRatio="none" role="img" aria-label="用户趋势曲线"></svg>
+                            <div class="rankings-trend-empty" id="rankingsTrendEmpty">添加用户后显示趋势曲线</div>
+                        </div>
                     </div>
                     <div class="rankings-trend-legend" id="rankingsTrendLegend" aria-label="趋势图例"></div>
                 </div>
@@ -836,8 +907,20 @@
 </div>
 
 <script src="/stardust-rules.js"></script>
+<script src="/calculator-import.js"></script>
+<script src="/profit-metrics.js"></script>
 <script>
     const SNAPSHOT_STORAGE_KEY = 'legend-card-calculator-snapshot-v1';
+    const CALCULATOR_IMPORT_UNDO_STORAGE_KEY = 'legend-card-calculator-import-undo-v1';
+    const CALCULATOR_IMPORT_UNDO_FIELDS = [
+        'currentDay',
+        'currentTotalDraws',
+        'currentCards',
+        'currentUsableCards',
+        'redeemedSets',
+        'stardustBalance',
+        'spPointCap'
+    ];
     const SNAPSHOT_VALUE_FIELDS = [
         'currentDay',
         'currentCards',
@@ -847,12 +930,14 @@
         'stardustBalance',
         'spPointCap'
     ];
-    const SNAPSHOT_CHECKBOX_FIELDS = ['enableSP', 'enableForge'];
+    const SNAPSHOT_CHECKBOX_FIELDS = ['enableSP', 'enableForge', 'enableBoost'];
+    const BOOST_SETTING_FIELDS = ['boostEndMode', 'boostDurationDays'];
     const DYNAMIC_DEFAULT_FIELDS = ['currentDay', 'currentTotalDraws'];
     const LEGACY_DYNAMIC_DEFAULTS = {
         currentDay: 2,
         currentTotalDraws: 1300
     };
+    let calculatorImportUndoState = null;
     let themeModeState = 'system';
 
     function getThemeMode() {
@@ -911,6 +996,9 @@
             SNAPSHOT_VALUE_FIELDS.forEach(id => {
                 values[id] = document.getElementById(id).value;
             });
+            BOOST_SETTING_FIELDS.forEach(id => {
+                values[id] = document.getElementById(id).value;
+            });
             SNAPSHOT_CHECKBOX_FIELDS.forEach(id => {
                 values[id] = document.getElementById(id).checked;
             });
@@ -941,6 +1029,17 @@
             if (saved.values.redeemedSets === undefined) {
                 document.getElementById('redeemedSets').value = '0';
             }
+            if (saved.values.boostEndMode === undefined) {
+                document.getElementById('boostEndMode').value = 'season';
+            }
+            if (saved.values.boostDurationDays === undefined) {
+                document.getElementById('boostDurationDays').value = String(StardustRules.BOOST_DEFAULT_DURATION_DAYS);
+            }
+            BOOST_SETTING_FIELDS.forEach(id => {
+                if (saved.values[id] !== undefined) {
+                    document.getElementById(id).value = saved.values[id];
+                }
+            });
             SNAPSHOT_CHECKBOX_FIELDS.forEach(id => {
                 if (typeof saved.values[id] === 'boolean') {
                     document.getElementById(id).checked = saved.values[id];
@@ -964,6 +1063,131 @@
         }
     }
 
+    function collectCalculatorImportUndoValues() {
+        const values = {};
+        CALCULATOR_IMPORT_UNDO_FIELDS.forEach((id) => {
+            values[id] = document.getElementById(id).value;
+        });
+        return values;
+    }
+
+    function renderCalculatorImportUndoButton() {
+        const button = document.getElementById('calculatorImportUndoButton');
+        if (!button) return;
+        button.hidden = !calculatorImportUndoState;
+    }
+
+    function clearCalculatorImportUndo() {
+        calculatorImportUndoState = null;
+        try {
+            sessionStorage.removeItem(CALCULATOR_IMPORT_UNDO_STORAGE_KEY);
+        } catch (error) {
+            // 会话存储不可用时，仍保持当前页面内的撤销功能。
+        }
+        renderCalculatorImportUndoButton();
+    }
+
+    function saveCalculatorImportUndo(snapshot) {
+        const protocol = window.HYBCardCalculatorImport;
+        if (!protocol || typeof protocol.readUndoState !== 'function') return;
+        const normalized = protocol.readUndoState(snapshot);
+        if (!normalized) return;
+        calculatorImportUndoState = normalized;
+        try {
+            sessionStorage.setItem(CALCULATOR_IMPORT_UNDO_STORAGE_KEY, JSON.stringify(normalized));
+        } catch (error) {
+            // 会话存储不可用时，仍保留当前页面内的撤销点。
+        }
+        renderCalculatorImportUndoButton();
+    }
+
+    function restoreCalculatorImportUndo() {
+        const protocol = window.HYBCardCalculatorImport;
+        if (!protocol || typeof protocol.readUndoState !== 'function') return;
+        try {
+            const raw = sessionStorage.getItem(CALCULATOR_IMPORT_UNDO_STORAGE_KEY);
+            const normalized = raw ? protocol.readUndoState(JSON.parse(raw)) : null;
+            if (!normalized || normalized.targetSearch !== window.location.search) {
+                sessionStorage.removeItem(CALCULATOR_IMPORT_UNDO_STORAGE_KEY);
+                calculatorImportUndoState = null;
+            } else {
+                calculatorImportUndoState = normalized;
+            }
+        } catch (error) {
+            calculatorImportUndoState = null;
+        }
+        renderCalculatorImportUndoButton();
+    }
+
+    function undoCalculatorImport() {
+        const protocol = window.HYBCardCalculatorImport;
+        const snapshot = calculatorImportUndoState;
+        if (!protocol || !snapshot) return false;
+
+        CALCULATOR_IMPORT_UNDO_FIELDS.forEach((id) => {
+            document.getElementById(id).value = snapshot.values[id];
+        });
+        const restoredUrl = `${window.location.pathname}${snapshot.search || ''}${window.location.hash}`;
+        window.history.replaceState({ calculatorImportUndo: true }, '', restoredUrl);
+        clearCalculatorImportUndo();
+        saveSnapshot();
+        if (typeof window.setDashboardView === 'function') {
+            window.setDashboardView('calculator');
+        }
+        calculate(false, false);
+        return true;
+    }
+
+    function applyCalculatorImport(data, options = {}) {
+        const protocol = window.HYBCardCalculatorImport;
+        if (!protocol || !protocol.buildQuery || !protocol.readQuery) return false;
+        const normalized = protocol.readQuery(protocol.buildQuery(data));
+        if (!normalized) return false;
+
+        if (options.captureUndo === true && typeof protocol.captureUndoState === 'function') {
+            saveCalculatorImportUndo(protocol.captureUndoState(
+                collectCalculatorImportUndoValues(),
+                window.location.search,
+                protocol.buildQuery(normalized)
+            ));
+        }
+
+        [
+            'currentDay',
+            'currentTotalDraws',
+            'currentCards',
+            'currentUsableCards',
+            'redeemedSets',
+            'stardustBalance'
+        ].forEach((id) => {
+            document.getElementById(id).value = String(normalized[id]);
+        });
+
+        if (options.updateUrl === true) {
+            window.history.pushState(
+                { calculatorImport: true },
+                '',
+                protocol.buildQuery(normalized)
+            );
+        }
+        saveSnapshot();
+        if (typeof window.setDashboardView === 'function') {
+            window.setDashboardView('calculator');
+        }
+        calculate(false, true);
+        return true;
+    }
+
+    function applyCalculatorImportFromLocation() {
+        const protocol = window.HYBCardCalculatorImport;
+        if (!protocol || !protocol.readQuery) return false;
+        const data = protocol.readQuery(window.location.search);
+        return data ? applyCalculatorImport(data) : false;
+    }
+
+    window.applyCalculatorImport = applyCalculatorImport;
+    window.undoCalculatorImport = undoCalculatorImport;
+
     // 单轮兑换收益计算
     function getRoundReward(round) {
         if (round <= 0) return 0;
@@ -985,6 +1209,13 @@
         earnedSP: 0,
         spPointCap: 0
     };
+    let summaryJumpDays = {
+        lastDay: 90,
+        breakevenDay: -1,
+        drawdownDay: -1,
+        maxProfitDay: -1
+    };
+    let summaryHighlightTimer = 0;
     const spWindowState = {
         totalSets: 0,
         columns: 1,
@@ -1045,8 +1276,75 @@
 
         const currentDay = Math.max(1, Math.min(90, parsedDay));
         dayInput.value = String(currentDay);
-        totalDrawsInput.value = String(currentDay * StardustRules.DAILY_PULLS);
+        totalDrawsInput.value = String(getCumulativePullsThroughCurrentDay(currentDay));
         calculate();
+    }
+
+    function getConfiguredBoostDurationDays() {
+        const mode = document.getElementById('boostEndMode')?.value || 'season';
+        if (mode === 'season') return StardustRules.BOOST_DEFAULT_DURATION_DAYS;
+        return StardustRules.normalizeBoostDurationDays(document.getElementById('boostDurationDays')?.value);
+    }
+
+    function getCumulativePullsThroughCurrentDay(currentDay) {
+        return StardustRules.getCumulativePullsThroughDay(currentDay, {
+            enabled: document.getElementById('enableBoost')?.checked !== false,
+            durationDays: getConfiguredBoostDurationDays(),
+            vip: true
+        });
+    }
+
+    function formatBoostDate(timestamp) {
+        const date = new Date(timestamp);
+        if (!Number.isFinite(date.getTime())) return '—';
+        return new Intl.DateTimeFormat('zh-CN', {
+            timeZone: 'Asia/Shanghai',
+            year: 'numeric',
+            month: 'numeric',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+        }).format(date).replace(/\s+/g, ' ');
+    }
+
+    function renderBoostActivity(durationDays, enabled) {
+        const statusElement = document.getElementById('boostEventStatus');
+        const dayElement = document.getElementById('boostEventDayText');
+        const durationRow = document.getElementById('boostDurationRow');
+        const mode = document.getElementById('boostEndMode')?.value || 'season';
+        if (!statusElement || !dayElement || !durationRow) return;
+
+        durationRow.classList.toggle('is-hidden', mode !== 'days');
+        const status = StardustRules.getBoostStatus(Date.now(), { enabled, durationDays });
+        statusElement.className = `boost-event-status is-${status.state}`;
+        if (status.state === 'active') {
+            statusElement.textContent = '进行中';
+            dayElement.textContent = `活动第 ${status.day} 天 / 共 ${status.durationDays} 天 · 今日 VIP ${StardustRules.getDailyQuotaForSeasonDay(StardustRules.getSeasonDay(), { enabled, durationDays, vip: true }).totalPulls} 抽`;
+        } else if (status.state === 'ended') {
+            statusElement.textContent = '已结束';
+            dayElement.textContent = `活动已结束 · 共 ${status.durationDays} 天 · 结束：${formatBoostDate(status.endAt)}`;
+        } else if (status.state === 'disabled') {
+            statusElement.textContent = '未启用';
+            dayElement.textContent = `当前使用原抽卡额度 · 翻倍活动开始：${formatBoostDate(status.startAt)}`;
+        } else {
+            statusElement.textContent = '待开始';
+            dayElement.textContent = `活动开始：${formatBoostDate(status.startAt)} · 默认持续至赛季末`;
+        }
+    }
+
+    function handleBoostSettingsChange() {
+        const durationInput = document.getElementById('boostDurationDays');
+        const durationDays = getConfiguredBoostDurationDays();
+        durationInput.value = String(durationDays);
+        renderBoostActivity(durationDays, document.getElementById('enableBoost')?.checked !== false);
+        const currentDay = clampInteger(document.getElementById('currentDay').value, 1, 90);
+        const currentTotalDraws = Number.parseInt(document.getElementById('currentTotalDraws').value, 10);
+        const defaultTotalDraws = getCumulativePullsThroughCurrentDay(currentDay);
+        if (!Number.isFinite(currentTotalDraws) || currentTotalDraws === 0 || currentTotalDraws === defaultTotalDraws) {
+            document.getElementById('currentTotalDraws').value = String(defaultTotalDraws);
+        }
+        calculate(false, false);
     }
 
     function formatMoney(value) {
@@ -1057,9 +1355,89 @@
         return `${value >= 0 ? "+" : "−"}$${Math.abs(value).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
     }
 
+    function formatProfitMetric(day, sets, amount) {
+        const amountText = formatSignedMoney(amount);
+        return window.HYBCardProfitMetrics && typeof window.HYBCardProfitMetrics.formatProfitMetric === 'function'
+            ? window.HYBCardProfitMetrics.formatProfitMetric(day, sets, amountText)
+            : `第${day}天 · 第${sets}套 · ${amountText}`;
+    }
+
+    function renderProfitMetric(element, contextElement, day, sets, amount) {
+        const amountText = formatSignedMoney(amount);
+        const parts = window.HYBCardProfitMetrics && typeof window.HYBCardProfitMetrics.getProfitMetricParts === 'function'
+            ? window.HYBCardProfitMetrics.getProfitMetricParts(day, sets, amountText)
+            : { context: `第${day}天 · 第${sets}套`, amount: amountText };
+        if (!parts) {
+            element.textContent = amountText;
+            return;
+        }
+        if (contextElement) contextElement.textContent = parts.context;
+        element.textContent = parts.amount;
+    }
+
     function setProfitMetricColor(element, value) {
         element.classList.toggle('is-negative', value < 0);
         element.style.color = value >= 0 ? "var(--profit-pos)" : "var(--profit-neg)";
+    }
+
+    function getSummaryJumpDay(target) {
+        const metrics = window.HYBCardProfitMetrics;
+        if (metrics && typeof metrics.getSummaryJumpDay === 'function') {
+            return metrics.getSummaryJumpDay(target, summaryJumpDays);
+        }
+        const value = target === 'breakeven'
+            ? summaryJumpDays.breakevenDay
+            : target === 'drawdown'
+                ? summaryJumpDays.drawdownDay
+                : target === 'max-profit'
+                    ? summaryJumpDays.maxProfitDay
+                    : summaryJumpDays.lastDay;
+        return Number.isFinite(Number(value)) && Number(value) >= 1 ? Number(value) : null;
+    }
+
+    function updateSummaryJumpCards() {
+        document.querySelectorAll('.summary-jump-card').forEach((card) => {
+            const day = getSummaryJumpDay(card.dataset.summaryTarget);
+            const disabled = day == null;
+            card.classList.toggle('is-summary-disabled', disabled);
+            card.setAttribute('aria-disabled', String(disabled));
+        });
+    }
+
+    function scrollToSummaryDay(day) {
+        const row = document.querySelector(`#tableBody tr[data-simulation-day="${day}"]`);
+        if (!row) return;
+        document.querySelectorAll('#tableBody tr.row-summary-target').forEach((item) => {
+            item.classList.remove('row-summary-target');
+        });
+        row.classList.add('row-summary-target');
+        if (typeof row.scrollIntoView === 'function') {
+            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+        if (summaryHighlightTimer) window.clearTimeout(summaryHighlightTimer);
+        summaryHighlightTimer = window.setTimeout(() => {
+            row.classList.remove('row-summary-target');
+            summaryHighlightTimer = 0;
+        }, 1800);
+    }
+
+    function activateSummaryJumpCard(card) {
+        if (card.classList.contains('is-summary-disabled')) return;
+        const day = getSummaryJumpDay(card.dataset.summaryTarget);
+        if (day != null) scrollToSummaryDay(day);
+    }
+
+    function bindSummaryJumpCards() {
+        document.querySelectorAll('.summary-jump-card').forEach((card) => {
+            if (card.dataset.summaryBound === 'true') return;
+            card.dataset.summaryBound = 'true';
+            card.addEventListener('click', () => activateSummaryJumpCard(card));
+            card.addEventListener('keydown', (event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                activateSummaryJumpCard(card);
+            });
+        });
     }
 
     function getAllocatedSP(totalSets = Infinity) {
@@ -1367,15 +1745,22 @@
         const startingStardust = Math.max(0, Number.parseInt(document.getElementById('stardustBalance').value, 10) || 0);
         const enableSP = document.getElementById('enableSP').checked;
         const enableForge = document.getElementById('enableForge').checked;
+        const enableBoost = document.getElementById('enableBoost').checked;
+        const boostDurationDays = getConfiguredBoostDurationDays();
         saveSnapshot();
 
-        const pullsPerDay = 650;
-        const dailyCost = 6000;
+        const currentQuota = StardustRules.getDailyQuotaForSeasonDay(currentDay, {
+            enabled: enableBoost,
+            durationDays: boostDurationDays,
+            vip: true
+        });
+        const pullsPerDay = currentQuota.totalPulls;
 
         // 只有实际抽出的传说参与抽卡概率和SP期望；合成传说只进入可用卡总量。
         const actualProb = currentTotalDraws > 0 ? currentCards / currentTotalDraws : 0;
         const dailyExpectedCards = actualProb * pullsPerDay;
 
+        renderBoostActivity(boostDurationDays, enableBoost);
         document.getElementById('dailyPullsText').innerText = pullsPerDay;
         document.getElementById('totalPullsText').innerText = currentTotalDraws;
         document.getElementById('calculatedProbText').innerText = (actualProb * 100).toFixed(3) + "%";
@@ -1387,21 +1772,35 @@
         document.querySelectorAll('.sp-column').forEach(element => element.classList.toggle('is-hidden', !enableSP));
 
         const dailyCards = new Array(90);
+        const cumulativeDrawnByDay = new Array(90);
         let cardAccumulator = 0;
         for (let day = 1; day <= 90; day++) {
+            const dayQuota = StardustRules.getDailyQuotaForSeasonDay(day, {
+                enabled: enableBoost,
+                durationDays: boostDurationDays,
+                vip: true
+            });
             const targetTotal = day <= currentDay
                 ? Math.round((currentCards / currentDay) * day)
-                : Math.round(currentCards + dailyExpectedCards * (day - currentDay));
+                : Math.round(cardAccumulator + actualProb * dayQuota.totalPulls);
             dailyCards[day - 1] = targetTotal - cardAccumulator;
             cardAccumulator = targetTotal;
+            cumulativeDrawnByDay[day - 1] = cardAccumulator;
         }
 
         const tableData = [];
         let cumulativeDrawn = 0;
-        let stardust = startingStardust;
-        let craftedCards = 0;
         let cumulativeDissolveCost = 0;
         const automaticDissolveState = StardustRules.getAutomaticDissolveDayState();
+        const forgeProjection = enableForge
+            ? StardustRules.getForgeProjection({
+                currentDay,
+                currentStardust: startingStardust
+            })
+            : null;
+        const historicalCraftedCards = enableForge
+            ? forgeProjection.craftedByDay[currentDay]
+            : 0;
 
         for (let day = 1; day <= 90; day++) {
             const dayCards = dailyCards[day - 1];
@@ -1409,9 +1808,9 @@
 
             const baseUsableCards = day <= currentDay
                 ? Math.round((currentUsableCards / currentDay) * day)
-                : Math.round(currentUsableCards + dailyExpectedCards * (day - currentDay));
+                : Math.round(currentUsableCards + Math.max(0, cumulativeDrawnByDay[day - 1] - currentCards));
 
-            let dustDisplay = startingStardust;
+            let dustDisplay = enableForge ? forgeProjection.dustByDay[day] : startingStardust;
             if (enableForge) {
                 const dissolveState = day < currentDay
                     ? StardustRules.getDissolveDayState({
@@ -1421,18 +1820,11 @@
                     })
                     : automaticDissolveState;
                 cumulativeDissolveCost += dissolveState.cashCost;
-                if (day < currentDay) {
-                    dustDisplay = null;
-                } else {
-                    stardust += dissolveState.dustAdded;
-                    const craftedToday = Math.min(StardustRules.MAX_CRAFT_PER_DAY, Math.floor(stardust / 1600));
-                    stardust -= craftedToday * 1600;
-                    craftedCards += craftedToday;
-                    dustDisplay = stardust;
-                }
             }
 
-            const usableCards = baseUsableCards + craftedCards;
+            const craftedCards = enableForge ? forgeProjection.craftedByDay[day] : 0;
+            const projectedCraftedCards = Math.max(0, craftedCards - historicalCraftedCards);
+            const usableCards = baseUsableCards + projectedCraftedCards;
             const redeemedSetBaseline = day < currentDay ? 0 : redeemedSets;
             const cumulativeSets = redeemedSetBaseline + Math.floor(usableCards / 6);
             const earnedSP = Math.floor(cumulativeDrawn * 0.1);
@@ -1456,7 +1848,7 @@
         const spPointCapInput = document.getElementById('spPointCap');
         const spPointCap = resolveSPPointCap(
             spPointCapInput.value,
-            lastPreliminaryRow.usableCards,
+            lastPreliminaryRow.cumulativeDrawn,
             syncSPPointCap
         );
         const isEditingSPPointCap = document.activeElement === spPointCapInput;
@@ -1484,11 +1876,22 @@
         let maxProfitDay = -1;
         let breakevenDay = -1;
 
+        let cumulativeDailyCost = 0;
         tableData.forEach(row => {
             const rewards = getCumRewardDetails(row.cumulativeSets, enableSP);
             row.spBonus = rewards.spBonus;
             row.totalRevenue = rewards.total;
-            row.cumulativeCost = row.day * dailyCost + row.cumulativeDissolveCost;
+            const dayQuota = StardustRules.getDailyQuotaForSeasonDay(row.day, {
+                enabled: enableBoost,
+                durationDays: boostDurationDays,
+                vip: true
+            });
+            cumulativeDailyCost += dayQuota.paidCost;
+            row.dailyPaidPulls = dayQuota.paidPulls;
+            row.dailyFreePulls = dayQuota.freePulls;
+            row.dailyTotalPulls = dayQuota.totalPulls;
+            row.boosted = dayQuota.boosted;
+            row.cumulativeCost = cumulativeDailyCost + row.cumulativeDissolveCost;
             row.netProfit = row.totalRevenue - row.cumulativeCost;
 
             if (row.netProfit < minProfit) {
@@ -1506,6 +1909,7 @@
         tbody.innerHTML = '';
         tableData.forEach(row => {
             const tr = document.createElement('tr');
+            tr.dataset.simulationDay = String(row.day);
             if (row.day === breakevenDay) tr.classList.add('row-breakeven');
             if (row.day === maxProfitDay) tr.classList.add('row-max-profit');
 
@@ -1537,10 +1941,28 @@
         });
 
         const lastRow = tableData[tableData.length - 1];
-        document.getElementById('sumCards').innerText = lastRow.usableCards + " 张";
+        const minProfitRow = tableData.find((row) => row.day === minProfitDay) || lastRow;
+        const maxProfitRow = tableData.find((row) => row.day === maxProfitDay) || lastRow;
+        summaryJumpDays = {
+            lastDay: lastRow.day,
+            breakevenDay,
+            drawdownDay: minProfitDay,
+            maxProfitDay
+        };
+        updateSummaryJumpCards();
+        const totalAcquiredCards = lastRow.usableCards + redeemedSets * 6;
+        const drawnAcquiredCards = lastRow.cumulativeDrawn;
+        const craftedAcquiredCards = totalAcquiredCards - drawnAcquiredCards;
+        document.getElementById('sumCards').innerText = drawnAcquiredCards + " + " + craftedAcquiredCards + " 张";
         document.getElementById('sumSets').innerText = lastRow.cumulativeSets + " 套";
         const sumProfitElement = document.getElementById('sumProfit');
-        sumProfitElement.innerText = formatSignedMoney(lastRow.netProfit);
+        renderProfitMetric(
+            sumProfitElement,
+            document.getElementById('sumProfitContext'),
+            lastRow.day,
+            lastRow.cumulativeSets,
+            lastRow.netProfit
+        );
         setProfitMetricColor(sumProfitElement, lastRow.netProfit);
 
         const breakEvenElement = document.getElementById('sumBreakEven');
@@ -1548,11 +1970,23 @@
         breakEvenElement.style.color = breakevenDay === -1 ? "var(--text-muted)" : "var(--cyan)";
 
         const drawdownElement = document.getElementById('sumDrawdown');
-        drawdownElement.innerText = `第${minProfitDay}天 · ${formatSignedMoney(minProfit)}`;
+        renderProfitMetric(
+            drawdownElement,
+            document.getElementById('sumDrawdownContext'),
+            minProfitRow.day,
+            minProfitRow.cumulativeSets,
+            minProfit
+        );
         setProfitMetricColor(drawdownElement, minProfit);
 
         const maxProfitElement = document.getElementById('sumMaxProfit');
-        maxProfitElement.innerText = `第${maxProfitDay}天 · ${formatSignedMoney(maxProfit)}`;
+        renderProfitMetric(
+            maxProfitElement,
+            document.getElementById('sumMaxProfitContext'),
+            maxProfitRow.day,
+            maxProfitRow.cumulativeSets,
+            maxProfit
+        );
         setProfitMetricColor(maxProfitElement, maxProfit);
     }
 
@@ -1579,7 +2013,11 @@
     }
 
     // 优先恢复上次填写的数据，再初始化计算。
+    bindSummaryJumpCards();
+    document.getElementById('calculatorImportUndoButton')?.addEventListener('click', undoCalculatorImport);
     restoreSnapshot();
+    restoreCalculatorImportUndo();
+    applyCalculatorImportFromLocation();
     applyTheme();
     installThemeListener();
     calculate(false, false);

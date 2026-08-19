@@ -527,6 +527,24 @@ function latestDailyRow(rowsByDay) {
     .sort((left, right) => right.dayStartAt - left.dayStartAt || right.captured_at - left.captured_at)[0] || null;
 }
 
+function completeDailyPair(user, commonDays = []) {
+  for (const dayStartAt of commonDays) {
+    const epicRow = user.daily.epic.get(dayStartAt);
+    const spendRow = user.daily.spend.get(dayStartAt);
+    if (!epicRow || !spendRow) continue;
+    const isVip = Boolean(
+      user.isVip
+        || (epicRow.is_vip ?? epicRow.isVip)
+        || (spendRow.is_vip ?? spendRow.isVip)
+    );
+    const estimate = estimatePullsFromSpend(Number(spendRow.value), isVip);
+    if (estimate.estimateStatus === 'complete_days') {
+      return { dayStartAt, epicRow, spendRow, isVip, estimate };
+    }
+  }
+  return null;
+}
+
 function buildDailyUserSummary(user, latestDayStartAt = null) {
   const latestEpic = latestDailyRow(user.daily.epic);
   const latestSpend = latestDailyRow(user.daily.spend);
@@ -540,31 +558,33 @@ function buildDailyUserSummary(user, latestDayStartAt = null) {
   const commonDays = Array.from(user.daily.epic.keys())
     .filter((dayStartAt) => user.daily.spend.has(dayStartAt))
     .sort((left, right) => right - left);
-  const estimateDayStartAt = commonDays.length ? commonDays[0] : null;
-  const pairEpic = estimateDayStartAt == null ? null : user.daily.epic.get(estimateDayStartAt);
-  const pairSpend = estimateDayStartAt == null ? null : user.daily.spend.get(estimateDayStartAt);
-  const canDerive = Boolean(pairEpic && pairSpend);
-  const pairIsVip = Boolean(
-    user.isVip
-      || (pairEpic && (pairEpic.is_vip ?? pairEpic.isVip))
-      || (pairSpend && (pairSpend.is_vip ?? pairSpend.isVip))
-  );
+  const completePair = completeDailyPair(user, commonDays);
+  const estimateDayStartAt = completePair
+    ? completePair.dayStartAt
+    : (commonDays.length ? commonDays[0] : null);
+  const pairEpic = completePair && completePair.epicRow;
+  const pairSpend = completePair && completePair.spendRow;
+  const pairEstimate = completePair && completePair.estimate;
   const rawEstimate = estimatePullsFromSpend(spendValue, user.isVip);
-  const estimate = rawEstimate;
+  const estimate = pairEstimate || rawEstimate;
   const estimateStatus = !hasEpic && !hasSpend
     ? 'missing_pair'
     : !hasSpend
       ? 'missing_spend'
       : !hasEpic
         ? 'missing_epic'
-        : !canDerive
+        : !commonDays.length
           ? 'missing_common_day'
-          : rawEstimate.estimateStatus;
-  const probability = canDerive
+          : completePair
+            ? 'complete_days'
+            : 'partial_day';
+  const displayEpicTotal = pairEpic ? Number(pairEpic.value) : epicTotal;
+  const displaySpendValue = pairSpend ? Number(pairSpend.value) : spendValue;
+  const probability = completePair
     ? estimateLegendProbability({
-      epicTotal: Number(pairEpic.value),
-      spendValue: Number(pairSpend.value),
-      isVip: pairIsVip
+      epicTotal: displayEpicTotal,
+      spendValue: displaySpendValue,
+      isVip: completePair.isVip
     })
     : null;
   const estimateUsesHistoricalData = estimateDayStartAt != null
@@ -576,13 +596,13 @@ function buildDailyUserSummary(user, latestDayStartAt = null) {
     userId: user.userId,
     userName: user.userName || String(source && source.user_name || user.userId),
     avatar: user.avatar,
-    value: spendValue ?? epicTotal ?? exchangeCount,
+    value: displaySpendValue ?? displayEpicTotal ?? exchangeCount,
     rank: null,
     isVip: user.isVip,
-    epicTotal,
-    spendValue,
-    spendTotal: spendValue,
-    spendUsd: rawEstimate.spendUsd,
+    epicTotal: displayEpicTotal,
+    spendValue: displaySpendValue,
+    spendTotal: displaySpendValue,
+    spendUsd: estimate.spendUsd,
     estimatedDays: estimate.estimatedDays,
     paidPulls: estimate.paidPulls,
     freePulls: estimate.freePulls,
@@ -591,7 +611,7 @@ function buildDailyUserSummary(user, latestDayStartAt = null) {
     estimateStatus,
     estimateDayStartAt,
     estimateUsesHistoricalData,
-    isPartial: estimateStatus !== 'complete_days' || probability == null || estimateUsesHistoricalData,
+    isPartial: estimateStatus !== 'complete_days' || probability == null,
     estimatedLegendProbability: probability,
     previousRank: null,
     rankDelta: null,
@@ -922,7 +942,11 @@ function luckViews(pairs, limit) {
     const sourceRow = pair.epicRow || pair.spendRow;
     if (!sourceRow) continue;
     const view = { row: sourceRow, pair, rankOverride: null };
-    if (pair.epicRow && pair.spendRow) complete.push(view);
+    const isVip = Boolean(pair.epicRow?.is_vip || pair.spendRow?.is_vip);
+    const estimate = pair.epicRow && pair.spendRow
+      ? estimatePullsFromSpend(Number(pair.spendValue), isVip)
+      : null;
+    if (estimate && estimate.estimateStatus === 'complete_days') complete.push(view);
     else partial.push(view);
   }
 
@@ -975,7 +999,7 @@ function buildEnrichedEntry(row, pair, board, rankOverride = undefined) {
     : !Number.isFinite(epicTotal)
       ? 'missing_epic'
       : hasPair ? estimate.estimateStatus : 'missing_pair';
-  const probability = estimateStatus === 'missing_epic' || estimateStatus === 'missing_spend'
+  const probability = estimateStatus !== 'complete_days'
     ? null
     : estimateLegendProbability({ epicTotal, spendValue, isVip });
   const isPartial = estimateStatus !== 'complete_days' || probability == null;

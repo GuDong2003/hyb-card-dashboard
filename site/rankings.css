@@ -16,7 +16,7 @@
     background: transparent;
     color: var(--icon-text);
     cursor: pointer;
-    font-size: .78rem;
+    font-size: inherit;
     font-weight: 750;
     transition: background .18s, color .18s;
 }
@@ -367,6 +367,35 @@
     letter-spacing: -.02em;
 }
 
+.rankings-free-pulls-notice {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 6px 12px;
+    min-width: 0;
+    padding: 10px 14px;
+    border: 1px solid color-mix(in srgb, var(--amber) 42%, var(--line));
+    border-radius: 12px;
+    background: var(--gold-soft);
+    color: var(--muted);
+    font-size: .74rem;
+    line-height: 1.5;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.rankings-free-pulls-notice span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.rankings-free-pulls-notice strong {
+    flex: none;
+    color: var(--text);
+    font-size: .76rem;
+}
+
 .rankings-grid {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
@@ -379,25 +408,120 @@
 }
 
 .rankings-overview-search {
-    width: min(360px, 100%);
+    display: flex;
+    width: 34px;
+    height: 34px;
     min-width: 0;
-    justify-self: center;
+    align-items: center;
+    justify-self: end;
+    overflow: hidden;
+    border: 1px solid var(--control-border);
+    border-radius: 8px;
+    background: var(--control-bg);
+    transition: width .2s ease, border-color .2s ease, box-shadow .2s ease;
+}
+
+.rankings-overview-search:hover,
+.rankings-overview-search:focus-within,
+.rankings-overview-search.is-expanded {
+    width: min(360px, 100%);
+    border-color: var(--blue);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 18%, transparent);
+}
+
+.rankings-search-toggle {
+    display: inline-grid;
+    width: 34px;
+    height: 32px;
+    flex: 0 0 34px;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+}
+
+.rankings-search-toggle:hover,
+.rankings-search-toggle:focus-visible {
+    color: var(--blue-strong);
+}
+
+.rankings-search-toggle:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: -3px;
+}
+
+.rankings-search-toggle svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.8;
 }
 
 .rankings-overview-search input {
-    width: 100%;
-    height: 34px;
-    padding: 0 10px;
-    border: 1px solid var(--control-border);
-    border-radius: 8px;
+    width: 0;
+    min-width: 0;
+    height: 32px;
+    flex: 1 1 auto;
+    padding: 0;
+    border: 0;
     outline: none;
-    background: var(--control-bg);
+    background: transparent;
     color: var(--text);
+    opacity: 0;
+    pointer-events: none;
+    transition: width .2s ease, opacity .12s ease, padding .2s ease;
+}
+
+.rankings-overview-search:hover input,
+.rankings-overview-search:focus-within input,
+.rankings-overview-search.is-expanded input {
+    width: 100%;
+    padding: 0 10px 0 2px;
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.rankings-overview-search input::placeholder {
+    color: var(--muted);
 }
 
 .rankings-overview-search input:focus {
-    border-color: var(--blue);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 18%, transparent);
+    border-color: transparent;
+    box-shadow: none;
+}
+
+/* Keep the search input fully usable on narrow screens. */
+@media (max-width: 700px) {
+    .rankings-overview-search {
+        width: 100%;
+        border-color: var(--control-border);
+        box-shadow: none;
+    }
+
+    .rankings-search-toggle {
+        display: none;
+    }
+
+    .rankings-overview-search input,
+    .rankings-overview-search:hover input,
+    .rankings-overview-search:focus-within input,
+    .rankings-overview-search.is-expanded input {
+        width: 100%;
+        height: 34px;
+        padding: 0 10px;
+        opacity: 1;
+        pointer-events: auto;
+    }
+}
+
+/* Legacy input sizing is overridden above; keep this selector local to the control. */
+.rankings-overview-search input {
+    min-width: 0;
 }
 
 .rankings-panel-header {
@@ -413,6 +537,10 @@
     min-width: 0;
     align-items: center;
     gap: 10px;
+}
+
+.rankings-board-heading .rankings-overview-search {
+    flex: 0 0 auto;
 }
 
 .rankings-panel-header h2 {
@@ -436,6 +564,79 @@
     border-radius: 10px;
 }
 
+.rankings-table-footer {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 12px;
+    margin-top: 10px;
+    color: var(--muted);
+    font-size: .78rem;
+}
+
+.rankings-pagination-summary {
+    white-space: nowrap;
+}
+
+.rankings-pagination-controls {
+    display: inline-flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-left: auto;
+}
+
+.rankings-page-size {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+}
+
+.rankings-page-size select {
+    min-height: 30px;
+    padding: 0 24px 0 8px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: var(--control-bg);
+    color: var(--text);
+    font: inherit;
+}
+
+.rankings-page-button {
+    min-height: 30px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: var(--formula-bg);
+    color: var(--text);
+    cursor: pointer;
+    font: inherit;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.rankings-page-button:hover:not(:disabled),
+.rankings-page-button:focus-visible:not(:disabled) {
+    border-color: var(--blue);
+    background: var(--blue-soft);
+    color: var(--blue-strong);
+}
+
+.rankings-page-button:disabled {
+    cursor: not-allowed;
+    opacity: .45;
+}
+
+.rankings-page-indicator {
+    min-width: 48px;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    white-space: nowrap;
+}
+
 .sr-only {
     position: absolute;
     width: 1px;
@@ -456,21 +657,22 @@
     table-layout: fixed;
     border-collapse: separate;
     border-spacing: 0;
-    font-size: .78rem;
+    font-size: .9rem;
     text-align: left;
 }
 
 .rankings-col-rank { width: 5%; }
-.rankings-col-vip { width: 6%; }
-.rankings-col-user { width: 18%; }
+.rankings-col-vip { width: 5%; }
+.rankings-col-user { width: 16%; }
 .rankings-col-legend { width: 11%; }
-.rankings-col-spend { width: 13%; }
+.rankings-col-spend { width: 12%; }
 .rankings-col-paid-pulls { width: 6%; }
 .rankings-col-free-pulls { width: 5%; }
-.rankings-col-sets { width: 9%; }
-.rankings-col-probability { width: 10%; }
-.rankings-col-status { width: 11%; }
-.rankings-col-trend { width: 6%; }
+.rankings-col-sets { width: 8%; }
+.rankings-col-probability { width: 9%; }
+.rankings-col-status { width: 10%; }
+.rankings-col-trend { width: 5%; }
+.rankings-col-calculator { width: 8%; }
 
 .rankings-table th,
 .rankings-table td {
@@ -486,8 +688,54 @@
     height: var(--rankings-table-head-height);
     background: var(--table-head-bg);
     color: var(--text);
-    font-size: .7rem;
+    font-size: .8rem;
     font-weight: 800;
+    text-align: center;
+}
+
+.rank-number,
+.rank-vip-cell,
+.rank-legend,
+.rank-sets,
+.rank-probability,
+.rank-status,
+.rank-trend,
+.rank-calculator-header,
+.rank-calculator {
+    text-align: center;
+}
+
+.rankings-table th:nth-child(3),
+.rankings-table th:nth-child(5),
+.rankings-table th:nth-child(6),
+.rankings-table th:nth-child(7) {
+    text-align: left;
+}
+
+.rank-status-filter {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.rank-status-filter-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    color: var(--muted);
+    font-size: .72rem;
+    font-weight: 700;
+}
+
+.rank-status-filter-control input {
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    accent-color: var(--blue);
+    cursor: pointer;
 }
 
 .rankings-sort-button {
@@ -567,6 +815,7 @@
 
 .rank-user-cell {
     min-width: 0;
+    text-align: left;
 }
 
 .rank-user-button {
@@ -574,6 +823,7 @@
     width: 100%;
     max-width: 100%;
     align-items: center;
+    justify-content: flex-start;
     gap: 8px;
     padding: 0;
     border: 0;
@@ -609,8 +859,8 @@
     stroke-width: 1.5;
 }
 
-.rank-user-button:hover .rankings-pin-button,
-.rank-user-button:focus-within .rankings-pin-button,
+.rankings-table tbody tr:hover .rankings-pin-button,
+.rankings-table tbody tr:focus-within .rankings-pin-button,
 .rankings-pin-button.is-pinned,
 .rankings-pin-button:focus-visible {
     opacity: .9;
@@ -655,7 +905,7 @@
     border-radius: 999px;
     background: var(--gold-soft);
     color: var(--amber);
-    font-size: .64rem;
+    font-size: .72rem;
     font-weight: 850;
 }
 
@@ -674,7 +924,7 @@
 
 .rank-status {
     color: var(--green);
-    font-size: .7rem;
+    font-size: .8rem;
     font-weight: 750;
 }
 
@@ -707,8 +957,40 @@
     font-weight: 780;
 }
 
-.rank-trend {
-    text-align: center;
+.rankings-calculator-button {
+    display: inline-flex;
+    min-height: 28px;
+    align-items: center;
+    justify-content: center;
+    padding: 0 9px;
+    border: 1px solid color-mix(in srgb, var(--blue) 42%, var(--line));
+    border-radius: 7px;
+    background: var(--blue-soft);
+    color: var(--blue-strong);
+    cursor: pointer;
+    font: inherit;
+    font-size: .78rem;
+    font-weight: 780;
+}
+
+.rankings-calculator-button:hover,
+.rankings-calculator-button:focus-visible {
+    border-color: var(--blue);
+    background: color-mix(in srgb, var(--blue-soft) 75%, var(--surface));
+}
+
+.rankings-calculator-button:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: 2px;
+}
+
+.rankings-calculator-button.is-disabled,
+.rankings-calculator-button:disabled {
+    border-color: var(--line);
+    background: var(--formula-bg);
+    color: var(--muted);
+    cursor: not-allowed;
+    opacity: .72;
 }
 
 .rankings-trend-trigger {
@@ -977,13 +1259,18 @@ body.modal-open {
 
 .rankings-trend-search {
     display: inline-flex;
-    min-width: min(360px, 100%);
-    flex: 0 1 360px;
+    min-width: min(420px, 100%);
+    flex: 0 1 420px;
     align-items: center;
     gap: 8px;
     color: var(--muted);
     font-size: .72rem;
     font-weight: 750;
+}
+
+.rankings-trend-search > span {
+    flex: 0 0 auto;
+    white-space: nowrap;
 }
 
 .rankings-trend-search input {
@@ -1071,17 +1358,52 @@ body.modal-open {
     color: var(--text);
 }
 
+.rankings-trend-chart-layout {
+    --trend-axis-width: 86px;
+    position: relative;
+    display: grid;
+    grid-template-columns: var(--trend-axis-width) minmax(0, 1fr);
+    width: 100%;
+    min-width: 0;
+    min-height: 300px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--formula-bg);
+}
+
+.rankings-trend-y-axis {
+    position: relative;
+    z-index: 2;
+    min-width: 0;
+    min-height: 300px;
+    overflow: hidden;
+    border-right: 1px solid var(--line-soft);
+    background: var(--formula-bg);
+}
+
+.rankings-trend-y-label {
+    position: absolute;
+    right: 8px;
+    transform: translateY(-50%);
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
 .rankings-trend-chart-wrap {
     position: relative;
     min-width: 0;
     min-height: 300px;
     overflow-x: auto;
     overflow-y: hidden;
-    border: 1px solid var(--line);
-    border-radius: 12px;
     background: var(--formula-bg);
 }
 
+.rankings-trend-modal .rankings-trend-chart-layout,
+.rankings-trend-modal .rankings-trend-y-axis,
 .rankings-trend-modal .rankings-trend-chart-wrap {
     min-height: 330px;
 }
@@ -1094,8 +1416,7 @@ body.modal-open {
 }
 
 .trend-grid-line {
-    stroke: var(--line);
-    stroke-dasharray: 4 6;
+    stroke: var(--line-soft);
     stroke-width: 1;
 }
 
@@ -1106,17 +1427,19 @@ body.modal-open {
 }
 
 .trend-point {
+    opacity: .16;
     stroke: var(--surface);
-    stroke-width: 2;
+    stroke-width: 1.5;
     cursor: help;
-    transition: filter .15s ease, stroke-width .15s ease;
+    transition: opacity .15s ease, filter .15s ease, stroke-width .15s ease;
 }
 
 .trend-point:hover,
 .trend-point-wrap:hover .trend-point,
 .trend-point-wrap:focus .trend-point {
+    opacity: 1;
     filter: drop-shadow(0 0 4px color-mix(in srgb, currentColor 60%, transparent));
-    stroke-width: 3;
+    stroke-width: 2.4;
     outline: none;
 }
 
@@ -1245,6 +1568,27 @@ body.modal-open {
 
     .rankings-overview-search input {
         width: 100%;
+    }
+
+    .rankings-free-pulls-notice {
+        flex-wrap: wrap;
+        white-space: normal;
+        overflow: visible;
+    }
+
+    .rankings-free-pulls-notice span {
+        overflow: visible;
+        text-overflow: clip;
+    }
+
+    .rankings-table-footer {
+        align-items: flex-start;
+        flex-wrap: wrap;
+    }
+
+    .rankings-pagination-controls {
+        width: 100%;
+        justify-content: flex-end;
     }
 
     .rankings-updated {

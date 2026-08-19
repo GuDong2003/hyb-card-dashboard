@@ -66,6 +66,17 @@ test('exposes redeemed sets and renames the held legendary inventory field', asy
   assert.match(html, /saved\.values\.redeemedSets === undefined/);
 });
 
+test('top summary reports cumulative legendary acquisition including redeemed sets', async () => {
+  const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
+
+  assert.match(html, /<span class="metric-label">预计累计获取传说<\/span>/);
+  assert.match(html, /const totalAcquiredCards\s*=\s*lastRow\.usableCards\s*\+\s*redeemedSets\s*\*\s*6/);
+  assert.match(html, /const drawnAcquiredCards\s*=\s*lastRow\.cumulativeDrawn/);
+  assert.match(html, /const craftedAcquiredCards\s*=\s*totalAcquiredCards\s*-\s*drawnAcquiredCards/);
+  assert.match(html, /drawnAcquiredCards\s*\+\s*" \+ "\s*\+\s*craftedAcquiredCards/);
+  assert.match(html, /<th>可用传说总量<\/th>/);
+});
+
 test('seeds projected sets from redeemed history without inflating drawn cards or SP', async () => {
   const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
 
@@ -78,6 +89,9 @@ test('seeds projected sets from redeemed history without inflating drawn cards o
   assert.match(html, /const redeemedSetBaseline = day < currentDay \? 0 : redeemedSets/);
   assert.match(html, /const cumulativeSets = redeemedSetBaseline \+ Math\.floor\(usableCards \/ 6\)/);
   assert.match(html, /const earnedSP = Math\.floor\(cumulativeDrawn \* 0\.1\)/);
+  assert.match(html, /StardustRules\.getForgeProjection\(\{[\s\S]*currentStardust: startingStardust/);
+  assert.match(html, /const projectedCraftedCards = Math\.max\(0, craftedCards - historicalCraftedCards\)/);
+  assert.match(html, /const usableCards = baseUsableCards \+ projectedCraftedCards/);
 });
 
 test('leaves manual inventory inputs blank for new users while keeping the saved snapshot key', async () => {
@@ -99,4 +113,22 @@ test('keeps the inventory section labels on one line in the compact layout', asy
   assert.match(html, /<div class="input-section inventory-section">[\s\S]*<h3 class="input-section-title">库存与星尘<\/h3>/);
   assert.match(css, /\.inventory-section \.form-group label[\s\S]*white-space:\s*nowrap/);
   assert.match(css, /\.inventory-section \.field-hint[\s\S]*white-space:\s*nowrap/);
+});
+
+test('exposes the limited-time pull doubling controls and persists their settings', async () => {
+  const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../site/calculator-ui.css', import.meta.url), 'utf8');
+
+  assert.match(html, /id="boostEventCard"/);
+  assert.match(html, /id="enableBoost"[^>]*checked/);
+  assert.match(html, /id="boostEndMode"/);
+  assert.match(html, /<option value="season">赛季末<\/option>/);
+  assert.match(html, /<option value="days">自定义持续天数<\/option>/);
+  assert.match(html, /id="boostDurationDays"[^>]*max="72"/);
+  assert.match(html, /id="boostEventDayText"/);
+  assert.match(html, /const SNAPSHOT_CHECKBOX_FIELDS = \[[\s\S]*['"]enableBoost['"]/);
+  assert.match(html, /const BOOST_SETTING_FIELDS = \[[\s\S]*['"]boostDurationDays['"]/);
+  assert.match(html, /function getCumulativePullsThroughCurrentDay\(/);
+  assert.match(html, /StardustRules\.getDailyQuotaForSeasonDay\(/);
+  assert.match(css, /\.boost-event-card\s*\{/);
 });
