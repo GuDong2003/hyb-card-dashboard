@@ -249,7 +249,9 @@ test('rejects invalid snapshots and accepts multiple captures in the same hour',
 
 test('pairs same-period epic and spend rows and marks partial or missing estimates', async () => {
   const environment = env();
-  const capturedAt = Date.now() - 1000;
+  // Keep this pairing test on the pre-boost schedule; the boost-specific
+  // allocation is covered by rankings-core.test.js.
+  const capturedAt = Date.parse('2026-08-10T05:00:00+08:00');
   const snapshot = {
     season: { id: 'season-pair', name: '配对测试赛季' },
     scope: 'global', capturedAt,
@@ -410,7 +412,9 @@ test('uses the latest complete common day when the newest common day is partial'
 
 test('converts spend values to USD and exposes a probability-ranked luck board', async () => {
   const environment = env();
-  const capturedAt = Date.now() - 1000;
+  // Keep the fixture deterministic and avoid classifying a 6,000 USD sample
+  // as a low sample under the post-boost 10,000 USD VIP daily cost.
+  const capturedAt = Date.parse('2026-08-10T05:00:00+08:00');
   const snapshot = {
     season: { id: 'season-luck', name: '运气榜测试赛季' },
     scope: 'global', capturedAt,

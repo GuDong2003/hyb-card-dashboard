@@ -350,14 +350,14 @@ async function getLeaderboard(url, env) {
   const currentPairById = new Map(currentPairs.map((pair) => [pair.userId, pair]));
   const previousPairById = new Map(previousPairs.map((pair) => [pair.userId, pair]));
   const currentViews = board === 'luck'
-    ? luckViews(currentPairs, limit).complete
+    ? luckViews(currentPairs, limit, latest.captured_at, period).complete
     : currentRowsRaw.map((row) => ({ row, pair: currentPairById.get(row.user_id) || null }));
   const previousViews = board === 'luck'
-    ? luckViews(previousPairs, MAX_LIMIT).complete
+    ? luckViews(previousPairs, MAX_LIMIT, latest.captured_at, period).complete
     : previousRowsRaw.map((row) => ({ row, pair: previousPairById.get(row.user_id) || null }));
   const previousById = new Map(previousViews.map((view) => [view.row.user_id, view.row]));
   const rows = currentViews.map((view) => {
-    const row = buildEnrichedEntry(view.row, view.pair, board, view.rankOverride);
+    const row = buildEnrichedEntry(view.row, view.pair, board, view.rankOverride, latest.captured_at, period);
     const previousRow = previousById.get(row.userId);
     return {
       ...row,
@@ -369,7 +369,7 @@ async function getLeaderboard(url, env) {
     };
   });
   const partialRows = board === 'luck'
-    ? luckViews(currentPairs, MAX_LIMIT).partial.map((view) => buildEnrichedEntry(view.row, view.pair, board, null))
+    ? luckViews(currentPairs, MAX_LIMIT, latest.captured_at, period).partial.map((view) => buildEnrichedEntry(view.row, view.pair, board, null, latest.captured_at, period))
     : rows.filter((row) => row.isPartial);
 
   return jsonResponse({
@@ -400,9 +400,9 @@ async function getUsersLeaderboard(url, env, latest) {
   const currentEpicRows = currentMetricRows.filter((row) => row.board_key === `epic_${period}`);
   const currentSpendRows = currentMetricRows.filter((row) => row.board_key === `spend_${period}`);
   const currentSetsRows = currentMetricRows.filter((row) => row.board_key === `sets_${period}`);
-  const currentUsers = summarizeDailyUsers(currentMetricRows, sort, latest)
+  const currentUsers = summarizeDailyUsers(currentMetricRows, sort, latest, period)
     .map((row) => ({ ...row, boardKey: `users_${period}` }));
-  const previousUsers = summarizeUsers(previousEpicRows, previousSpendRows, previousSetsRows, sort)
+  const previousUsers = summarizeUsers(previousEpicRows, previousSpendRows, previousSetsRows, sort, latest.captured_at, period)
     .map((row) => ({ ...row, boardKey: `users_${period}` }))
     .map((row, index) => ({ ...row, rank: index + 1 }));
   const previousById = new Map(previousUsers.map((row) => [row.userId, row]));
@@ -458,7 +458,7 @@ async function dailyMetricsForPeriod(env, seasonId, period) {
   return result.results || [];
 }
 
-function summarizeDailyUsers(rows = [], sort = 'legend', latestSnapshot = null) {
+function summarizeDailyUsers(rows = [], sort = 'legend', latestSnapshot = null, period = 'total') {
   const users = new Map();
   const merge = (rawRow, kind) => {
     if (!rawRow || typeof rawRow !== 'object') return;
@@ -501,7 +501,7 @@ function summarizeDailyUsers(rows = [], sort = 'legend', latestSnapshot = null) 
 
   const latestDayStartAt = dayStartAtForCapturedAt(latestSnapshot && latestSnapshot.captured_at);
   return Array.from(users.values())
-    .map((user) => buildDailyUserSummary(user, latestDayStartAt))
+    .map((user) => buildDailyUserSummary(user, latestDayStartAt, latestSnapshot && latestSnapshot.captured_at, period))
     .sort((left, right) => compareUserRows(left, right, sort));
 }
 
@@ -527,7 +527,7 @@ function latestDailyRow(rowsByDay) {
     .sort((left, right) => right.dayStartAt - left.dayStartAt || right.captured_at - left.captured_at)[0] || null;
 }
 
-function completeDailyPair(user, commonDays = []) {
+function completeDailyPair(user, commonDays = [], capturedAt = Date.now(), period = 'total') {
   for (const dayStartAt of commonDays) {
     const epicRow = user.daily.epic.get(dayStartAt);
     const spendRow = user.daily.spend.get(dayStartAt);
@@ -537,7 +537,7 @@ function completeDailyPair(user, commonDays = []) {
         || (epicRow.is_vip ?? epicRow.isVip)
         || (spendRow.is_vip ?? spendRow.isVip)
     );
-    const estimate = estimatePullsFromSpend(Number(spendRow.value), isVip);
+    const estimate = estimatePullsFromSpend(Number(spendRow.value), isVip, { capturedAt, period });
     if (estimate.estimateStatus === 'complete_days') {
       return { dayStartAt, epicRow, spendRow, isVip, estimate };
     }
@@ -545,7 +545,7 @@ function completeDailyPair(user, commonDays = []) {
   return null;
 }
 
-function buildDailyUserSummary(user, latestDayStartAt = null) {
+function buildDailyUserSummary(user, latestDayStartAt = null, capturedAt = Date.now(), period = 'total') {
   const latestEpic = latestDailyRow(user.daily.epic);
   const latestSpend = latestDailyRow(user.daily.spend);
   const latestSets = latestDailyRow(user.daily.sets);
@@ -558,14 +558,14 @@ function buildDailyUserSummary(user, latestDayStartAt = null) {
   const commonDays = Array.from(user.daily.epic.keys())
     .filter((dayStartAt) => user.daily.spend.has(dayStartAt))
     .sort((left, right) => right - left);
-  const completePair = completeDailyPair(user, commonDays);
+  const completePair = completeDailyPair(user, commonDays, capturedAt, period);
   const estimateDayStartAt = completePair
     ? completePair.dayStartAt
     : (commonDays.length ? commonDays[0] : null);
   const pairEpic = completePair && completePair.epicRow;
   const pairSpend = completePair && completePair.spendRow;
   const pairEstimate = completePair && completePair.estimate;
-  const rawEstimate = estimatePullsFromSpend(spendValue, user.isVip);
+  const rawEstimate = estimatePullsFromSpend(spendValue, user.isVip, { capturedAt, period });
   const estimate = pairEstimate || rawEstimate;
   const estimateStatus = !hasEpic && !hasSpend
     ? 'missing_pair'
@@ -584,7 +584,9 @@ function buildDailyUserSummary(user, latestDayStartAt = null) {
     ? estimateLegendProbability({
       epicTotal: displayEpicTotal,
       spendValue: displaySpendValue,
-      isVip: completePair.isVip
+      isVip: completePair.isVip,
+      capturedAt,
+      period
     })
     : null;
   const estimateUsesHistoricalData = estimateDayStartAt != null
@@ -619,7 +621,7 @@ function buildDailyUserSummary(user, latestDayStartAt = null) {
   };
 }
 
-function summarizeUsers(epicRows = [], spendRows = [], setsRows = [], sort = 'legend', currentCapturedBucket = null) {
+function summarizeUsers(epicRows = [], spendRows = [], setsRows = [], sort = 'legend', capturedAt = Date.now(), period = 'total', currentCapturedBucket = null) {
   const users = new Map();
   const merge = (rawRow, kind) => {
     if (!rawRow || typeof rawRow !== 'object') return;
@@ -644,11 +646,11 @@ function summarizeUsers(epicRows = [], spendRows = [], setsRows = [], sort = 'le
   spendRows.forEach((row) => merge(row, 'spend'));
   setsRows.forEach((row) => merge(row, 'sets'));
   return Array.from(users.values())
-    .map((user) => buildUserSummary(user, currentCapturedBucket))
+    .map((user) => buildUserSummary(user, currentCapturedBucket, capturedAt, period))
     .sort((left, right) => compareUserRows(left, right, sort));
 }
 
-function buildUserSummary(user, currentCapturedBucket = null) {
+function buildUserSummary(user, currentCapturedBucket = null, capturedAt = Date.now(), period = 'total') {
   const source = user.epicRow || user.spendRow || user.setsRow;
   const epicTotal = user.epicRow ? Number(user.epicRow.value) : null;
   const spendValue = user.spendRow ? Number(user.spendRow.value) : null;
@@ -659,7 +661,7 @@ function buildUserSummary(user, currentCapturedBucket = null) {
   const currentEpic = hasEpic && metricInCapturedBucket(user.epicRow, currentCapturedBucket);
   const currentSpend = hasSpend && metricInCapturedBucket(user.spendRow, currentCapturedBucket);
   const canDerive = currentEpic && currentSpend;
-  const rawEstimate = estimatePullsFromSpend(spendValue, isVip);
+  const rawEstimate = estimatePullsFromSpend(spendValue, isVip, { capturedAt, period });
   const estimate = rawEstimate;
   const estimateStatus = canDerive
     ? estimate.estimateStatus
@@ -671,7 +673,7 @@ function buildUserSummary(user, currentCapturedBucket = null) {
       currentCapturedBucket
     });
   const probability = canDerive
-    ? estimateLegendProbability({ epicTotal, spendValue, isVip })
+    ? estimateLegendProbability({ epicTotal, spendValue, isVip, capturedAt, period })
     : null;
   return {
     snapshotId: source ? Number(source.snapshot_id) : null,
@@ -935,7 +937,7 @@ async function entriesForSnapshot(env, snapshotId, boardKey, limit = MAX_LIMIT) 
   return result.results || [];
 }
 
-function luckViews(pairs, limit) {
+function luckViews(pairs, limit, capturedAt = Date.now(), period = 'total') {
   const complete = [];
   const partial = [];
   for (const pair of pairs) {
@@ -944,15 +946,15 @@ function luckViews(pairs, limit) {
     const view = { row: sourceRow, pair, rankOverride: null };
     const isVip = Boolean(pair.epicRow?.is_vip || pair.spendRow?.is_vip);
     const estimate = pair.epicRow && pair.spendRow
-      ? estimatePullsFromSpend(Number(pair.spendValue), isVip)
+      ? estimatePullsFromSpend(Number(pair.spendValue), isVip, { capturedAt, period })
       : null;
     if (estimate && estimate.estimateStatus === 'complete_days') complete.push(view);
     else partial.push(view);
   }
 
   complete.sort((left, right) => {
-    const leftProbability = pairProbability(left.pair);
-    const rightProbability = pairProbability(right.pair);
+    const leftProbability = pairProbability(left.pair, capturedAt, period);
+    const rightProbability = pairProbability(right.pair, capturedAt, period);
     if (leftProbability == null && rightProbability == null) return left.pair.userId.localeCompare(right.pair.userId);
     if (leftProbability == null) return 1;
     if (rightProbability == null) return -1;
@@ -967,17 +969,19 @@ function luckViews(pairs, limit) {
   };
 }
 
-function pairProbability(pair) {
+function pairProbability(pair, capturedAt = Date.now(), period = 'total') {
   if (!pair || !pair.epicRow || !pair.spendRow) return null;
   const isVip = Boolean(pair.epicRow.is_vip || pair.spendRow.is_vip);
   return estimateLegendProbability({
     epicTotal: Number(pair.epicValue),
     spendValue: Number(pair.spendValue),
-    isVip
+    isVip,
+    capturedAt,
+    period
   });
 }
 
-function buildEnrichedEntry(row, pair, board, rankOverride = undefined) {
+function buildEnrichedEntry(row, pair, board, rankOverride = undefined, capturedAt = Date.now(), period = 'total') {
   const entry = serializeEntry(row);
   const epicTotal = pair && pair.epicRow
     ? Number(pair.epicValue)
@@ -990,7 +994,7 @@ function buildEnrichedEntry(row, pair, board, rankOverride = undefined) {
       || (pair && pair.epicRow && pair.epicRow.is_vip)
       || (pair && pair.spendRow && pair.spendRow.is_vip)
   );
-  const rawEstimate = estimatePullsFromSpend(spendValue, isVip);
+  const rawEstimate = estimatePullsFromSpend(spendValue, isVip, { capturedAt, period });
   const hasPair = epicTotal != null && Number.isFinite(epicTotal)
     && spendValue != null && Number.isFinite(spendValue);
   const estimate = rawEstimate;
@@ -1001,7 +1005,7 @@ function buildEnrichedEntry(row, pair, board, rankOverride = undefined) {
       : hasPair ? estimate.estimateStatus : 'missing_pair';
   const probability = estimateStatus !== 'complete_days'
     ? null
-    : estimateLegendProbability({ epicTotal, spendValue, isVip });
+    : estimateLegendProbability({ epicTotal, spendValue, isVip, capturedAt, period });
   const isPartial = estimateStatus !== 'complete_days' || probability == null;
   return {
     ...entry,

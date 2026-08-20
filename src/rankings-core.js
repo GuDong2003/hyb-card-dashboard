@@ -8,6 +8,10 @@ export const REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 export const FUTURE_TOLERANCE_MS = 10 * 60 * 1000;
 export const MAX_ROWS_PER_BOARD = 1000;
 export const SPEND_VALUE_PER_USD = 500000;
+export const DAY_MS = 24 * 60 * 60 * 1000;
+export const SEASON_START_AT = Date.parse('2026-08-02T04:00:00+08:00');
+export const SEASON_DAYS = 90;
+export const BOOST_START_AT = Date.parse('2026-08-20T04:00:00+08:00');
 export const VIP_DAILY_SPEND_USD = 6000;
 export const VIP_DAILY_PAID_PULLS = 600;
 export const VIP_DAILY_FREE_PULLS = 50;
@@ -16,6 +20,12 @@ export const ORDINARY_DAILY_SPEND_USD = 4000;
 export const ORDINARY_DAILY_PAID_PULLS = 400;
 export const ORDINARY_DAILY_FREE_PULLS = 30;
 export const ORDINARY_DAILY_PULLS = ORDINARY_DAILY_PAID_PULLS + ORDINARY_DAILY_FREE_PULLS;
+export const BOOST_ORDINARY_DAILY_SPEND_USD = 8000;
+export const BOOST_ORDINARY_DAILY_PAID_PULLS = 800;
+export const BOOST_ORDINARY_DAILY_FREE_PULLS = 60;
+export const BOOST_VIP_DAILY_SPEND_USD = 10000;
+export const BOOST_VIP_DAILY_PAID_PULLS = 1000;
+export const BOOST_VIP_DAILY_FREE_PULLS = 80;
 
 const BOARD_KEY_SET = new Set(BOARD_KEYS);
 const SNAPSHOT_SCOPES = new Set(['global', 'friends']);
@@ -154,7 +164,35 @@ function stableValue(value) {
   return value;
 }
 
-export function estimatePullsFromSpend(spendValue, isVip) {
+function seasonDayAt(timestamp) {
+  const value = Number(timestamp);
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(1, Math.min(SEASON_DAYS, Math.floor((value - SEASON_START_AT) / DAY_MS) + 1));
+}
+
+function quotaForSeasonDay(day, { enabled = true, boostEndAt = null, vip = true } = {}) {
+  const seasonDay = Math.max(1, Math.min(SEASON_DAYS, Math.floor(Number(day) || 1)));
+  const timestamp = SEASON_START_AT + (seasonDay - 1) * DAY_MS;
+  const boosted = enabled
+    && timestamp >= BOOST_START_AT
+    && (boostEndAt == null || timestamp < Number(boostEndAt));
+  if (vip) {
+    return boosted
+      ? { paidCost: BOOST_VIP_DAILY_SPEND_USD, paidPulls: BOOST_VIP_DAILY_PAID_PULLS, freePulls: BOOST_VIP_DAILY_FREE_PULLS }
+      : { paidCost: VIP_DAILY_SPEND_USD, paidPulls: VIP_DAILY_PAID_PULLS, freePulls: VIP_DAILY_FREE_PULLS };
+  }
+  return boosted
+    ? { paidCost: BOOST_ORDINARY_DAILY_SPEND_USD, paidPulls: BOOST_ORDINARY_DAILY_PAID_PULLS, freePulls: BOOST_ORDINARY_DAILY_FREE_PULLS }
+    : { paidCost: ORDINARY_DAILY_SPEND_USD, paidPulls: ORDINARY_DAILY_PAID_PULLS, freePulls: ORDINARY_DAILY_FREE_PULLS };
+}
+
+/**
+ * Estimate paid/free/total pulls from a cumulative spend value.
+ * Free pulls are allocated against the known season-day schedule. A partial
+ * paid day still receives that day's free quota, matching the dashboard's
+ * existing "default full free quota" assumption.
+ */
+export function estimatePullsFromSpend(spendValue, isVip, options = {}) {
   if (spendValue == null || spendValue === '') {
     return {
       spendUsd: null,
@@ -177,10 +215,14 @@ export function estimatePullsFromSpend(spendValue, isVip) {
     };
   }
   const spendUsd = rawValue / SPEND_VALUE_PER_USD;
-  const dailySpendUsd = isVip ? VIP_DAILY_SPEND_USD : ORDINARY_DAILY_SPEND_USD;
-  const dailyPaidPulls = isVip ? VIP_DAILY_PAID_PULLS : ORDINARY_DAILY_PAID_PULLS;
-  const dailyFreePulls = isVip ? VIP_DAILY_FREE_PULLS : ORDINARY_DAILY_FREE_PULLS;
-  if (spendUsd < dailySpendUsd) {
+  const capturedAt = Number(options.capturedAt);
+  const effectiveCapturedAt = Number.isFinite(capturedAt) && capturedAt > 0 ? capturedAt : Date.now();
+  const boostEnabled = options.boostEnabled !== false;
+  const boostEndAt = options.boostEndAt == null ? null : Number(options.boostEndAt);
+  const lastSeasonDay = seasonDayAt(effectiveCapturedAt);
+  const firstSeasonDay = options.period === 'today' ? lastSeasonDay : 1;
+  const firstQuota = quotaForSeasonDay(firstSeasonDay, { enabled: boostEnabled, boostEndAt, vip: Boolean(isVip) });
+  if (spendUsd < firstQuota.paidCost) {
     return {
       spendUsd,
       estimatedDays: null,
@@ -191,23 +233,53 @@ export function estimatePullsFromSpend(spendValue, isVip) {
     };
   }
   const paidPulls = spendUsd / 10;
-  const paidDays = paidPulls / dailyPaidPulls;
-  const estimatedDays = Math.max(1, Math.ceil(paidDays));
-  const freePulls = estimatedDays * dailyFreePulls;
+  let remainingSpend = spendUsd;
+  let completeDays = 0;
+  let partialDay = false;
+  let freePulls = 0;
+  for (let day = firstSeasonDay; day <= lastSeasonDay; day += 1) {
+    const quota = quotaForSeasonDay(day, { enabled: boostEnabled, boostEndAt, vip: Boolean(isVip) });
+    if (remainingSpend + 1e-9 >= quota.paidCost) {
+      remainingSpend -= quota.paidCost;
+      completeDays += 1;
+      freePulls += quota.freePulls;
+      continue;
+    }
+    if (remainingSpend > 1e-9) {
+      partialDay = true;
+      freePulls += quota.freePulls;
+    }
+    remainingSpend = 0;
+    break;
+  }
+  // If the spend is ahead of the capture window, preserve the old behavior
+  // of estimating additional full days using the last known quota.
+  while (remainingSpend > 1e-9 && completeDays + (partialDay ? 1 : 0) < SEASON_DAYS * 2) {
+    const quota = quotaForSeasonDay(lastSeasonDay + 1, { enabled: boostEnabled, boostEndAt, vip: Boolean(isVip) });
+    if (remainingSpend + 1e-9 >= quota.paidCost) {
+      remainingSpend -= quota.paidCost;
+      completeDays += 1;
+      freePulls += quota.freePulls;
+    } else {
+      partialDay = true;
+      freePulls += quota.freePulls;
+      remainingSpend = 0;
+    }
+  }
+  const estimatedDays = Math.max(1, completeDays + (partialDay ? 1 : 0));
   const estimatedPulls = paidPulls + freePulls;
-  const completeDays = Math.abs(paidDays - Math.round(paidDays)) < 1e-9;
   return {
     spendUsd,
     estimatedDays,
     paidPulls,
     freePulls,
     estimatedPulls,
-    estimateStatus: completeDays ? 'complete_days' : 'partial_day'
+    estimateStatus: partialDay ? 'partial_day' : 'complete_days'
   };
 }
 
-export function estimateLegendProbability({ epicTotal, spendValue, isVip }) {
-  const estimate = estimatePullsFromSpend(spendValue, isVip);
+export function estimateLegendProbability({ epicTotal, spendValue, isVip, ...options }) {
+  const estimate = estimatePullsFromSpend(spendValue, isVip, options);
   return estimate.estimatedPulls > 0 && Number.isFinite(epicTotal)
     ? Number(epicTotal) / estimate.estimatedPulls
     : null;

@@ -140,17 +140,21 @@ test('keeps Farm-style header spacing and the rankings inset on narrow layouts',
 test('user overview explains that free pulls are estimated from paid days', async () => {
   const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
   const css = await readFile(new URL('../site/rankings.css', import.meta.url), 'utf8');
+  const rankingsJs = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
   const noticeStart = html.indexOf('id="rankingsFreePullsNotice"');
   const noticeEnd = html.indexOf('</section>', noticeStart);
   assert.ok(noticeStart >= 0 && noticeEnd > noticeStart, '用户总览上方应有免费抽数说明框');
   const notice = html.slice(noticeStart, noticeEnd);
   assert.match(notice, /<strong>免费抽数按付费天数估算<\/strong>/);
-  assert.match(notice, /根据消费金额反推付费天数，并按 VIP \/ 普通玩家的每日免费额度计入总抽数；出卡率仅供参考。/);
+  assert.match(notice, /class="rankings-free-pulls-notice-text" id="rankingsFreePullsNoticeText"/);
+  assert.match(rankingsJs, /根据消费金额反推付费天数/);
+  assert.match(rankingsJs, /翻倍开始/);
   assert.doesNotMatch(notice, /接口/);
   const styleStart = css.indexOf('.rankings-free-pulls-notice {');
   const styleEnd = css.indexOf('}', styleStart) + 1;
   assert.ok(styleStart >= 0 && styleEnd > styleStart);
   assert.match(css.slice(styleStart, styleEnd), /flex-wrap\s*:\s*nowrap/);
+  assert.match(css, /\.rankings-free-pulls-notice-text\s*\{[\s\S]*?color:\s*var\(--amber\)/);
 });
 
 test('rankings table does not create an independent vertical scroll container', async () => {

@@ -384,15 +384,35 @@
     overflow: hidden;
 }
 
+.rankings-free-pulls-notice[data-boost-state="active"] {
+    border-color: color-mix(in srgb, var(--amber) 72%, var(--line));
+    background: color-mix(in srgb, var(--gold-soft) 82%, var(--surface));
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--amber) 15%, transparent);
+}
+
+.rankings-free-pulls-notice[data-boost-state="disabled"] {
+    border-color: color-mix(in srgb, var(--line) 70%, var(--muted));
+    background: var(--surface);
+}
+
 .rankings-free-pulls-notice span {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
+.rankings-free-pulls-notice-text {
+    color: var(--amber);
+    font-weight: 700;
+}
+
+.rankings-free-pulls-notice[data-boost-state="active"] .rankings-free-pulls-notice-text {
+    color: color-mix(in srgb, var(--amber) 88%, var(--text));
+}
+
 .rankings-free-pulls-notice strong {
     flex: none;
-    color: var(--text);
+    color: var(--amber);
     font-size: .76rem;
 }
 

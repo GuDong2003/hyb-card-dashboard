@@ -12,6 +12,7 @@
     const TREND_CHART_FIXED_AXIS_WIDTH = 86;
     const TREND_CHART_AXIS_PADDING_RATIO = 0.03;
     const SETTINGS_STORAGE_KEY = 'hyb-card-rankings-settings-v1';
+    const CALCULATOR_STORAGE_KEY = 'legend-card-calculator-snapshot-v1';
     const PINS_STORAGE_KEY = 'hyb-card-rankings-pins-v1';
     const SPEND_VALUE_PER_USD = 500000;
     const VIP_DAILY_SPEND_USD = 6000;
@@ -22,6 +23,12 @@
     const ORDINARY_DAILY_PAID_PULLS = 400;
     const ORDINARY_DAILY_FREE_PULLS = 30;
     const ORDINARY_DAILY_PULLS = ORDINARY_DAILY_PAID_PULLS + ORDINARY_DAILY_FREE_PULLS;
+    const BOOST_ORDINARY_DAILY_SPEND_USD = 8000;
+    const BOOST_ORDINARY_DAILY_PAID_PULLS = 800;
+    const BOOST_ORDINARY_DAILY_FREE_PULLS = 60;
+    const BOOST_VIP_DAILY_SPEND_USD = 10000;
+    const BOOST_VIP_DAILY_PAID_PULLS = 1000;
+    const BOOST_VIP_DAILY_FREE_PULLS = 80;
     const LOCAL_SOURCE_SCOPES = Object.freeze(['global', 'friends']);
     const LOCAL_SOURCE_SCOPE_CONFIG = Object.freeze({ scope: 'global,friends', order: LOCAL_SOURCE_SCOPES });
 
@@ -253,6 +260,95 @@
         return new Date(time).toLocaleString('zh-CN', { hour12: false });
     }
 
+    function formatBeijingDate(value) {
+        const time = Number(value);
+        if (!Number.isFinite(time) || time <= 0) return '—';
+        return new Intl.DateTimeFormat('zh-CN', {
+            timeZone: 'Asia/Shanghai',
+            year: 'numeric',
+            month: 'numeric',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+        }).format(new Date(time)).replace(/\s+/g, ' ');
+    }
+
+    function readRankingBoostConfig() {
+        let values = {};
+        try {
+            const stored = JSON.parse(window.localStorage.getItem(CALCULATOR_STORAGE_KEY) || '{}') || {};
+            values = stored.values && typeof stored.values === 'object' ? stored.values : {};
+        } catch (_) {
+            values = {};
+        }
+        const mode = new Set(['open', 'season', 'days']).has(String(values.boostEndMode))
+            ? String(values.boostEndMode)
+            : 'open';
+        const rules = window.StardustRules || {};
+        const defaultDuration = Number(rules.BOOST_DEFAULT_DURATION_DAYS) || 72;
+        const normalizeDuration = typeof rules.normalizeBoostDurationDays === 'function'
+            ? rules.normalizeBoostDurationDays
+            : (value) => Math.max(1, Math.min(defaultDuration, Math.floor(Number(value) || defaultDuration)));
+        const durationDays = mode === 'days'
+            ? normalizeDuration(values.boostDurationDays)
+            : defaultDuration;
+        const seasonEndAt = Number(rules.SEASON_END_AT) || null;
+        const endAt = mode === 'days'
+            ? (typeof rules.getBoostEndAt === 'function' ? rules.getBoostEndAt(durationDays) : null)
+            : mode === 'season' ? seasonEndAt : null;
+        return {
+            enabled: values.enableBoost !== false,
+            mode,
+            durationDays,
+            endAt,
+            startAt: Number(rules.BOOST_START_AT) || Date.parse('2026-08-20T04:00:00+08:00')
+        };
+    }
+
+    function rankingQuotaForDay(day, isVip, config = readRankingBoostConfig()) {
+        const rules = window.StardustRules || {};
+        if (typeof rules.getDailyQuotaForSeasonDay === 'function') {
+            return rules.getDailyQuotaForSeasonDay(day, {
+                enabled: config.enabled,
+                durationDays: config.durationDays,
+                vip: Boolean(isVip)
+            });
+        }
+        const seasonStart = Number(rules.SEASON_START_AT) || Date.parse('2026-08-02T04:00:00+08:00');
+        const dayMs = 24 * 60 * 60 * 1000;
+        const timestamp = seasonStart + (Math.max(1, Math.floor(Number(day) || 1)) - 1) * dayMs;
+        const boosted = config.enabled
+            && timestamp >= config.startAt
+            && (config.endAt == null || timestamp < config.endAt);
+        if (isVip) {
+            return boosted
+                ? { paidCost: BOOST_VIP_DAILY_SPEND_USD, paidPulls: BOOST_VIP_DAILY_PAID_PULLS, freePulls: BOOST_VIP_DAILY_FREE_PULLS, totalPulls: BOOST_VIP_DAILY_PAID_PULLS + BOOST_VIP_DAILY_FREE_PULLS }
+                : { paidCost: VIP_DAILY_SPEND_USD, paidPulls: VIP_DAILY_PAID_PULLS, freePulls: VIP_DAILY_FREE_PULLS, totalPulls: VIP_DAILY_PULLS };
+        }
+        return boosted
+            ? { paidCost: BOOST_ORDINARY_DAILY_SPEND_USD, paidPulls: BOOST_ORDINARY_DAILY_PAID_PULLS, freePulls: BOOST_ORDINARY_DAILY_FREE_PULLS, totalPulls: BOOST_ORDINARY_DAILY_PAID_PULLS + BOOST_ORDINARY_DAILY_FREE_PULLS }
+            : { paidCost: ORDINARY_DAILY_SPEND_USD, paidPulls: ORDINARY_DAILY_PAID_PULLS, freePulls: ORDINARY_DAILY_FREE_PULLS, totalPulls: ORDINARY_DAILY_PULLS };
+    }
+
+    function renderRankingBoostNotice() {
+        const notice = $('#rankingsFreePullsNotice');
+        const text = $('#rankingsFreePullsNoticeText');
+        if (!notice || !text) return;
+        const config = readRankingBoostConfig();
+        const rules = window.StardustRules || {};
+        const now = Date.now();
+        const seasonDay = typeof rules.getSeasonDay === 'function' ? rules.getSeasonDay(now) : 1;
+        const vipQuota = rankingQuotaForDay(seasonDay, true, config);
+        const ordinaryQuota = rankingQuotaForDay(seasonDay, false, config);
+        const active = config.enabled && now >= config.startAt && (config.endAt == null || now < config.endAt);
+        const endText = config.mode === 'open'
+            ? '-'
+            : config.endAt ? formatBeijingDate(config.endAt) : '—';
+        notice.dataset.boostState = active ? 'active' : config.enabled ? 'scheduled' : 'disabled';
+        text.textContent = `当前额度：VIP ${vipQuota.paidPulls} 付费 + ${vipQuota.freePulls} 免费 = ${vipQuota.totalPulls} 抽/天；普通 ${ordinaryQuota.paidPulls} 付费 + ${ordinaryQuota.freePulls} 免费 = ${ordinaryQuota.totalPulls} 抽/天。翻倍开始：${formatBeijingDate(config.startAt)}；结束：${endText}。根据消费金额反推付费天数，并按 VIP / 普通玩家的每日免费额度计入总抽数；出卡率仅供参考。`;
+    }
+
     const TREND_METRICS = Object.freeze({
         epicTotal: '传说卡数量',
         spendUsd: '消费金额',
@@ -303,8 +399,11 @@
         return `${values.year}-${values.month}-${values.day}`;
     }
 
-    function finalizeTrendPoint(point) {
-        const estimate = estimateFromSpend(point.spendValue, point.isVip);
+    function finalizeTrendPoint(point, period = state.trend.period) {
+        const estimate = estimateFromSpend(point.spendValue, point.isVip, {
+            capturedAt: point.capturedAt,
+            period
+        });
         const canDerive = point.epicTotal != null && point.spendValue != null;
         return {
             ...point,
@@ -313,7 +412,10 @@
             freePulls: estimate.freePulls,
             estimatedPulls: estimate.estimatedPulls,
             estimatedLegendProbability: canDerive
-                ? estimatedProbability(point.epicTotal, point.spendValue, point.isVip)
+                ? estimatedProbability(point.epicTotal, point.spendValue, point.isVip, {
+                    capturedAt: point.capturedAt,
+                    period
+                })
                 : null
         };
     }
@@ -343,7 +445,7 @@
         });
         return Array.from(snapshots.values())
             .sort((left, right) => left.capturedAt - right.capturedAt)
-            .map(finalizeTrendPoint);
+            .map((point) => finalizeTrendPoint(point, period));
     }
 
     function aggregateTrendRows(rows = [], mode = 'daily', period = state.trend.period) {
@@ -372,7 +474,7 @@
         });
         return Array.from(days.values())
             .sort((left, right) => left.capturedAt - right.capturedAt)
-            .map(finalizeTrendPoint);
+            .map((point) => finalizeTrendPoint(point, period));
     }
 
     function trendMetricValue(point, metric = state.trend.metric) {
@@ -1007,7 +1109,7 @@
         return Boolean(row && (row.isVip ?? row.is_vip ?? row.vip));
     }
 
-    function estimateFromSpend(spendValue, isVip) {
+    function estimateFromSpend(spendValue, isVip, options = {}) {
         if (spendValue == null || spendValue === '') {
             return {
                 spendUsd: null,
@@ -1030,10 +1132,15 @@
             };
         }
         const spendUsd = rawValue / SPEND_VALUE_PER_USD;
-        const dailySpendUsd = isVip ? VIP_DAILY_SPEND_USD : ORDINARY_DAILY_SPEND_USD;
-        const dailyPaidPulls = isVip ? VIP_DAILY_PAID_PULLS : ORDINARY_DAILY_PAID_PULLS;
-        const dailyFreePulls = isVip ? VIP_DAILY_FREE_PULLS : ORDINARY_DAILY_FREE_PULLS;
-        if (spendUsd < dailySpendUsd) {
+        const config = options.config || readRankingBoostConfig();
+        const capturedAt = Number(options.capturedAt)
+            || Number(state.latest && state.latest.snapshot && state.latest.snapshot.capturedAt)
+            || Date.now();
+        const rules = window.StardustRules || {};
+        const seasonDay = typeof rules.getSeasonDay === 'function' ? rules.getSeasonDay(capturedAt) : 1;
+        const firstSeasonDay = options.period === 'today' ? seasonDay : 1;
+        const firstQuota = rankingQuotaForDay(firstSeasonDay, isVip, config);
+        if (spendUsd < firstQuota.paidCost) {
             return {
                 spendUsd,
                 estimatedDays: null,
@@ -1044,23 +1151,51 @@
             };
         }
         const paidPulls = spendUsd / 10;
-        const paidDays = paidPulls / dailyPaidPulls;
-        const estimatedDays = Math.max(1, Math.ceil(paidDays));
-        const freePulls = estimatedDays * dailyFreePulls;
+        let remainingSpend = spendUsd;
+        let completeDays = 0;
+        let partialDay = false;
+        let freePulls = 0;
+        for (let day = firstSeasonDay; day <= seasonDay; day += 1) {
+            const quota = rankingQuotaForDay(day, isVip, config);
+            if (remainingSpend + 1e-9 >= quota.paidCost) {
+                remainingSpend -= quota.paidCost;
+                completeDays += 1;
+                freePulls += quota.freePulls;
+                continue;
+            }
+            if (remainingSpend > 1e-9) {
+                partialDay = true;
+                freePulls += quota.freePulls;
+            }
+            remainingSpend = 0;
+            break;
+        }
+        while (remainingSpend > 1e-9 && completeDays + (partialDay ? 1 : 0) < 180) {
+            const quota = rankingQuotaForDay(seasonDay + 1, isVip, config);
+            if (remainingSpend + 1e-9 >= quota.paidCost) {
+                remainingSpend -= quota.paidCost;
+                completeDays += 1;
+                freePulls += quota.freePulls;
+            } else {
+                partialDay = true;
+                freePulls += quota.freePulls;
+                remainingSpend = 0;
+            }
+        }
+        const estimatedDays = Math.max(1, completeDays + (partialDay ? 1 : 0));
         const estimatedPulls = paidPulls + freePulls;
-        const completeDays = Math.abs(paidDays - Math.round(paidDays)) < 1e-9;
         return {
             spendUsd,
             estimatedDays,
             paidPulls,
             freePulls,
             estimatedPulls,
-            estimateStatus: completeDays ? 'complete_days' : 'partial_day'
+            estimateStatus: partialDay ? 'partial_day' : 'complete_days'
         };
     }
 
-    function estimatedProbability(epicTotal, spendValue, isVip) {
-        const estimate = estimateFromSpend(spendValue, isVip);
+    function estimatedProbability(epicTotal, spendValue, isVip, options = {}) {
+        const estimate = estimateFromSpend(spendValue, isVip, options);
         return estimate.estimatedPulls > 0 && Number.isFinite(epicTotal)
             ? Number(epicTotal) / estimate.estimatedPulls
             : null;
@@ -1728,8 +1863,8 @@
     async function loadLeaderboard() {
         const query = `/api/rankings/leaderboard?board=users&period=${encodeURIComponent(state.period)}&sort=${encodeURIComponent(state.sort)}`;
         const leaderboard = await apiGet(query);
-        state.rows = Array.isArray(leaderboard.rows) ? leaderboard.rows : [];
-        state.partialRows = Array.isArray(leaderboard.partialRows) ? leaderboard.partialRows : [];
+        state.rows = (Array.isArray(leaderboard.rows) ? leaderboard.rows : []).map(enrichRankingEstimate);
+        state.partialRows = (Array.isArray(leaderboard.partialRows) ? leaderboard.partialRows : []).map(enrichRankingEstimate);
         renderLeaderboard(leaderboard);
     }
 
@@ -1947,6 +2082,7 @@
         const title = $('#rankingsBoardTitle');
         const updated = $('#rankingsUpdatedAt');
         if (title) title.textContent = boardLabel;
+        renderRankingBoostNotice();
         syncPinnedSeason(payload && payload.snapshot && payload.snapshot.seasonId
             || state.latest && state.latest.snapshot && state.latest.snapshot.seasonId
             || state.seasonId);
@@ -1971,6 +2107,38 @@
             return [row.userName, row.userId]
                 .some((value) => String(value || '').toLowerCase().includes(query));
         });
+    }
+
+    function enrichRankingEstimate(row) {
+        if (!row || row.spendValue == null) return row;
+        const hasEpic = row.epicTotal != null && Number.isFinite(Number(row.epicTotal));
+        const hasSpend = row.spendValue != null && Number.isFinite(Number(row.spendValue));
+        const canDerive = hasEpic && hasSpend
+            && !String(row.estimateStatus || '').startsWith('missing_');
+        const estimate = estimateFromSpend(row.spendValue, row.isVip, {
+            capturedAt: row.capturedAt || row.valueCapturedAt || row.value_captured_at,
+            period: state.period
+        });
+        if (!canDerive) {
+            return { ...row, spendUsd: estimate.spendUsd };
+        }
+        const probability = estimate.estimateStatus === 'complete_days'
+            ? estimatedProbability(row.epicTotal, row.spendValue, row.isVip, {
+                capturedAt: row.capturedAt || row.valueCapturedAt || row.value_captured_at,
+                period: state.period
+            })
+            : null;
+        return {
+            ...row,
+            spendUsd: estimate.spendUsd,
+            estimatedDays: estimate.estimatedDays,
+            paidPulls: estimate.paidPulls,
+            freePulls: estimate.freePulls,
+            estimatedPulls: estimate.estimatedPulls,
+            estimateStatus: estimate.estimateStatus,
+            isPartial: estimate.estimateStatus !== 'complete_days' || probability == null,
+            estimatedLegendProbability: probability
+        };
     }
 
     function formatEstimateDay(value) {
@@ -2227,10 +2395,18 @@
         });
         installRankingsRetryLifecycleListeners();
         bindControls();
+        window.addEventListener('hyb:calculator-settings-changed', () => {
+            renderRankingBoostNotice();
+            if (state.view !== 'rankings' || !state.rows.length) return;
+            state.rows = state.rows.map(enrichRankingEstimate);
+            state.partialRows = state.partialRows.map(enrichRankingEstimate);
+            renderRankingsTableRows();
+        });
         renderSortHeaders();
         renderTrendModeButtons();
         renderTrendPeriodControl();
         renderUploadControls();
+        renderRankingBoostNotice();
         setDashboardView('rankings');
         configureHourlyRefresh({ runNow: true, delayMs: 600 });
     }

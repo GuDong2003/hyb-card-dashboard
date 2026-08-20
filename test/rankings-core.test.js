@@ -119,9 +119,30 @@ test('splits paid and free pulls using VIP and ordinary quotas', () => {
 
 test('computes probability from same-period raw spend', () => {
   assert.equal(
-    estimateLegendProbability({ epicTotal: 36, spendValue: 12_000_000_000, isVip: true }),
+    estimateLegendProbability({
+      epicTotal: 36,
+      spendValue: 12_000_000_000,
+      isVip: true,
+      boostEnabled: false
+    }),
     36 / 2_600
   );
+});
+
+test('includes the limited-time doubled free quota when estimating cumulative spend', () => {
+  const capturedAt = Date.parse('2026-08-20T05:00:00+08:00');
+  const beforeBoost = estimatePullsFromSpend(12_000_000_000, true, {
+    capturedAt,
+    boostEnabled: false
+  });
+  const withBoost = estimatePullsFromSpend(57_000_000_000, true, { capturedAt });
+
+  assert.equal(beforeBoost.freePulls, 200);
+  assert.equal(withBoost.paidPulls, 11_400);
+  // 18 normal days (900 free) plus a partial first boosted day (80 free).
+  assert.equal(withBoost.freePulls, 980);
+  assert.equal(withBoost.estimatedPulls, 12_380);
+  assert.equal(withBoost.estimateStatus, 'partial_day');
 });
 
 test('diffs rank movement and enter/leave events', () => {

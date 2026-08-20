@@ -526,6 +526,7 @@
                                 <span>开始：2026/8/20 04:00</span>
                                 <label for="boostEndMode">结束：
                                     <select id="boostEndMode" onchange="handleBoostSettingsChange()">
+                                        <option value="open" selected>未指定</option>
                                         <option value="season">赛季末</option>
                                         <option value="days">自定义持续天数</option>
                                     </select>
@@ -755,7 +756,7 @@
 
         <section class="rankings-free-pulls-notice" id="rankingsFreePullsNotice" aria-label="免费抽数说明">
             <strong>免费抽数按付费天数估算</strong>
-            <span>根据消费金额反推付费天数，并按 VIP / 普通玩家的每日免费额度计入总抽数；出卡率仅供参考。</span>
+            <span class="rankings-free-pulls-notice-text" id="rankingsFreePullsNoticeText">当前抽卡额度与活动时间读取中……</span>
         </section>
 
         <section class="rankings-grid">
@@ -1030,7 +1031,7 @@
                 document.getElementById('redeemedSets').value = '0';
             }
             if (saved.values.boostEndMode === undefined) {
-                document.getElementById('boostEndMode').value = 'season';
+                document.getElementById('boostEndMode').value = 'open';
             }
             if (saved.values.boostDurationDays === undefined) {
                 document.getElementById('boostDurationDays').value = String(StardustRules.BOOST_DEFAULT_DURATION_DAYS);
@@ -1281,8 +1282,8 @@
     }
 
     function getConfiguredBoostDurationDays() {
-        const mode = document.getElementById('boostEndMode')?.value || 'season';
-        if (mode === 'season') return StardustRules.BOOST_DEFAULT_DURATION_DAYS;
+        const mode = document.getElementById('boostEndMode')?.value || 'open';
+        if (mode === 'season' || mode === 'open') return StardustRules.BOOST_DEFAULT_DURATION_DAYS;
         return StardustRules.normalizeBoostDurationDays(document.getElementById('boostDurationDays')?.value);
     }
 
@@ -1312,7 +1313,7 @@
         const statusElement = document.getElementById('boostEventStatus');
         const dayElement = document.getElementById('boostEventDayText');
         const durationRow = document.getElementById('boostDurationRow');
-        const mode = document.getElementById('boostEndMode')?.value || 'season';
+        const mode = document.getElementById('boostEndMode')?.value || 'open';
         if (!statusElement || !dayElement || !durationRow) return;
 
         durationRow.classList.toggle('is-hidden', mode !== 'days');
@@ -1320,7 +1321,8 @@
         statusElement.className = `boost-event-status is-${status.state}`;
         if (status.state === 'active') {
             statusElement.textContent = '进行中';
-            dayElement.textContent = `活动第 ${status.day} 天 / 共 ${status.durationDays} 天 · 今日 VIP ${StardustRules.getDailyQuotaForSeasonDay(StardustRules.getSeasonDay(), { enabled, durationDays, vip: true }).totalPulls} 抽`;
+            const durationText = mode === 'open' ? '结束时间未指定' : `/ 共 ${status.durationDays} 天`;
+            dayElement.textContent = `活动第 ${status.day} 天 ${durationText} · 今日 VIP ${StardustRules.getDailyQuotaForSeasonDay(StardustRules.getSeasonDay(), { enabled, durationDays, vip: true }).totalPulls} 抽`;
         } else if (status.state === 'ended') {
             statusElement.textContent = '已结束';
             dayElement.textContent = `活动已结束 · 共 ${status.durationDays} 天 · 结束：${formatBoostDate(status.endAt)}`;
@@ -1329,7 +1331,7 @@
             dayElement.textContent = `当前使用原抽卡额度 · 翻倍活动开始：${formatBoostDate(status.startAt)}`;
         } else {
             statusElement.textContent = '待开始';
-            dayElement.textContent = `活动开始：${formatBoostDate(status.startAt)} · 默认持续至赛季末`;
+            dayElement.textContent = `活动开始：${formatBoostDate(status.startAt)} · 结束：${mode === 'open' ? '-' : '赛季末'}`;
         }
     }
 
@@ -1345,6 +1347,9 @@
             document.getElementById('currentTotalDraws').value = String(defaultTotalDraws);
         }
         calculate(false, false);
+        window.dispatchEvent(new CustomEvent('hyb:calculator-settings-changed', {
+            detail: { source: 'calculator', setting: 'boost' }
+        }));
     }
 
     function formatMoney(value) {
