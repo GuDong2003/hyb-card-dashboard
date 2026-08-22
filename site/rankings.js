@@ -210,25 +210,18 @@
         return error;
     }
 
-    function renderUserscriptUpdateNotice() {
-        const notice = $('#rankingsScriptUpdateNotice');
-        const text = $('#rankingsScriptUpdateNoticeText');
-        const link = $('#rankingsScriptUpdateLink');
-        if (!notice) return;
-        notice.classList.toggle('is-hidden', !state.scriptUpdateRequired);
-        if (text) {
-            const current = state.userscriptVersion
-                ? `当前 v${state.userscriptVersion}`
-                : '当前版本过旧或未上报版本号';
-            text.textContent = `同步脚本需要更新到 v${REQUIRED_USERSCRIPT_VERSION}（${current}）。`;
-        }
-        if (link) link.href = apiUrl(USERSCRIPT_URL);
+    function renderUserscriptLink() {
+        const link = $('#rankingsInstallLink');
+        if (!link) return;
+        link.href = apiUrl(USERSCRIPT_URL);
+        link.textContent = state.scriptUpdateRequired ? '更新脚本' : '安装用户脚本';
+        link.classList.toggle('is-update-required', state.scriptUpdateRequired);
     }
 
     function markUserscriptVersion(version) {
         state.userscriptVersion = String(version || '').trim();
         state.scriptUpdateRequired = !userscriptVersionSupported(state.userscriptVersion);
-        renderUserscriptUpdateNotice();
+        renderUserscriptLink();
         return !state.scriptUpdateRequired;
     }
 
@@ -1979,7 +1972,7 @@
         } catch (error) {
             const scheduled = errorCanAutoRetry(error) && scheduleRankingsRetry();
             const suffix = error && error.scriptUpdateRequired
-                ? '；请先打开上方更新页安装新版本。'
+                ? '；请点击“更新脚本”安装新版本。'
                 : error && error.code === 'userscript_missing'
                     ? '；请先安装同步脚本后再刷新。'
                     : error && error.cooldown
@@ -2047,7 +2040,7 @@
         } catch (error) {
             const scheduled = errorCanAutoRetry(error) && scheduleRankingsRetry();
             const suffix = error && error.scriptUpdateRequired
-                ? '；请先打开上方更新页安装新版本。'
+                ? '；请点击“更新脚本”安装新版本。'
                 : error && error.code === 'userscript_missing'
                     ? '；请先安装同步脚本后再刷新。'
                     : error && error.cooldown
@@ -2065,8 +2058,8 @@
     async function uploadPendingSnapshot() {
         if (!state.localSnapshots.length || state.busy) return;
         if (state.scriptUpdateRequired) {
-            renderUserscriptUpdateNotice();
-            setStatus(`同步脚本需要更新到 v${REQUIRED_USERSCRIPT_VERSION}；请先打开上方更新页安装新版本。`, true);
+            renderUserscriptLink();
+            setStatus(`同步脚本需要更新到 v${REQUIRED_USERSCRIPT_VERSION}；请点击“更新脚本”安装新版本。`, true);
             return;
         }
         setBusy(true);

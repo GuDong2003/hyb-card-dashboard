@@ -198,7 +198,7 @@ test('rankings sections share one vertical rhythm and keep clear right inset', a
   assert.match(css, /--rankings-section-gap\s*:\s*12px/);
 });
 
-test('rankings setup keeps the script update notice with script controls', async () => {
+test('rankings setup keeps script controls aligned to the right', async () => {
   const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
   const css = await readFile(new URL('../site/rankings.css', import.meta.url), 'utf8');
   const primaryStart = html.indexOf('class="rankings-primary-actions"');
@@ -211,7 +211,7 @@ test('rankings setup keeps the script update notice with script controls', async
   assert.match(primary, /id="rankingsUploadButton"[^>]*>上传云端</);
   assert.match(secondary, /id="rankingsAutoUpload"/);
   assert.match(secondary, /id="rankingsHourlyRefresh"/);
-  assert.match(secondary, /class="rankings-script-update-notice is-hidden"/);
+  assert.doesNotMatch(secondary, /rankings-script-update-notice|rankingsScriptUpdateNotice/);
   assert.ok(
     secondary.indexOf('id="rankingsHourlyRefresh"') < secondary.indexOf('id="rankingsAutoUpload"'),
     '每小时刷新开关应位于自动上传左侧'
@@ -220,8 +220,8 @@ test('rankings setup keeps the script update notice with script controls', async
   assert.match(secondary, /href="https:\/\/cdk\.hybgzs\.com\/"[^>]*>打开 CDK</);
   assert.doesNotMatch(html, />检查更新</);
   assert.doesNotMatch(html, />安装同步脚本</);
-  assert.match(css, /\.rankings-secondary-actions\s*\{[\s\S]*flex:\s*1 1 100%/);
-  assert.match(css, /\.rankings-script-update-notice\s*\{[\s\S]*min-width:\s*0[\s\S]*flex:\s*1 1 320px/);
+  assert.match(css, /\.rankings-secondary-actions\s*\{[\s\S]*flex:\s*0 0 auto[\s\S]*justify-content:\s*flex-end[\s\S]*margin-left:\s*auto/);
+  assert.match(css, /\.rankings-secondary-actions \.btn\.is-update-required\s*\{[\s\S]*border-color:\s*var\(--amber\)/);
 });
 
 test('user overview shows ranking and all core metrics', async () => {

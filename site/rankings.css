@@ -114,10 +114,9 @@
 }
 
 .rankings-secondary-actions {
-    min-width: 0;
-    flex: 1 1 100%;
-    justify-content: flex-start;
-    margin-left: 0;
+    flex: 0 0 auto;
+    justify-content: flex-end;
+    margin-left: auto;
 }
 
 .rankings-primary-actions .btn,
@@ -272,34 +271,15 @@
     color: var(--red);
 }
 
-.rankings-script-update-notice {
-    display: flex;
-    min-width: 0;
-    flex: 1 1 320px;
-    align-items: center;
-    justify-content: flex-start;
-    gap: 10px;
-    min-height: 34px;
-    padding: 0 10px;
-    border: 1px solid color-mix(in srgb, var(--amber) 55%, var(--line));
-    border-radius: 9px;
-    background: var(--gold-soft);
-    color: var(--text);
-    font-size: .72rem;
-    line-height: 1.35;
+.rankings-secondary-actions .btn.is-update-required {
+    border-color: var(--amber) !important;
+    background: var(--gold-soft) !important;
+    color: var(--amber) !important;
 }
 
-.rankings-script-update-notice > span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.rankings-script-update-notice .btn {
-    flex: 0 0 auto;
-    min-height: 30px;
-    padding: 0 9px;
+.rankings-secondary-actions .btn.is-update-required:hover {
+    background: color-mix(in srgb, var(--gold-soft) 72%, var(--amber)) !important;
+    filter: none;
 }
 
 .rankings-tab-group {
@@ -1602,21 +1582,9 @@ body.modal-open {
     }
 
     .rankings-source-status,
-    .rankings-upload-status,
-    .rankings-script-update-notice {
+    .rankings-upload-status {
         max-width: none;
         text-align: left;
-    }
-
-    .rankings-script-update-notice {
-        align-items: flex-start;
-        flex-direction: column;
-        padding: 7px 10px;
-    }
-
-    .rankings-script-update-notice > span {
-        overflow: visible;
-        white-space: normal;
     }
 
     .rankings-summary {

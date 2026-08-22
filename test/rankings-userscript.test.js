@@ -33,13 +33,16 @@ test('userscript matches Card and CDK while keeping the bridge UI on Card', asyn
   assert.match(source, /scriptVersion: SCRIPT_VERSION/);
 });
 
-test('userscript update notice is hidden until a refresh response reports an old script', async () => {
+test('userscript update state changes the install link after a refresh response', async () => {
   const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
-  assert.match(html, /class="rankings-script-update-notice is-hidden"/);
-  assert.match(html, /id="rankingsScriptUpdateLink"[^>]*>更新同步脚本</);
+  assert.match(html, /id="rankingsInstallLink"[^>]*>安装用户脚本</);
+  assert.doesNotMatch(html, /rankingsScriptUpdateNotice|rankingsScriptUpdateLink/);
   assert.match(source, /markUserscriptVersion\(data\.scriptVersion\)/);
   assert.match(source, /userscriptUpdateError\(data\.scriptVersion\)/);
+  assert.match(source, /function renderUserscriptLink/);
+  assert.match(source, /link\.textContent = state\.scriptUpdateRequired \? '更新脚本' : '安装用户脚本'/);
+  assert.match(source, /link\.classList\.toggle\('is-update-required', state\.scriptUpdateRequired\)/);
   assert.match(source, /code = 'userscript_missing'/);
   assert.doesNotMatch(source, /type === BRIDGE_READY\)[\s\S]*markUserscriptVersion/);
 });
