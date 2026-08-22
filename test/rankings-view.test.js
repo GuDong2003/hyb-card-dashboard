@@ -466,7 +466,8 @@ test('rankings client persists upload consent and gates snapshot uploads', async
   assert.match(source, /hyb-card-rankings-settings-v1/);
   assert.match(source, /autoUpload\s*:\s*false/);
   assert.match(source, /hourlyRefresh\s*:\s*false/);
-  assert.match(source, /HOURLY_REFRESH_MS\s*=\s*60\s*\*\s*60\s*\*\s*1000/);
+  assert.match(source, /AUTO_REFRESH_INTERVAL_MS\s*=\s*3\s*\*\s*60\s*\*\s*60\s*\*\s*1000/);
+  assert.match(source, /CAPTURE_BUCKET_MS\s*=\s*60\s*\*\s*60\s*\*\s*1000/);
   assert.match(source, /function scheduleHourlyRefresh/);
   assert.match(source, /function runHourlyRefresh/);
   assert.match(source, /configureHourlyRefresh\(\{ runNow: state\.settings\.hourlyRefresh \}\)/);
@@ -496,7 +497,7 @@ test('rankings client uses refresh and cloud upload labels', async () => {
 test('rankings refresh bypasses fresh snapshots and exposes running status', async () => {
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
   const css = await readFile(new URL('../site/rankings.css', import.meta.url), 'utf8');
-  assert.match(source, /if \(!force && latest\.snapshot && !latest\.stale\)/);
+  assert.match(source, /if \(!force && !retry && latest\.snapshot && !latest\.stale\)/);
   assert.match(source, /正在检查云端榜单/);
   assert.match(source, /正在检查榜单新鲜度/);
   assert.match(source, /正在等待用户脚本连接/);
@@ -513,9 +514,13 @@ test('rankings refresh bypasses fresh snapshots and exposes running status', asy
 test('rankings retries failed bridge requests like Farm Dashboard', async () => {
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
 
-  assert.match(source, /RANKINGS_RETRY_MS\s*=\s*5\s*\*\s*60\s*\*\s*1000/);
+  assert.match(source, /RANKINGS_RETRY_MS\s*=\s*60\s*\*\s*60\s*\*\s*1000/);
   assert.match(source, /function scheduleRankingsRetry/);
-  assert.match(source, /5分钟后自动重试/);
+  assert.match(source, /1小时后最多自动重试1次/);
+  assert.match(source, /MAX_AUTO_RETRIES\s*=\s*1/);
+  assert.match(source, /errorCanAutoRetry/);
+  assert.match(source, /userscript_missing/);
+  assert.match(source, /scriptUpdateRequired/);
   assert.match(source, /visibilitychange/);
   assert.match(source, /pageshow/);
   assert.match(source, /online/);

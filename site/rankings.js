@@ -7,8 +7,12 @@
     const BRIDGE_TIMEOUT_MS = 22000;
     const DAY_MS = 24 * 60 * 60 * 1000;
     const RESET_HOUR_MS = 4 * 60 * 60 * 1000;
-    const HOURLY_REFRESH_MS = 60 * 60 * 1000;
-    const RANKINGS_RETRY_MS = 5 * 60 * 1000;
+    const AUTO_REFRESH_INTERVAL_MS = 3 * 60 * 60 * 1000;
+    const CAPTURE_BUCKET_MS = 60 * 60 * 1000;
+    const RANKINGS_RETRY_MS = 60 * 60 * 1000;
+    const MAX_AUTO_RETRIES = 1;
+    const REQUIRED_USERSCRIPT_VERSION = '1.3.1';
+    const USERSCRIPT_URL = '/userscripts/hyb-card-dashboard-rankings.user.js';
     const TREND_CHART_FIXED_AXIS_WIDTH = 86;
     const TREND_CHART_AXIS_PADDING_RATIO = 0.03;
     const SETTINGS_STORAGE_KEY = 'hyb-card-rankings-settings-v1';
@@ -100,10 +104,14 @@
         loaded: false,
         busy: false,
         bridgeReady: false,
+        userscriptVersion: '',
+        scriptUpdateRequired: false,
         bridgeRequest: null,
         hourlyRefreshTimer: null,
         rankingsRetryTimer: null,
         rankingsRetryPending: false,
+        rankingsRetryCount: 0,
+        rankingsRetryAt: 0,
         rows: [],
         partialRows: [],
         userQuery: '',
@@ -174,32 +182,122 @@
         renderUploadControls();
     }
 
+    function compareVersions(left, right) {
+        const parse = (value) => String(value || '').split('.').map((part) => Number(part));
+        const a = parse(left);
+        const b = parse(right);
+        if (!a.length || a.some((part) => !Number.isInteger(part) || part < 0)) return -1;
+        if (!b.length || b.some((part) => !Number.isInteger(part) || part < 0)) return 1;
+        const length = Math.max(a.length, b.length);
+        for (let index = 0; index < length; index += 1) {
+            const difference = (a[index] || 0) - (b[index] || 0);
+            if (difference) return difference > 0 ? 1 : -1;
+        }
+        return 0;
+    }
+
+    function userscriptVersionSupported(version) {
+        return Boolean(String(version || '').trim()) && compareVersions(version, REQUIRED_USERSCRIPT_VERSION) >= 0;
+    }
+
+    function userscriptUpdateError(version = '') {
+        const error = new Error(`同步脚本需要更新到 v${REQUIRED_USERSCRIPT_VERSION}`);
+        error.name = 'ScriptUpdateRequired';
+        error.code = 'script_update_required';
+        error.scriptUpdateRequired = true;
+        error.retryable = false;
+        error.scriptVersion = String(version || '');
+        return error;
+    }
+
+    function renderUserscriptUpdateNotice() {
+        const notice = $('#rankingsScriptUpdateNotice');
+        const text = $('#rankingsScriptUpdateNoticeText');
+        const link = $('#rankingsScriptUpdateLink');
+        if (!notice) return;
+        notice.classList.toggle('is-hidden', !state.scriptUpdateRequired);
+        if (text) {
+            const current = state.userscriptVersion
+                ? `当前 v${state.userscriptVersion}`
+                : '当前版本过旧或未上报版本号';
+            text.textContent = `同步脚本需要更新到 v${REQUIRED_USERSCRIPT_VERSION}（${current}）。`;
+        }
+        if (link) link.href = apiUrl(USERSCRIPT_URL);
+    }
+
+    function markUserscriptVersion(version) {
+        state.userscriptVersion = String(version || '').trim();
+        state.scriptUpdateRequired = !userscriptVersionSupported(state.userscriptVersion);
+        renderUserscriptUpdateNotice();
+        return !state.scriptUpdateRequired;
+    }
+
+    function errorCanAutoRetry(error) {
+        return !state.scriptUpdateRequired
+            && !(error && (error.scriptUpdateRequired || error.cooldown || error.blocked || error.code === 'userscript_missing'))
+            && (!error || error.retryable !== false);
+    }
+
+    function retryStatusSuffix() {
+        const suffix = retrySuffix();
+        return suffix ? `；${suffix}` : '；本轮不再自动重试。';
+    }
+
+    function retrySuffix() {
+        if (state.rankingsRetryPending) return '1小时后最多自动重试1次。';
+        if (state.rankingsRetryCount >= MAX_AUTO_RETRIES) return '本轮已停止自动重试。';
+        return '';
+    }
+
     function clearRankingsRetry() {
         if (state.rankingsRetryTimer) {
             window.clearTimeout(state.rankingsRetryTimer);
             state.rankingsRetryTimer = null;
         }
         state.rankingsRetryPending = false;
+        state.rankingsRetryAt = 0;
+        state.rankingsRetryCount = 0;
     }
 
     function scheduleRankingsRetry() {
-        state.rankingsRetryPending = true;
-        if (state.rankingsRetryTimer || state.view !== 'rankings') return;
-        state.rankingsRetryTimer = window.setTimeout(() => {
+        if (state.scriptUpdateRequired || state.rankingsRetryCount >= MAX_AUTO_RETRIES) {
+            state.rankingsRetryPending = false;
+            state.rankingsRetryAt = 0;
+            return false;
+        }
+        if (!state.rankingsRetryPending) {
+            state.rankingsRetryPending = true;
+            state.rankingsRetryAt = Date.now() + RANKINGS_RETRY_MS;
+        }
+        if (state.rankingsRetryTimer || state.view !== 'rankings') return true;
+        const tick = () => {
             state.rankingsRetryTimer = null;
             if (!state.rankingsRetryPending || state.view !== 'rankings') return;
-            if (state.busy) {
-                scheduleRankingsRetry();
+            const waitMs = Math.max(0, state.rankingsRetryAt - Date.now());
+            if (waitMs > 0 || state.busy) {
+                state.rankingsRetryTimer = window.setTimeout(tick, waitMs > 0 ? waitMs : 1000);
                 return;
             }
-            loadRankingsView({ autoRefresh: true });
-        }, RANKINGS_RETRY_MS);
+            state.rankingsRetryPending = false;
+            state.rankingsRetryAt = 0;
+            state.rankingsRetryCount += 1;
+            loadRankingsView({ autoRefresh: true, retry: true });
+        };
+        state.rankingsRetryTimer = window.setTimeout(tick, Math.max(0, state.rankingsRetryAt - Date.now()));
+        return true;
     }
 
     function runRankingsRetryNow() {
         if (!state.rankingsRetryPending || state.busy || state.view !== 'rankings') return false;
-        clearRankingsRetry();
-        loadRankingsView({ autoRefresh: true });
+        if (Date.now() < state.rankingsRetryAt) return false;
+        if (state.rankingsRetryTimer) {
+            window.clearTimeout(state.rankingsRetryTimer);
+            state.rankingsRetryTimer = null;
+        }
+        state.rankingsRetryPending = false;
+        state.rankingsRetryAt = 0;
+        state.rankingsRetryCount += 1;
+        loadRankingsView({ autoRefresh: true, retry: true });
         return true;
     }
 
@@ -1206,7 +1304,7 @@
         if (capturedBucket == null) return true;
         const capturedAt = Number(row.__capturedAt ?? row.capturedAt ?? row.captured_at);
         return Number.isFinite(capturedAt)
-            && Math.floor(capturedAt / HOURLY_REFRESH_MS) === Number(capturedBucket);
+            && Math.floor(capturedAt / CAPTURE_BUCKET_MS) === Number(capturedBucket);
     }
 
     function emptyLocalEstimate(spendUsd, estimateStatus) {
@@ -1677,7 +1775,7 @@
         const currentCapturedAt = normalizeCapturedAt(source.capturedAt, null)
             || normalizeCapturedAt(source.lastUpdatedAt, null)
             || Date.now();
-        const currentCapturedBucket = Math.floor(currentCapturedAt / HOURLY_REFRESH_MS);
+        const currentCapturedBucket = Math.floor(currentCapturedAt / CAPTURE_BUCKET_MS);
         if (state.board === 'users') {
             const sort = state.sort || 'legend';
             const rows = summarizeLocalUsersFromSnapshots(normalizedSnapshots, state.period, sort, currentCapturedAt)
@@ -1771,16 +1869,37 @@
                 if (event.origin !== window.location.origin) return;
                 const data = event.data;
                 if (!data || data.type !== BRIDGE_RESPONSE || data.requestId !== requestId) return;
+                markUserscriptVersion(data.scriptVersion);
                 if (data.ok && (Array.isArray(data.snapshots) || data.snapshot)) {
+                    if (state.scriptUpdateRequired) {
+                        finish(reject, userscriptUpdateError(data.scriptVersion));
+                        return;
+                    }
                     finish(resolve, {
                         snapshots: normalizeSnapshotsForUpload(data),
                         errors: Array.isArray(data.errors) ? data.errors : [],
-                        partial: Boolean(data.partial)
+                        partial: Boolean(data.partial),
+                        blocked: Boolean(data.blocked),
+                        retryable: Boolean(data.retryable),
+                        scriptVersion: String(data.scriptVersion || '')
                     });
+                } else {
+                    const error = new Error(data.error || '同步脚本请求失败');
+                    error.scriptVersion = String(data.scriptVersion || '');
+                    error.scriptUpdateRequired = state.scriptUpdateRequired;
+                    error.retryable = data.retryable !== false && !error.scriptUpdateRequired;
+                    error.blocked = Boolean(data.blocked);
+                    error.cooldown = Boolean(data.cooldown);
+                    error.retryAt = Number(data.retryAt) || 0;
+                    finish(reject, error);
                 }
-                else finish(reject, new Error(data.error || '同步脚本请求失败'));
             };
-            const timeoutId = window.setTimeout(() => finish(reject, new Error('未检测到同步脚本或请求超时')), BRIDGE_TIMEOUT_MS);
+            const timeoutId = window.setTimeout(() => {
+                const error = new Error('未检测到同步脚本或请求超时');
+                error.code = 'userscript_missing';
+                error.retryable = false;
+                finish(reject, error);
+            }, BRIDGE_TIMEOUT_MS);
             window.addEventListener('message', onMessage);
             window.postMessage({ type: BRIDGE_REQUEST, requestId }, window.location.origin);
         }).finally(() => {
@@ -1811,13 +1930,13 @@
         });
     }
 
-    async function ensureFreshSnapshot(force = false) {
-        if (!force && state.localSnapshots.length && !state.settings.autoUpload) {
+    async function ensureFreshSnapshot(force = false, retry = false) {
+        if (!force && !retry && state.localSnapshots.length && !state.settings.autoUpload) {
             setStatus('已显示本地抓取数据，尚未上传云端');
             return { localOnly: true, snapshots: state.localSnapshots };
         }
         const latest = await loadLatestSnapshot();
-        if (!force && latest.snapshot && !latest.stale) {
+        if (!force && !retry && latest.snapshot && !latest.stale) {
             clearRankingsRetry();
             setStatus(`数据新鲜 · ${formatDate(latest.snapshot.capturedAt)}`);
             return latest;
@@ -1825,7 +1944,7 @@
 
         setStatus(force
             ? '正在检查云端榜单…'
-            : (latest.snapshot ? '榜单超过 1 小时，正在检查更新…' : '暂无快照，正在请求榜单…'), false, true);
+            : (latest.snapshot ? '榜单超过 3 小时，正在检查更新…' : '暂无快照，正在请求榜单…'), false, true);
         try {
             setStatus(state.bridgeReady ? '正在请求最新榜单…' : '正在等待用户脚本连接…', false, true);
             const bundle = await requestBridgeSnapshot();
@@ -1834,11 +1953,14 @@
             state.localSnapshots = normalizeSnapshotsForUpload(bundle);
             if (!state.localSnapshots.length) throw new Error('同步脚本返回的榜单为空');
             const partial = Boolean(bundle.partial);
-            if (partial) scheduleRankingsRetry();
+            const retryablePartial = partial && bundle.retryable !== false && !bundle.blocked;
+            if (retryablePartial) scheduleRankingsRetry();
             else clearRankingsRetry();
             if (!state.settings.autoUpload) {
                 setStatus(partial
-                    ? '已抓取本地榜单，部分来源失败；5分钟后自动重试。'
+                    ? (retryablePartial
+                        ? `已抓取本地榜单，部分来源失败${retryStatusSuffix()}`
+                        : '已抓取本地榜单，部分来源被限制，已暂停自动请求。')
                     : '已抓取本地榜单，未上传云端');
                 renderUploadControls();
                 return { localOnly: true, snapshots: state.localSnapshots };
@@ -1848,13 +1970,24 @@
             state.localSnapshots = [];
             const refreshed = await loadLatestSnapshot();
             setStatus(partial
-                ? `已同步，但部分来源失败；5分钟后自动重试。 · ${formatDate(refreshed.snapshot && refreshed.snapshot.capturedAt)}`
+                ? (retryablePartial
+                    ? `已同步，但部分来源失败${retryStatusSuffix()} · ${formatDate(refreshed.snapshot && refreshed.snapshot.capturedAt)}`
+                    : `已同步，但部分来源被限制，已暂停自动请求。 · ${formatDate(refreshed.snapshot && refreshed.snapshot.capturedAt)}`)
                 : `已同步 · ${formatDate(refreshed.snapshot && refreshed.snapshot.capturedAt)}`);
             renderUploadControls();
             return refreshed;
         } catch (error) {
-            scheduleRankingsRetry();
-            setStatus(`${String(error && error.message || error)}；5分钟后自动重试。`, true);
+            const scheduled = errorCanAutoRetry(error) && scheduleRankingsRetry();
+            const suffix = error && error.scriptUpdateRequired
+                ? '；请先打开上方更新页安装新版本。'
+                : error && error.code === 'userscript_missing'
+                    ? '；请先安装同步脚本后再刷新。'
+                    : error && error.cooldown
+                    ? '；请求处于冷却期，请稍后再试。'
+                    : scheduled || errorCanAutoRetry(error)
+                        ? retryStatusSuffix()
+                        : '；本轮不再自动重试。';
+            setStatus(`${String(error && error.message || error)}${suffix}`, true);
             renderUploadControls();
             return latest;
         }
@@ -1871,6 +2004,7 @@
     async function loadRankingsView(options = {}) {
         const refresh = options === true || Boolean(options && options.refresh);
         const autoRefresh = Boolean(options && options.autoRefresh);
+        const retry = Boolean(options && options.retry);
         if (state.busy) return;
         setBusy(true);
         setStatus(refresh
@@ -1881,7 +2015,7 @@
         try {
             let source;
             if (refresh || autoRefresh) {
-                source = await ensureFreshSnapshot(refresh);
+                source = await ensureFreshSnapshot(refresh, retry);
             } else if (state.localSnapshots.length && !state.settings.autoUpload) {
                 setStatus('已显示本地抓取数据，尚未上传云端');
                 source = { localOnly: true, snapshots: state.localSnapshots };
@@ -1911,10 +2045,18 @@
             if (state.trend.selectedIds.length) await refreshTrendHistories();
             state.loaded = true;
         } catch (error) {
-            scheduleRankingsRetry();
-            setStatus(`读取失败：${String(error && error.message || error)}；5分钟后自动重试。`, true);
-            state.partialRows = [];
-            renderLeaderboard({ rows: [] });
+            const scheduled = errorCanAutoRetry(error) && scheduleRankingsRetry();
+            const suffix = error && error.scriptUpdateRequired
+                ? '；请先打开上方更新页安装新版本。'
+                : error && error.code === 'userscript_missing'
+                    ? '；请先安装同步脚本后再刷新。'
+                    : error && error.cooldown
+                    ? '；请求处于冷却期，请稍后再试。'
+                    : scheduled || errorCanAutoRetry(error)
+                        ? retryStatusSuffix()
+                        : '；本轮不再自动重试。';
+            setStatus(`读取失败：${String(error && error.message || error)}${suffix}`, true);
+            renderLeaderboard({ snapshot: state.latest && state.latest.snapshot });
         } finally {
             setBusy(false);
         }
@@ -1922,6 +2064,11 @@
 
     async function uploadPendingSnapshot() {
         if (!state.localSnapshots.length || state.busy) return;
+        if (state.scriptUpdateRequired) {
+            renderUserscriptUpdateNotice();
+            setStatus(`同步脚本需要更新到 v${REQUIRED_USERSCRIPT_VERSION}；请先打开上方更新页安装新版本。`, true);
+            return;
+        }
         setBusy(true);
         setStatus('正在上传本次榜单快照…');
         try {
@@ -2208,7 +2355,7 @@
         state.hourlyRefreshTimer = window.setTimeout(() => {
             state.hourlyRefreshTimer = null;
             runHourlyRefresh();
-        }, HOURLY_REFRESH_MS);
+        }, AUTO_REFRESH_INTERVAL_MS);
     }
 
     async function runHourlyRefresh() {
@@ -2297,8 +2444,8 @@
             state.settings.hourlyRefresh = Boolean(event.target.checked);
             saveSettings(state.settings);
             setStatus(state.settings.hourlyRefresh
-                ? '已开启每小时刷新；正在首次抓取…'
-                : '已关闭每小时刷新；请手动点击立即刷新。');
+                ? '已开启每 3 小时刷新；正在首次抓取…'
+                : '已关闭自动刷新；请手动点击立即刷新。');
             configureHourlyRefresh({ runNow: state.settings.hourlyRefresh });
             renderUploadControls();
         });

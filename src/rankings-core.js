@@ -4,7 +4,8 @@ export const BOARD_KEYS = Object.freeze([
   'spend_total', 'spend_month', 'spend_week', 'spend_today'
 ]);
 
-export const REFRESH_INTERVAL_MS = 60 * 60 * 1000;
+export const REFRESH_INTERVAL_MS = 3 * 60 * 60 * 1000;
+export const CAPTURE_BUCKET_MS = 60 * 60 * 1000;
 export const FUTURE_TOLERANCE_MS = 10 * 60 * 1000;
 export const MAX_ROWS_PER_BOARD = 1000;
 export const SPEND_VALUE_PER_USD = 500000;
@@ -82,7 +83,7 @@ export function normalizeLeaderboardSnapshot(payload, now = Date.now()) {
     seasonName,
     scope,
     capturedAt,
-    capturedBucket: Math.floor(capturedAt / REFRESH_INTERVAL_MS),
+    capturedBucket: Math.floor(capturedAt / CAPTURE_BUCKET_MS),
     boardKeys,
     entries,
     raw: source

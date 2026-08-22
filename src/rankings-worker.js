@@ -1,5 +1,6 @@
 import {
   BOARD_KEYS,
+  CAPTURE_BUCKET_MS,
   REFRESH_INTERVAL_MS,
   computeSnapshotSignature,
   diffBoardRows,
@@ -707,7 +708,7 @@ function metricInCapturedBucket(row, capturedBucket) {
   if (capturedBucket == null) return true;
   const capturedAt = Number(row.value_captured_at ?? row.captured_at);
   return Number.isFinite(capturedAt)
-    && Math.floor(capturedAt / REFRESH_INTERVAL_MS) === Number(capturedBucket);
+    && Math.floor(capturedAt / CAPTURE_BUCKET_MS) === Number(capturedBucket);
 }
 
 function currentEstimateStatus({ hasEpic, hasSpend, currentEpic, currentSpend, currentCapturedBucket }) {
@@ -798,7 +799,7 @@ function dedupeHistoryRows(rows = []) {
     const capturedAt = Number(row.captured_at);
     const bucket = Number.isFinite(Number(row.captured_bucket))
       ? Number(row.captured_bucket)
-      : Math.floor(capturedAt / REFRESH_INTERVAL_MS);
+      : Math.floor(capturedAt / CAPTURE_BUCKET_MS);
     const key = `${String(row.board_key || '')}\u0000${bucket}`;
     const existing = grouped.get(key);
     if (!existing) {

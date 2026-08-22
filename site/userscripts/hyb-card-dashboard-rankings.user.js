@@ -1,8 +1,10 @@
 // ==UserScript==
 // @name         HYB Card Dashboard 榜单同步
 // @namespace    https://card.gudong226.com/
-// @version      1.2.0
+// @version      1.3.1
 // @description  在 Card Dashboard 页面按需读取 CDK 卡牌榜单并回传给榜单统计视图。
+// @updateURL    https://card.gudong226.com/userscripts/hyb-card-dashboard-rankings.user.js
+// @downloadURL  https://card.gudong226.com/userscripts/hyb-card-dashboard-rankings.user.js
 // @match        https://card.gudong226.com/*
 // @match        https://cdk.hybgzs.com/*
 // @run-at       document-idle
@@ -16,6 +18,7 @@
 (function () {
   'use strict';
 
+  const SCRIPT_VERSION = '1.3.1';
   const CARD_ORIGIN = 'https://card.gudong226.com';
   const CDK_ORIGIN = 'https://cdk.hybgzs.com';
   const SOURCE_APIS = Object.freeze({
@@ -34,6 +37,11 @@
   const REQUEST_TIMEOUT_MS = 20000;
   const RELAY_TIMEOUT_MS = 15000;
   const RELAY_READY_TTL_MS = 30000;
+  const SOURCE_STATE_KEY = 'hyb-card-rankings-source-state-v1';
+  const REQUEST_COOLDOWN_MS = 3 * 60 * 60 * 1000;
+  const RETRY_COOLDOWN_MS = 60 * 60 * 1000;
+  const PROTECTED_COOLDOWN_MS = 3 * 60 * 60 * 1000;
+  const REQUEST_LOCK_MS = 90 * 1000;
   const RELAY_OWNER_ID = randomId('cdk-tab');
 
   let inFlight = null;
@@ -43,8 +51,78 @@
     return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
 
+  function makeError(message, details = {}) {
+    const error = new Error(message);
+    Object.assign(error, details);
+    return error;
+  }
+
+  function readHeaderValue(headers, name) {
+    if (!headers) return '';
+    if (typeof headers.get === 'function') return String(headers.get(name) || '');
+    if (typeof headers === 'object' && !Array.isArray(headers)) {
+      const key = Object.keys(headers).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
+      return key ? String(headers[key] || '') : '';
+    }
+    const line = String(headers).split(/\r?\n/).find((item) => item.toLowerCase().startsWith(`${name.toLowerCase()}:`));
+    return line ? line.slice(line.indexOf(':') + 1).trim() : '';
+  }
+
+  function parseRetryAfterMs(value) {
+    if (value == null || value === '') return 0;
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, 24 * 60 * 60 * 1000);
+    const timestamp = Date.parse(String(value));
+    return Number.isFinite(timestamp) ? Math.max(0, Math.min(timestamp - Date.now(), 24 * 60 * 60 * 1000)) : 0;
+  }
+
+  function looksLikeProtectionPage(value, contentType = '') {
+    const text = String(value || '').trim();
+    if (/text\/html/i.test(String(contentType || ''))) return true;
+    return /^<!doctype\s+html|^<html[\s>]/i.test(text)
+      || /(cf-chl-|challenge-platform|captcha|verify you are human|access denied)/i.test(text.slice(0, 4000));
+  }
+
+  function httpError(status, headers = '', body = '') {
+    const numericStatus = Number(status) || 0;
+    const retryAfterMs = parseRetryAfterMs(readHeaderValue(headers, 'retry-after'));
+    const protectedResponse = numericStatus === 403 || numericStatus === 429 || looksLikeProtectionPage(body, readHeaderValue(headers, 'content-type'));
+    return makeError(`HTTP ${numericStatus}`, {
+      status: numericStatus,
+      kind: protectedResponse ? 'protected' : 'http',
+      blocked: protectedResponse,
+      retryable: !protectedResponse && numericStatus >= 500,
+      retryAfterMs
+    });
+  }
+
+  function parseJsonPayload(payload, responseText, contentType, scope) {
+    if (looksLikeProtectionPage(responseText || payload, contentType)) {
+      throw makeError('CDK 返回了网页验证页或盾页', {
+        kind: 'protected',
+        blocked: true,
+        retryable: false
+      });
+    }
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      return normalizeSnapshot(payload, scope);
+    }
+    const text = String(responseText || payload || '').trim();
+    try {
+      return normalizeSnapshot(JSON.parse(text), scope);
+    } catch (_) {
+      throw makeError('CDK 返回的数据不是有效 JSON', {
+        kind: 'protected',
+        blocked: true,
+        retryable: false
+      });
+    }
+  }
+
   function friendlyError(error) {
     const status = Number(error && error.status);
+    if (error && error.name === 'SourceCooldown') return 'CDK 请求处于冷却期，请稍后再试';
+    if (error && (error.blocked || error.kind === 'protected')) return 'CDK 返回限制页或盾页，已暂停自动请求';
     if (status === 401 || status === 403) return '请先登录 cdk.hybgzs.com 后再获取榜单';
     if (status === 429) return 'CDK 服务器限制刷新频率，请稍后再试';
     if (error && error.name === 'RelayTimeout') return '未检测到已打开的 CDK 榜单页面';
@@ -88,8 +166,151 @@
     return {
       snapshots: snapshots.filter(Boolean).map((snapshot) => normalizeSnapshot(snapshot, snapshot && snapshot.scope)),
       errors: Array.isArray(bundle && bundle.errors) ? bundle.errors : [],
-      partial: Boolean(bundle && bundle.partial)
+      partial: Boolean(bundle && bundle.partial),
+      blocked: Boolean(bundle && bundle.blocked),
+      retryable: Boolean(bundle && bundle.retryable),
+      scriptVersion: String(bundle && bundle.scriptVersion || '')
     };
+  }
+
+  function sharedStorageAvailable() {
+    return typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
+  }
+
+  function readSourceState() {
+    if (!sharedStorageAvailable()) return {};
+    try {
+      return GM_getValue(SOURCE_STATE_KEY, {}) || {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function writeSourceState(state) {
+    if (!sharedStorageAvailable()) return;
+    try {
+      GM_setValue(SOURCE_STATE_KEY, state);
+    } catch (_) {
+      // Storage restrictions must not break the fallback request path.
+    }
+  }
+
+  function sourceCooldownError(state, now = Date.now()) {
+    const retryAt = Math.max(Number(state.nextAllowedAt) || 0, Number(state.lockUntil) || 0);
+    return makeError('CDK 请求处于冷却期', {
+      name: 'SourceCooldown',
+      retryable: false,
+      cooldown: true,
+      blocked: Boolean(state.blockedUntil && Number(state.blockedUntil) > now),
+      retryAt
+    });
+  }
+
+  function claimSourceRequest() {
+    if (!sharedStorageAvailable()) return;
+    const now = Date.now();
+    const state = readSourceState();
+    if (Number(state.lockUntil) > now && state.ownerId !== RELAY_OWNER_ID) throw sourceCooldownError(state, now);
+    if (Number(state.nextAllowedAt) > now) throw sourceCooldownError(state, now);
+    const candidate = {
+      ...state,
+      ownerId: RELAY_OWNER_ID,
+      lockUntil: now + REQUEST_LOCK_MS,
+      lastAttemptAt: now
+    };
+    writeSourceState(candidate);
+    const confirmed = readSourceState();
+    if (confirmed.ownerId !== RELAY_OWNER_ID) throw sourceCooldownError(confirmed, now);
+  }
+
+  function releaseSourceRequest(patch) {
+    if (!sharedStorageAvailable()) return;
+    const state = readSourceState();
+    if (state.ownerId && state.ownerId !== RELAY_OWNER_ID) return;
+    writeSourceState({
+      ...state,
+      ...patch,
+      ownerId: null,
+      lockUntil: 0,
+      updatedAt: Date.now()
+    });
+  }
+
+  function recordSourceSuccess() {
+    const now = Date.now();
+    releaseSourceRequest({
+      lastSuccessAt: now,
+      nextAllowedAt: now + REQUEST_COOLDOWN_MS,
+      retryCount: 0,
+      blockedUntil: 0,
+      mode: 'success'
+    });
+  }
+
+  function recordSourceFailure(error) {
+    if (!sharedStorageAvailable() || (error && (error.name === 'SourceCooldown' || error.name === 'ScriptUpdateRequired'))) return;
+    const now = Date.now();
+    const state = readSourceState();
+    const protectedFailure = Boolean(error && (error.blocked || error.kind === 'protected' || Number(error.status) === 403 || Number(error.status) === 429));
+    const retryable = !protectedFailure && (!error || error.retryable !== false);
+    const retryAfterMs = Math.max(0, Number(error && error.retryAfterMs) || 0);
+    if (protectedFailure) {
+      const nextAllowedAt = now + Math.max(PROTECTED_COOLDOWN_MS, retryAfterMs);
+      releaseSourceRequest({ nextAllowedAt, retryCount: 0, blockedUntil: nextAllowedAt, mode: 'protected' });
+      return;
+    }
+    if (retryable && Number(state.retryCount) < 1) {
+      releaseSourceRequest({
+        nextAllowedAt: now + RETRY_COOLDOWN_MS,
+        retryCount: 1,
+        blockedUntil: 0,
+        mode: 'retry-wait'
+      });
+      return;
+    }
+    releaseSourceRequest({
+      nextAllowedAt: now + REQUEST_COOLDOWN_MS,
+      retryCount: 0,
+      blockedUntil: 0,
+      mode: retryable ? 'retry-exhausted' : 'paused'
+    });
+  }
+
+  function sourceErrorRecord(scope, error) {
+    return {
+      scope,
+      status: Number(error && error.status) || 0,
+      error: friendlyError(error),
+      kind: String(error && error.kind || ''),
+      blocked: Boolean(error && error.blocked),
+      retryable: !error || error.retryable !== false,
+      retryAt: Number(error && error.retryAt) || 0
+    };
+  }
+
+  function bundleFromResults(snapshots, errors) {
+    const blocked = errors.some((error) => error.blocked);
+    const retryable = errors.some((error) => error.retryable && !error.blocked);
+    return { snapshots, errors, partial: errors.length > 0, blocked, retryable };
+  }
+
+  function recordSourceOutcome(bundle) {
+    const errors = Array.isArray(bundle && bundle.errors) ? bundle.errors : [];
+    if (!errors.length) {
+      recordSourceSuccess();
+      return;
+    }
+    const blockedError = errors.find((error) => error.blocked || Number(error.status) === 403 || Number(error.status) === 429);
+    if (blockedError) {
+      recordSourceFailure(Object.assign(new Error(blockedError.error || 'CDK 请求被限制'), blockedError, { blocked: true, kind: 'protected' }));
+      return;
+    }
+    const retryableError = errors.find((error) => error.retryable);
+    if (retryableError) {
+      recordSourceFailure(Object.assign(new Error(retryableError.error || 'CDK 请求失败'), retryableError));
+      return;
+    }
+    recordSourceFailure(Object.assign(new Error(errors[0].error || 'CDK 请求失败'), errors[0], { retryable: false }));
   }
 
   function requestWithGm(url, scope) {
@@ -111,23 +332,20 @@
         timeout: REQUEST_TIMEOUT_MS,
         onload(response) {
           if (response.status < 200 || response.status >= 300) {
-            const error = new Error(`HTTP ${response.status}`);
-            error.status = response.status;
-            finish(reject, error);
+            finish(reject, httpError(response.status, response.responseHeaders, response.responseText));
             return;
           }
           try {
-            finish(resolve, normalizeSnapshot(response.response || JSON.parse(response.responseText || '{}'), scope));
+            finish(resolve, parseJsonPayload(response.response, response.responseText, response.responseHeaders, scope));
           } catch (error) {
             finish(reject, error);
           }
         },
         onerror() {
-          finish(reject, new Error('网络请求失败'));
+          finish(reject, makeError('网络请求失败', { retryable: true, kind: 'network' }));
         },
         ontimeout() {
-          const error = new Error('请求超时');
-          error.name = 'AbortError';
+          const error = makeError('请求超时', { name: 'AbortError', retryable: true, kind: 'network' });
           finish(reject, error);
         }
       });
@@ -141,12 +359,11 @@
       cache: 'no-store',
       headers: { accept: 'application/json' }
     });
+    const body = await response.text();
     if (!response.ok) {
-      const error = new Error(`HTTP ${response.status}`);
-      error.status = response.status;
-      throw error;
+      throw httpError(response.status, response.headers, body);
     }
-    return normalizeSnapshot(await response.json(), scope);
+    return parseJsonPayload(body, body, response.headers, scope);
   }
 
   async function requestAllSources(requester) {
@@ -158,20 +375,15 @@
         snapshots.push(normalizeSnapshot(result.value, SOURCE_ENTRIES[index].scope));
       } else {
         const error = result.reason || new Error('榜单请求失败');
-        errors.push({
-          scope: SOURCE_ENTRIES[index].scope,
-          status: Number(error && error.status) || 0,
-          error: friendlyError(error)
-        });
+        errors.push(sourceErrorRecord(SOURCE_ENTRIES[index].scope, error));
       }
     });
     if (!snapshots.length) {
       const firstError = errors[0] || {};
-      const error = new Error(firstError.error || '两个榜单来源都请求失败');
-      error.status = firstError.status;
+      const error = makeError(firstError.error || '两个榜单来源都请求失败', firstError);
       throw error;
     }
-    return { snapshots, errors, partial: errors.length > 0 };
+    return bundleFromResults(snapshots, errors);
   }
 
   function setupRelayResponseListener() {
@@ -185,7 +397,14 @@
       if (value.ok && (Array.isArray(value.snapshots) || value.snapshot)) {
         pending.resolve(normalizeSnapshotBundle(value));
       }
-      else pending.reject(Object.assign(new Error(value.error || 'CDK 榜单请求失败'), { status: value.status }));
+      else pending.reject(Object.assign(new Error(value.error || 'CDK 榜单请求失败'), {
+        status: value.status,
+        scriptVersion: String(value.scriptVersion || ''),
+        blocked: Boolean(value.blocked),
+        cooldown: Boolean(value.cooldown),
+        retryable: value.retryable !== false,
+        retryAt: Number(value.retryAt) || 0
+      }));
     });
   }
 
@@ -217,13 +436,22 @@
   async function loadSnapshot() {
     if (inFlight) return inFlight;
     inFlight = (async () => {
-      const relay = requestWithCdkRelay();
-      if (relay) return relay;
-      return requestAllSources((url, scope) => (
-        typeof GM_xmlhttpRequest === 'function'
-          ? requestWithGm(url, scope)
-          : requestWithFetch(url, scope)
-      ));
+      claimSourceRequest();
+      try {
+        const relay = requestWithCdkRelay();
+        const bundle = relay
+          ? await relay
+          : await requestAllSources((url, scope) => (
+              typeof GM_xmlhttpRequest === 'function'
+                ? requestWithGm(url, scope)
+                : requestWithFetch(url, scope)
+            ));
+        recordSourceOutcome(bundle);
+        return bundle;
+      } catch (error) {
+        recordSourceFailure(error);
+        throw error;
+      }
     })().finally(() => {
       inFlight = null;
     });
@@ -242,20 +470,29 @@
           type: BRIDGE_RESPONSE,
           requestId: data.requestId,
           ok: true,
+          scriptVersion: SCRIPT_VERSION,
           snapshots: bundle.snapshots,
           errors: bundle.errors,
-          partial: bundle.partial
+          partial: bundle.partial,
+          blocked: bundle.blocked,
+          retryable: bundle.retryable
         }, CARD_ORIGIN);
       } catch (error) {
         window.postMessage({
           type: BRIDGE_RESPONSE,
           requestId: data.requestId,
           ok: false,
+          scriptVersion: SCRIPT_VERSION,
+          status: Number(error && error.status) || 0,
+          blocked: Boolean(error && error.blocked),
+          cooldown: Boolean(error && error.cooldown),
+          retryable: !error || error.retryable !== false,
+          retryAt: Number(error && error.retryAt) || 0,
           error: friendlyError(error)
         }, CARD_ORIGIN);
       }
     });
-    window.postMessage({ type: BRIDGE_READY }, CARD_ORIGIN);
+    window.postMessage({ type: BRIDGE_READY, scriptVersion: SCRIPT_VERSION }, CARD_ORIGIN);
   }
 
   function startCdkRelay() {
@@ -276,32 +513,36 @@
         const errors = [];
         results.forEach((result, index) => {
           if (result.status === 'fulfilled' && result.value) snapshots.push(normalizeSnapshot(result.value, sources[index].scope));
-          else errors.push({
-            scope: sources[index].scope,
-            status: Number(result.reason && result.reason.status) || 0,
-            error: friendlyError(result.reason)
-          });
+          else errors.push(sourceErrorRecord(sources[index].scope, result.reason));
         });
-        if (!snapshots.length) throw Object.assign(new Error(errors[0]?.error || '两个榜单来源都请求失败'), { status: errors[0]?.status });
+        if (!snapshots.length) throw Object.assign(new Error(errors[0]?.error || '两个榜单来源都请求失败'), errors[0]);
         GM_setValue(RELAY_RESPONSE_KEY, {
           requestId: value.requestId,
           ok: true,
+          scriptVersion: SCRIPT_VERSION,
           snapshots,
           errors,
           partial: errors.length > 0,
+          blocked: errors.some((error) => error.blocked),
+          retryable: errors.some((error) => error.retryable && !error.blocked),
           respondedAt: Date.now()
         });
       } catch (error) {
         GM_setValue(RELAY_RESPONSE_KEY, {
           requestId: value.requestId,
           ok: false,
+          scriptVersion: SCRIPT_VERSION,
           status: Number(error && error.status) || 0,
           error: friendlyError(error),
+          blocked: Boolean(error && error.blocked),
+          cooldown: Boolean(error && error.cooldown),
+          retryable: !error || error.retryable !== false,
+          retryAt: Number(error && error.retryAt) || 0,
           respondedAt: Date.now()
         });
       }
     });
-    GM_setValue(RELAY_READY_KEY, { readyAt: Date.now(), origin: CDK_ORIGIN });
+    GM_setValue(RELAY_READY_KEY, { readyAt: Date.now(), origin: CDK_ORIGIN, scriptVersion: SCRIPT_VERSION });
   }
 
   if (location.origin === CARD_ORIGIN) startCardBridge();

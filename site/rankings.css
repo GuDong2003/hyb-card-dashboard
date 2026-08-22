@@ -271,6 +271,28 @@
     color: var(--red);
 }
 
+.rankings-script-update-notice {
+    display: flex;
+    min-width: min(100%, 360px);
+    flex: 1 1 100%;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 7px 10px;
+    border: 1px solid color-mix(in srgb, var(--amber) 55%, var(--line));
+    border-radius: 9px;
+    background: var(--gold-soft);
+    color: var(--text);
+    font-size: .72rem;
+    line-height: 1.35;
+}
+
+.rankings-script-update-notice .btn {
+    flex: 0 0 auto;
+    min-height: 30px;
+    padding: 0 9px;
+}
+
 .rankings-tab-group {
     display: flex;
     flex-wrap: wrap;
@@ -1571,9 +1593,15 @@ body.modal-open {
     }
 
     .rankings-source-status,
-    .rankings-upload-status {
+    .rankings-upload-status,
+    .rankings-script-update-notice {
         max-width: none;
         text-align: left;
+    }
+
+    .rankings-script-update-notice {
+        align-items: flex-start;
+        flex-direction: column;
     }
 
     .rankings-summary {
