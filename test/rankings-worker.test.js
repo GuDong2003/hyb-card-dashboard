@@ -36,6 +36,7 @@ class FakeD1 {
     this.entries = [];
     this.metrics = [];
     this.nextSnapshotId = 1;
+    this.queries = [];
   }
 
   prepare(sql) {
@@ -67,6 +68,40 @@ class FakeD1 {
 
   async all(sql, params) {
     const normalized = sql.replace(/\s+/g, ' ').trim().toLowerCase();
+    this.queries.push({ sql: normalized, params: [...params] });
+    if (normalized.includes('with daily_rows') && normalized.includes('row_number() over')) {
+      const [seasonId, ...rest] = params;
+      const keys = rest.slice(0, 3);
+      const rangeStartAt = rest.length > 3 ? Number(rest[3]) : null;
+      const rangeEndAt = rest.length > 4 ? Number(rest[4]) : null;
+      const snapshotsById = new Map(this.snapshots.map((row) => [row.id, row]));
+      const selected = new Map();
+      for (const entry of this.entries) {
+        const snapshot = snapshotsById.get(entry.snapshot_id);
+        if (!snapshot || snapshot.season_id !== seasonId || !keys.includes(entry.board_key)) continue;
+        if (rangeStartAt != null && (snapshot.captured_at < rangeStartAt || snapshot.captured_at > rangeEndAt)) continue;
+        const dayStartAt = Math.floor((snapshot.captured_at - RESET_HOUR_MS) / DAY_MS);
+        const key = `${entry.user_id}\u0000${entry.board_key}\u0000${dayStartAt}`;
+        const candidate = {
+          ...entry,
+          scope: snapshot.scope,
+          captured_at: snapshot.captured_at,
+          captured_bucket: snapshot.captured_bucket,
+          snapshot_id: snapshot.id
+        };
+        const existing = selected.get(key);
+        if (!existing
+          || candidate.captured_at > existing.captured_at
+          || (candidate.captured_at === existing.captured_at && candidate.value > existing.value)
+          || (candidate.captured_at === existing.captured_at && candidate.value === existing.value && candidate.snapshot_id > existing.snapshot_id)
+          || (candidate.captured_at === existing.captured_at && candidate.value === existing.value && candidate.snapshot_id === existing.snapshot_id && candidate.rank < existing.rank)) {
+          selected.set(key, candidate);
+        }
+      }
+      return {
+        results: Array.from(selected.values()).sort((left, right) => left.captured_at - right.captured_at || left.rank - right.rank || left.snapshot_id - right.snapshot_id)
+      };
+    }
     if (normalized.includes('from rank_entries e') && normalized.includes('join rank_snapshots s') && normalized.includes('board_key in')) {
       const [seasonId, ...keys] = params;
       const snapshotsById = new Map(this.snapshots.map((row) => [row.id, row]));
@@ -188,7 +223,10 @@ function request(path, init) {
 test('returns 503 when the D1 binding is missing', async () => {
   const response = await handleRankingsRequest(request('/api/rankings/latest'), {});
   assert.equal(response.status, 503);
-  assert.equal((await response.json()).error, 'database_unavailable');
+  const payload = await response.json();
+  assert.equal(payload.error, 'database_unavailable');
+  assert.match(payload.message, /暂时不可用/);
+  assert.equal(payload.retryable, true);
 });
 
 test('returns 404 for an unknown rankings endpoint', async () => {
@@ -489,6 +527,65 @@ test('returns one dynamic user row with spend, pulls, exchanges and blank missin
   assert.equal(todayPayload.rows[0].estimatedPulls, null);
   assert.equal(todayPayload.rows[0].exchangeCount, null);
   assert.equal(todayPayload.rows[0].estimatedLegendProbability, null);
+});
+
+test('uses the aggregate table for total users and compresses raw history by day', async () => {
+  const environment = env();
+  const capturedAt = Date.now() - 1000;
+  const snapshot = {
+    season: { id: 'season-sql-path', name: 'SQL 路径测试赛季' },
+    scope: 'global', capturedAt,
+    leaderboards: {
+      epic_total: [{ userId: 'u-1', userName: '测试用户', value: 13, rank: 1, isVip: true }],
+      spend_total: [{ userId: 'u-1', userName: '测试用户', value: 12_000_000_000, rank: 1, isVip: true }]
+    }
+  };
+  const postResponse = await handleRankingsRequest(request('/api/rankings/snapshots', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(snapshot)
+  }), environment);
+  assert.equal(postResponse.status, 200, await postResponse.clone().text());
+
+  const response = await handleRankingsRequest(request('/api/rankings/leaderboard?board=users&period=total'), environment);
+  assert.equal(response.status, 200);
+  const totalQuery = environment.RANKINGS_DB.queries.find((query) => query.sql.includes('from rank_user_metrics') && query.sql.includes('board_key in'));
+  const dailyQuery = environment.RANKINGS_DB.queries.find((query) => query.sql.includes('with daily_rows'));
+  assert.ok(totalQuery, 'total users should read rank_user_metrics');
+  assert.ok(dailyQuery, 'total users should use a compressed daily history query');
+  assert.match(dailyQuery.sql, /row_number\(\) over/);
+  assert.match(dailyQuery.sql, /partition by e\.user_id, e\.board_key/);
+});
+
+test('limits today, week and month user history queries to their period windows', async () => {
+  const environment = env();
+  const currentCapturedAt = Date.now() - 1000;
+  const oldCapturedAt = currentCapturedAt - 31 * DAY_MS;
+  const post = (capturedAt, userId) => handleRankingsRequest(request('/api/rankings/snapshots', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      season: { id: 'season-period-window', name: '周期窗口测试赛季' },
+      scope: 'global', capturedAt,
+      leaderboards: Object.fromEntries(['today', 'week', 'month'].flatMap((period) => [
+        [`epic_${period}`, [{ userId, userName: userId, value: 12, rank: 1, isVip: false }]],
+        [`spend_${period}`, [{ userId, userName: userId, value: 8_000_000_000, rank: 1, isVip: false }]]
+      ]))
+    })
+  }), environment);
+  await post(oldCapturedAt, 'old-user');
+  await post(currentCapturedAt, 'current-user');
+
+  for (const period of ['today', 'week', 'month']) {
+    const before = environment.RANKINGS_DB.queries.length;
+    const response = await handleRankingsRequest(request(`/api/rankings/leaderboard?board=users&period=${period}`), environment);
+    assert.equal(response.status, 200);
+    const query = environment.RANKINGS_DB.queries.slice(before).find((item) => item.sql.includes('with daily_rows'));
+    assert.ok(query, `${period} should use the compressed daily query`);
+    assert.equal(query.params.length, 6, `${period} should bind a start and end timestamp`);
+    const expectedDays = period === 'today' ? 1 : period === 'week' ? 7 : 30;
+    assert.equal(query.params[5] - query.params[4], currentCapturedAt - (Math.floor((currentCapturedAt - RESET_HOUR_MS) / DAY_MS) * DAY_MS + RESET_HOUR_MS - (expectedDays - 1) * DAY_MS));
+    const payload = await response.json();
+    assert.deepEqual(payload.rows.map((row) => row.userId), ['current-user']);
+  }
 });
 
 test('calculates paid and free pulls from spend even when the epic board is missing', async () => {

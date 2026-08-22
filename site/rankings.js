@@ -143,7 +143,16 @@
             headers: { accept: 'application/json' }
         });
         const body = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(body.message || body.error || `HTTP ${response.status}`);
+        if (!response.ok) {
+            const fallback = response.status === 503
+                ? '榜单服务暂时繁忙，请稍后重试'
+                : `HTTP ${response.status}`;
+            const error = new Error(body.message || body.error || fallback);
+            error.status = response.status;
+            error.code = body.error || '';
+            error.retryable = body.retryable !== false && response.status >= 500;
+            throw error;
+        }
         return body;
     }
 
@@ -156,7 +165,16 @@
             body: JSON.stringify(payload)
         });
         const body = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(body.message || body.reason || body.error || `HTTP ${response.status}`);
+        if (!response.ok) {
+            const fallback = response.status === 503
+                ? '榜单服务暂时繁忙，请稍后重试'
+                : `HTTP ${response.status}`;
+            const error = new Error(body.message || body.reason || body.error || fallback);
+            error.status = response.status;
+            error.code = body.error || '';
+            error.retryable = body.retryable !== false && response.status >= 500;
+            throw error;
+        }
         return body;
     }
 
