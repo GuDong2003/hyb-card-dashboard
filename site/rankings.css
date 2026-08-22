@@ -9,6 +9,7 @@
 }
 
 .topbar-view-btn {
+    display: inline-flex;
     height: 34px;
     padding: 0 12px;
     border: 0;
@@ -16,8 +17,11 @@
     background: transparent;
     color: var(--icon-text);
     cursor: pointer;
+    align-items: center;
+    justify-content: center;
     font-size: inherit;
     font-weight: 750;
+    text-decoration: none;
     transition: background .18s, color .18s;
 }
 

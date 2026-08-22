@@ -49,6 +49,15 @@ test('places view navigation beside the title like Farm Dashboard', async () => 
   assert.match(html.slice(navIndex, actionsIndex), /id="rankingsNavButton"[\s\S]*data-view="calculator"/);
 });
 
+test('adds the simplified profit link beside the profit table button', async () => {
+  const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
+  const navStart = html.indexOf('<nav class="topbar-nav"');
+  const navEnd = html.indexOf('</nav>', navStart);
+  assert.ok(navStart >= 0 && navEnd > navStart);
+  const nav = html.slice(navStart, navEnd);
+  assert.match(nav, /<a class="topbar-view-btn" href="https:\/\/gd3210\.ccwu\.cc\/" target="_blank" rel="noopener noreferrer"[^>]*>收益-简化<\/a>/);
+});
+
 test('keeps the rankings entry visible and defaults to the rankings view', async () => {
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /rankingsEntryUnlocked/);
