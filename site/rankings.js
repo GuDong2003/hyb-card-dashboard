@@ -11,7 +11,7 @@
     const CAPTURE_BUCKET_MS = 60 * 60 * 1000;
     const RANKINGS_RETRY_MS = 60 * 60 * 1000;
     const MAX_AUTO_RETRIES = 1;
-    const REQUIRED_USERSCRIPT_VERSION = '1.3.1';
+    const REQUIRED_USERSCRIPT_VERSION = '1.3.2';
     const USERSCRIPT_URL = '/userscripts/hyb-card-dashboard-rankings.user.js';
     const TREND_CHART_FIXED_AXIS_WIDTH = 86;
     const TREND_CHART_AXIS_PADDING_RATIO = 0.03;
@@ -1864,8 +1864,9 @@
 
     window.setDashboardView = setDashboardView;
 
-    function requestBridgeSnapshot() {
+    function requestBridgeSnapshot(options = {}) {
         if (state.bridgeRequest) return state.bridgeRequest;
+        const manual = Boolean(options.manual);
         const requestId = `rankings-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         state.bridgeRequest = new Promise((resolve, reject) => {
             let settled = false;
@@ -1912,7 +1913,7 @@
                 finish(reject, error);
             }, BRIDGE_TIMEOUT_MS);
             window.addEventListener('message', onMessage);
-            window.postMessage({ type: BRIDGE_REQUEST, requestId }, window.location.origin);
+            window.postMessage({ type: BRIDGE_REQUEST, requestId, manual }, window.location.origin);
         }).finally(() => {
             state.bridgeRequest = null;
         });
@@ -1941,7 +1942,7 @@
         });
     }
 
-    async function ensureFreshSnapshot(force = false, retry = false) {
+    async function ensureFreshSnapshot(force = false, retry = false, manual = false) {
         if (!force && !retry && state.localSnapshots.length && !state.settings.autoUpload) {
             setStatus('已显示本地抓取数据，尚未上传云端');
             return { localOnly: true, snapshots: state.localSnapshots };
@@ -1958,20 +1959,25 @@
             : (latest.snapshot ? '榜单超过 3 小时，正在检查更新…' : '暂无快照，正在请求榜单…'), false, true);
         try {
             setStatus(state.bridgeReady ? '正在请求最新榜单…' : '正在等待用户脚本连接…', false, true);
-            const bundle = await requestBridgeSnapshot();
+            const bundle = await requestBridgeSnapshot({ manual });
             state.bridgeReady = true;
             setStatus('已收到榜单数据，正在整理…', false, true);
             state.localSnapshots = normalizeSnapshotsForUpload(bundle);
             if (!state.localSnapshots.length) throw new Error('同步脚本返回的榜单为空');
             const partial = Boolean(bundle.partial);
-            const retryablePartial = partial && bundle.retryable !== false && !bundle.blocked;
-            if (retryablePartial) scheduleRankingsRetry();
+            const retryablePartial = !manual && partial && bundle.retryable !== false && !bundle.blocked;
+            if (manual) clearRankingsRetry();
+            else if (retryablePartial) scheduleRankingsRetry();
             else clearRankingsRetry();
             if (!state.settings.autoUpload) {
                 setStatus(partial
-                    ? (retryablePartial
-                        ? `已抓取本地榜单，部分来源失败${retryStatusSuffix()}`
-                        : '已抓取本地榜单，部分来源被限制，已暂停自动请求。')
+                    ? bundle.blocked
+                        ? '已抓取本地榜单，部分来源被限制，已暂停自动请求。'
+                        : retryablePartial
+                            ? `已抓取本地榜单，部分来源失败${retryStatusSuffix()}`
+                            : manual
+                                ? '已抓取本地榜单，部分来源失败，本次不自动重试。'
+                                : '已抓取本地榜单，部分来源失败，本轮不再自动重试。'
                     : '已抓取本地榜单，未上传云端');
                 renderUploadControls();
                 return { localOnly: true, snapshots: state.localSnapshots };
@@ -1981,21 +1987,26 @@
             state.localSnapshots = [];
             const refreshed = await loadLatestSnapshot();
             setStatus(partial
-                ? (retryablePartial
-                    ? `已同步，但部分来源失败${retryStatusSuffix()} · ${formatDate(refreshed.snapshot && refreshed.snapshot.capturedAt)}`
-                    : `已同步，但部分来源被限制，已暂停自动请求。 · ${formatDate(refreshed.snapshot && refreshed.snapshot.capturedAt)}`)
+                ? `${bundle.blocked
+                    ? '已同步，但部分来源被限制，已暂停自动请求。'
+                    : retryablePartial
+                        ? `已同步，但部分来源失败${retryStatusSuffix()}`
+                        : manual
+                            ? '已同步，但部分来源失败，本次不自动重试。'
+                            : '已同步，但部分来源失败，本轮不再自动重试。'} · ${formatDate(refreshed.snapshot && refreshed.snapshot.capturedAt)}`
                 : `已同步 · ${formatDate(refreshed.snapshot && refreshed.snapshot.capturedAt)}`);
             renderUploadControls();
             return refreshed;
         } catch (error) {
-            const scheduled = errorCanAutoRetry(error) && scheduleRankingsRetry();
+            const canScheduleRetry = !manual && errorCanAutoRetry(error);
+            const scheduled = canScheduleRetry && scheduleRankingsRetry();
             const suffix = error && error.scriptUpdateRequired
                 ? '；请点击“更新脚本”安装新版本。'
                 : error && error.code === 'userscript_missing'
                     ? '；请先安装同步脚本后再刷新。'
                     : error && error.cooldown
                     ? '；请求处于冷却期，请稍后再试。'
-                    : scheduled || errorCanAutoRetry(error)
+                    : scheduled || canScheduleRetry
                         ? retryStatusSuffix()
                         : '；本轮不再自动重试。';
             setStatus(`${String(error && error.message || error)}${suffix}`, true);
@@ -2016,6 +2027,7 @@
         const refresh = options === true || Boolean(options && options.refresh);
         const autoRefresh = Boolean(options && options.autoRefresh);
         const retry = Boolean(options && options.retry);
+        const manualRefresh = refresh && !autoRefresh;
         if (state.busy) return;
         setBusy(true);
         setStatus(refresh
@@ -2026,7 +2038,7 @@
         try {
             let source;
             if (refresh || autoRefresh) {
-                source = await ensureFreshSnapshot(refresh, retry);
+                source = await ensureFreshSnapshot(refresh, retry, manualRefresh);
             } else if (state.localSnapshots.length && !state.settings.autoUpload) {
                 setStatus('已显示本地抓取数据，尚未上传云端');
                 source = { localOnly: true, snapshots: state.localSnapshots };
@@ -2056,14 +2068,15 @@
             if (state.trend.selectedIds.length) await refreshTrendHistories();
             state.loaded = true;
         } catch (error) {
-            const scheduled = errorCanAutoRetry(error) && scheduleRankingsRetry();
+            const canScheduleRetry = !manualRefresh && errorCanAutoRetry(error);
+            const scheduled = canScheduleRetry && scheduleRankingsRetry();
             const suffix = error && error.scriptUpdateRequired
                 ? '；请点击“更新脚本”安装新版本。'
                 : error && error.code === 'userscript_missing'
                     ? '；请先安装同步脚本后再刷新。'
                     : error && error.cooldown
                     ? '；请求处于冷却期，请稍后再试。'
-                    : scheduled || errorCanAutoRetry(error)
+                    : scheduled || canScheduleRetry
                         ? retryStatusSuffix()
                         : '；本轮不再自动重试。';
             setStatus(`读取失败：${String(error && error.message || error)}${suffix}`, true);

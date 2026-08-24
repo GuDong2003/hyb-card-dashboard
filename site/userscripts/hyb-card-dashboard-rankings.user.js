@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HYB Card Dashboard 榜单同步
 // @namespace    https://card.gudong226.com/
-// @version      1.3.1
+// @version      1.3.2
 // @description  在 Card Dashboard 页面按需读取 CDK 卡牌榜单并回传给榜单统计视图。
 // @updateURL    https://card.gudong226.com/userscripts/hyb-card-dashboard-rankings.user.js
 // @downloadURL  https://card.gudong226.com/userscripts/hyb-card-dashboard-rankings.user.js
@@ -18,7 +18,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.3.1';
+  const SCRIPT_VERSION = '1.3.2';
   const CARD_ORIGIN = 'https://card.gudong226.com';
   const CDK_ORIGIN = 'https://cdk.hybgzs.com';
   const SOURCE_APIS = Object.freeze({
@@ -196,7 +196,11 @@
   }
 
   function sourceCooldownError(state, now = Date.now()) {
-    const retryAt = Math.max(Number(state.nextAllowedAt) || 0, Number(state.lockUntil) || 0);
+    const retryAt = Math.max(
+      Number(state.nextAllowedAt) || 0,
+      Number(state.blockedUntil) || 0,
+      Number(state.lockUntil) || 0
+    );
     return makeError('CDK 请求处于冷却期', {
       name: 'SourceCooldown',
       retryable: false,
@@ -206,12 +210,14 @@
     });
   }
 
-  function claimSourceRequest() {
+  function claimSourceRequest(options = {}) {
     if (!sharedStorageAvailable()) return;
+    const manual = Boolean(options.manual);
     const now = Date.now();
     const state = readSourceState();
     if (Number(state.lockUntil) > now && state.ownerId !== RELAY_OWNER_ID) throw sourceCooldownError(state, now);
-    if (Number(state.nextAllowedAt) > now) throw sourceCooldownError(state, now);
+    if (Number(state.blockedUntil) > now) throw sourceCooldownError(state, now);
+    if (!manual && Number(state.nextAllowedAt) > now) throw sourceCooldownError(state, now);
     const candidate = {
       ...state,
       ownerId: RELAY_OWNER_ID,
@@ -247,8 +253,9 @@
     });
   }
 
-  function recordSourceFailure(error) {
+  function recordSourceFailure(error, options = {}) {
     if (!sharedStorageAvailable() || (error && (error.name === 'SourceCooldown' || error.name === 'ScriptUpdateRequired'))) return;
+    const manual = Boolean(options.manual);
     const now = Date.now();
     const state = readSourceState();
     const protectedFailure = Boolean(error && (error.blocked || error.kind === 'protected' || Number(error.status) === 403 || Number(error.status) === 429));
@@ -257,6 +264,10 @@
     if (protectedFailure) {
       const nextAllowedAt = now + Math.max(PROTECTED_COOLDOWN_MS, retryAfterMs);
       releaseSourceRequest({ nextAllowedAt, retryCount: 0, blockedUntil: nextAllowedAt, mode: 'protected' });
+      return;
+    }
+    if (manual) {
+      releaseSourceRequest({ mode: 'manual-failed' });
       return;
     }
     if (retryable && Number(state.retryCount) < 1) {
@@ -294,23 +305,23 @@
     return { snapshots, errors, partial: errors.length > 0, blocked, retryable };
   }
 
-  function recordSourceOutcome(bundle) {
+  function recordSourceOutcome(bundle, options = {}) {
     const errors = Array.isArray(bundle && bundle.errors) ? bundle.errors : [];
     if (!errors.length) {
-      recordSourceSuccess();
+      recordSourceSuccess(options);
       return;
     }
     const blockedError = errors.find((error) => error.blocked || Number(error.status) === 403 || Number(error.status) === 429);
     if (blockedError) {
-      recordSourceFailure(Object.assign(new Error(blockedError.error || 'CDK 请求被限制'), blockedError, { blocked: true, kind: 'protected' }));
+      recordSourceFailure(Object.assign(new Error(blockedError.error || 'CDK 请求被限制'), blockedError, { blocked: true, kind: 'protected' }), options);
       return;
     }
     const retryableError = errors.find((error) => error.retryable);
     if (retryableError) {
-      recordSourceFailure(Object.assign(new Error(retryableError.error || 'CDK 请求失败'), retryableError));
+      recordSourceFailure(Object.assign(new Error(retryableError.error || 'CDK 请求失败'), retryableError), options);
       return;
     }
-    recordSourceFailure(Object.assign(new Error(errors[0].error || 'CDK 请求失败'), errors[0], { retryable: false }));
+    recordSourceFailure(Object.assign(new Error(errors[0].error || 'CDK 请求失败'), errors[0], { retryable: false }), options);
   }
 
   function requestWithGm(url, scope) {
@@ -433,10 +444,11 @@
     return promise;
   }
 
-  async function loadSnapshot() {
+  async function loadSnapshot(options = {}) {
     if (inFlight) return inFlight;
+    const manual = Boolean(options.manual);
     inFlight = (async () => {
-      claimSourceRequest();
+      claimSourceRequest({ manual });
       try {
         const relay = requestWithCdkRelay();
         const bundle = relay
@@ -446,10 +458,10 @@
                 ? requestWithGm(url, scope)
                 : requestWithFetch(url, scope)
             ));
-        recordSourceOutcome(bundle);
+        recordSourceOutcome(bundle, { manual });
         return bundle;
       } catch (error) {
-        recordSourceFailure(error);
+        recordSourceFailure(error, { manual });
         throw error;
       }
     })().finally(() => {
@@ -465,7 +477,7 @@
       const data = event.data;
       if (!data || data.type !== BRIDGE_REQUEST || !data.requestId) return;
       try {
-        const bundle = await loadSnapshot();
+        const bundle = await loadSnapshot({ manual: Boolean(data.manual) });
         window.postMessage({
           type: BRIDGE_RESPONSE,
           requestId: data.requestId,

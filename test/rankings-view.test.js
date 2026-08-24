@@ -531,6 +531,20 @@ test('rankings retries failed bridge requests like Farm Dashboard', async () => 
   assert.match(source, /function runRankingsRetryNow/);
 });
 
+test('manual rankings refresh bypasses automatic retry scheduling but passes its mode to the bridge', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+
+  assert.match(source, /const manualRefresh = refresh && !autoRefresh/);
+  assert.match(source, /ensureFreshSnapshot\(refresh, retry, manualRefresh\)/);
+  assert.match(source, /function requestBridgeSnapshot\(options = \{\}\)/);
+  assert.match(source, /const manual = Boolean\(options\.manual\)/);
+  assert.match(source, /requestBridgeSnapshot\(\{ manual \}\)/);
+  assert.match(source, /const canScheduleRetry = !manual && errorCanAutoRetry\(error\)/);
+  assert.match(source, /const canScheduleRetry = !manualRefresh && errorCanAutoRetry\(error\)/);
+  assert.match(source, /if \(manual\) clearRankingsRetry\(\);/);
+  assert.match(source, /部分来源失败，本次不自动重试/);
+});
+
 test('renders pinned users directly below the sticky table header', async () => {
   const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
