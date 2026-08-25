@@ -42,7 +42,7 @@ npx wrangler d1 migrations apply hyb-card-rankings-db --remote
 - 每份快照保留自己的 `capturedAt`、`signature` 和榜单明细；最新接口按 `captured_at` 选择最新一份。
 - 用户掉出当前前 100 后，旧快照中的 `rank_entries` 不删除，因此仍可通过用户搜索和历史接口查询。
 - `rank_user_metrics` 是按赛季、`userId` 和榜单键维护的当前聚合层；用户总览的总榜优先读取这张小表，原始快照只用于按日配对和历史查询。它由原始快照回填并在每次上传时增量更新，可以重建但不能替代原始快照。
-- `rank_snapshots.accepted` 默认为 `1`，所有榜单读取和日聚合只读取有效快照；`(accepted, captured_at, id)` 索引服务于有效快照的最新记录和时间范围读取。当前上传拦截的重复/过期数据不会插入快照，因此不会产生无效明细。
+- `rank_snapshots.accepted` 默认为 `1`，所有榜单读取和日聚合只读取有效快照；`(accepted, captured_at, id)` 索引服务于有效快照的最新记录和时间范围读取。当前上传拦截的重复/过期数据不会插入快照；只有上线前已存在、经人工确认的重复快照才会保留原始行并标记为 `accepted=0`。
 - `rank_daily_metrics` 按北京时间 04:00 划分日期，每个赛季、日期、用户和榜单键只保留当天最后一次有效观测。封口日由每日 Cron 物化；当前未封口日只读取一天范围内的原始尾部，不扫描整个赛季。
 - 用户总览的今日、本周、本月和总榜历史部分优先读取 `rank_daily_metrics`；历史接口默认 `mode=daily`，只有明确传 `mode=snapshot` 才读取带时间范围的原始明细。
 - 原始 `rank_snapshots` 和 `rank_entries` 只增不减，本项目不增加 90 天清理任务。赛季结束后仍由数据库保留原始审计数据，日聚合表可重复回填。
@@ -78,7 +78,7 @@ curl -sS 'http://127.0.0.1:8787/api/rankings/history?userId=u1&mode=daily&limit=
 node scripts/check-rankings-signatures.mjs --remote
 ```
 
-如果报告重复的 `season_id + signature`，先人工处理，不能跳过检查，也不能删除或合并原始行。确认无重复后再取得授权执行 migration。
+如果报告重复的 `season_id + signature`，先人工确认保留哪条为有效快照。先应用 `0004` 创建 `accepted` 列和日聚合表，再把确认无效的重复行标记为 `accepted=0`（只改状态，不删除原始快照或明细），最后应用 `0005` 建立只对 `accepted=1` 生效的签名唯一索引。不能跳过检查，也不能删除或合并原始行。
 
 新表首次上线需要按天回填。脚本要求显式时间范围和目标环境，每次只对一个北京时间日执行有边界的 upsert：
 

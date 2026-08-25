@@ -61,7 +61,7 @@ Cloudflare Cron（UTC 20:05 = 北京时间 04:05）
 
 ## 数据库设计
 
-新增 migration：`migrations/0004_rank_daily_metrics.sql`。
+新增 migration：`migrations/0004_rank_daily_metrics.sql` 和 `migrations/0005_rankings_signature_index.sql`。
 
 ### `rank_daily_metrics`
 
@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS rank_daily_metrics (
 同时补充 Card 侧与实际 SQL 访问路径对应的索引：
 
 - `rank_snapshots(season_id, scope, captured_at DESC, id DESC)`：最新/过期检查和同 scope 时间范围。
-- `rank_snapshots(season_id, signature)` 唯一索引：把签名幂等从应用层检查落实到数据库约束，避免并发重复插入。
+- `rank_snapshots(season_id, signature) WHERE accepted = 1` 唯一索引：把有效签名幂等从应用层检查落实到数据库约束，避免并发重复插入；上线前已存在的重复原始行可以保留并标记为 `accepted=0`。
 - `rank_snapshots(captured_at DESC, id DESC)`：无 season 条件的 latest 查询。
 - `rank_snapshots(accepted, captured_at DESC, id DESC)`：有效快照过滤、全局 latest 和时间范围读取。
 - `rank_entries(snapshot_id, board_key, rank)`：当前/上一快照按榜单和排名读取。
@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS rank_daily_metrics (
 
 不会新增删除、归档或 90 天清理 migration。
 
-在建立唯一签名索引前，部署脚本先执行只读重复检查：如果发现已有重复 `season_id + signature`，迁移暂停并报告重复 ID，不自动删除或合并任何原始数据；确认没有重复后才建立唯一索引。
+在建立唯一签名索引前，部署脚本先执行只读重复检查：如果发现已有重复 `season_id + signature`，迁移暂停并报告重复 ID。人工确认后，先应用 `0004`，把确认无效的重复行标记为 `accepted=0`，再应用 `0005`；整个过程不删除或合并任何原始数据。
 
 ### 现有历史的初始化
 

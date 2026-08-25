@@ -150,7 +150,7 @@ Expected: PASS.
 
 - [ ] **Step 3: Add the migration and verify its SQL contract.**
 
-Add `accepted INTEGER NOT NULL DEFAULT 1` to `rank_snapshots`, then create `rank_daily_metrics` with the composite primary key from the design. Add indexes for `(season_id, board_key, day_start_at, rank)` and `(season_id, user_id, board_key, day_start_at)`, plus `(accepted, captured_at DESC, id DESC)`, the other snapshot/latest/user lookup indexes, and the unique `(season_id, signature)` index. All read and aggregation SQL must filter `accepted = 1`. Do not add any delete, retention, or cleanup statement.
+Add `accepted INTEGER NOT NULL DEFAULT 1` to `rank_snapshots`, then create `rank_daily_metrics` with the composite primary key from the design. Add indexes for `(season_id, board_key, day_start_at, rank)` and `(season_id, user_id, board_key, day_start_at)`, plus `(accepted, captured_at DESC, id DESC)` and the other snapshot/latest/user lookup indexes. Put the accepted-only unique `(season_id, signature) WHERE accepted = 1` index in `migrations/0005_rankings_signature_index.sql`, so pre-existing duplicates can be reviewed after `0004` and retained as `accepted=0` without deleting raw rows. All read and aggregation SQL must filter `accepted = 1`. Do not add any delete, retention, or cleanup statement.
 
 The migration must not silently repair duplicate signatures. Before applying it remotely, run the read-only check from Task 4; if it reports rows, stop and preserve the migration failure for manual review.
 

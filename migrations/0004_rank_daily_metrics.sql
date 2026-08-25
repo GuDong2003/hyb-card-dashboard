@@ -34,9 +34,6 @@ CREATE INDEX IF NOT EXISTS idx_rank_snapshots_latest
 CREATE INDEX IF NOT EXISTS idx_rank_snapshots_accepted_captured_id
   ON rank_snapshots (accepted, captured_at DESC, id DESC);
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_rank_snapshots_season_signature
-  ON rank_snapshots (season_id, signature);
-
 CREATE INDEX IF NOT EXISTS idx_rank_entries_snapshot_board_rank
   ON rank_entries (snapshot_id, board_key, rank);
 

@@ -53,3 +53,12 @@ test('snapshot migration adds the accepted read-path index', async () => {
   assert.match(migration, /alter table rank_snapshots\s+add column accepted integer not null default 1/i);
   assert.match(migration, /create index if not exists idx_rank_snapshots_accepted_captured_id[\s\S]*on rank_snapshots \(accepted, captured_at desc, id desc\)/i);
 });
+
+test('duplicate repair keeps raw rows and scopes signature uniqueness to accepted snapshots', async () => {
+  const migration = await readFile(new URL('../migrations/0004_rank_daily_metrics.sql', import.meta.url), 'utf8');
+  const signatureMigration = await readFile(new URL('../migrations/0005_rankings_signature_index.sql', import.meta.url), 'utf8');
+  const worker = await readFile(new URL('../src/rankings-worker.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(migration, /create unique index if not exists idx_rank_snapshots_season_signature/i);
+  assert.match(signatureMigration, /create unique index if not exists idx_rank_snapshots_season_signature[\s\S]*where accepted = 1/i);
+  assert.match(worker, /on conflict \(season_id, signature\) where accepted = 1 do nothing/i);
+});

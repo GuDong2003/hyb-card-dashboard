@@ -221,7 +221,7 @@ async function storeNormalizedSnapshot(normalized, source, now, env) {
       season_id, season_name, scope, captured_at, captured_bucket,
       source, signature, raw_json, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT (season_id, signature) DO NOTHING
+    ON CONFLICT (season_id, signature) WHERE accepted = 1 DO NOTHING
   `).bind(
     normalized.seasonId,
     normalized.seasonName,
