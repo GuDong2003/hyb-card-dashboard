@@ -4,7 +4,7 @@
 
 **Goal:** 将 Card 榜单从“每次保存完整快照”切换为“用户当前表 + 用户每日一行”的服务端增量 upsert，并让 Dashboard 只请求当前页或单个用户历史。
 
-**Architecture:** 新 D1 只包含 `rank_seasons`、`rank_user_current` 和 `rank_user_days`。油猴脚本继续从 CDK 获取当前全量前 100/好友结果；Dashboard 在 POST 前移除 `raw` 字段，Worker 按用户和北京时间日合并输入，使用字段级条件 upsert，不保存快照、明细或 fingerprint。读取 API 使用 SQL keyset 分页，历史只读取一个用户的日行，GET 使用浏览器和 Worker 短缓存。
+**Architecture:** 新 D1 只包含 `rank_seasons`、`rank_ingest_state`、`rank_user_current` 和 `rank_user_days`。油猴脚本继续从 CDK 获取当前全量前 100/好友结果；Dashboard 在 POST 前移除 `raw` 字段，Worker 先用每个 season/scope 的最新 `capturedAt` 水位跳过重复来源，再按用户和北京时间日合并输入，使用字段级条件 upsert，不保存快照、明细或 fingerprint。读取 API 使用 SQL keyset 分页，历史只读取一个用户的日行，GET 使用浏览器和 Worker 短缓存。
 
 **Tech Stack:** Cloudflare Workers、D1/SQLite、Wrangler 4、原生 Node test runner、浏览器 Fetch/localStorage、现有 `rankings-core.js` 估算逻辑。
 
@@ -81,6 +81,11 @@ test('period value rejects an older observation', () => {
     { value: 18, rank: 1, observedAt: 11_000 }, false);
   assert.deepEqual(merged, { value: 20, rank: 3, observedAt: 12_000 });
 });
+
+test('server ingest watermark skips an already accepted source capture', () => {
+  assert.equal(shouldSkipSourceCapture({ last_captured_at: 12_000 }, 12_000), true);
+  assert.equal(shouldSkipSourceCapture({ last_captured_at: 12_000 }, 13_000), false);
+});
 ```
 
 运行：`node --test test/rankings-user-store.test.js`。
@@ -89,7 +94,7 @@ test('period value rejects an older observation', () => {
 
 - [ ] **Step 2: Add the explicit compact schema.**
 
-在 `migrations-v2/0001_compact_rankings.sql` 创建三张表：
+在 `migrations-v2/0001_compact_rankings.sql` 创建四张表：
 
 ```sql
 CREATE TABLE IF NOT EXISTS rank_seasons (
@@ -98,6 +103,14 @@ CREATE TABLE IF NOT EXISTS rank_seasons (
   last_observed_at INTEGER NOT NULL,
   last_day_start_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS rank_ingest_state (
+  season_id TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  last_captured_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (season_id, scope)
 );
 
 CREATE TABLE IF NOT EXISTS rank_user_days (
@@ -178,7 +191,7 @@ CREATE INDEX IF NOT EXISTS idx_rank_user_current_name
   ON rank_user_current (season_id, user_name COLLATE NOCASE, user_id);
 ```
 
-不在该文件中创建 `rank_snapshots`、`rank_entries`、`rank_user_metrics`、`rank_daily_metrics` 或任何 raw/fingerprint 表。
+不在该文件中创建 `rank_snapshots`、`rank_entries`、`rank_user_metrics`、`rank_daily_metrics` 或任何 raw/fingerprint 表。`rank_ingest_state` 只保留每个 season/scope 一行，不记录每次请求。
 
 - [ ] **Step 3: Implement column mapping and pure merge helpers.**
 
@@ -194,6 +207,7 @@ export const COMPACT_BOARD_KEYS = Object.freeze([
 export function mergeUserObservations(normalizedSnapshots) {}
 export function mergeMetricField(existing, incoming, cumulative) {}
 export function hasMeaningfulUserChange(existing, incoming) {}
+export function shouldSkipSourceCapture(state, capturedAt) {}
 export function compactHistoryRows(row, boardKey = '') {}
 export function currentSortValues(row, capturedAt) {}
 ```
@@ -281,19 +295,20 @@ export async function storeUserObservations(db, normalizedSnapshots, source, now
 `storeUserObservations` 必须：
 
 1. 调用 `mergeUserObservations`，以用户为单位而不是以 snapshot/entry 为单位分组。
-2. 计算每个用户的 `day_start_at`，按 50 个用户一批调用 D1 `batch`。
-3. 先 upsert `rank_user_days`，再 upsert `rank_user_current`，两者都使用同一个用户键和同一套字段时间规则。
-4. `ON CONFLICT` 的更新子句带变化条件，只在 profile、scope、VIP、指标 value/rank 或有效观测字段发生变化时更新；只有时间变化不能触发更新。
-5. `_total` 使用最大值，其他周期使用较新的字段；旧字段不被 null incoming 清空。
-6. 更新 `rank_seasons` 的 `season_name/last_observed_at/last_day_start_at`，并用 `MAX`/`CASE` 防止旧请求回退最新时间。
-7. 返回 `{ users, changedUsers, changedDays, changedFields }`，供 POST 响应显示 `unchanged` 数量。
+2. 对每个 `(season_id, scope)` 先读取 `rank_ingest_state.last_captured_at`；当 incoming `capturedAt <= last_captured_at` 时直接返回该来源 `stale_or_unchanged`，不执行任何用户 upsert。
+3. 对新的来源按 50 个用户一批调用 D1 `batch`，并把 `rank_ingest_state` 更新放在该来源最后一个 batch 中；来源用户写入失败时不能推进水位。
+4. 先 upsert `rank_user_days`，再 upsert `rank_user_current`，两者都使用同一个用户键和同一套字段时间规则。
+5. `ON CONFLICT` 的更新子句带变化条件，只在 profile、scope、VIP、指标 value/rank 或有效观测字段发生变化时更新；只有时间变化不能触发更新。
+6. `_total` 使用最大值，其他周期使用较新的字段；旧字段不被 null incoming 清空。
+7. 更新 `rank_seasons` 的 `season_name/last_observed_at/last_day_start_at`，并用 `MAX`/`CASE` 防止旧请求回退最新时间。
+8. 返回 `{ users, changedUsers, changedDays, changedFields, skippedScopes }`，供 POST 响应显示 `unchanged` 数量。
 
 在 `src/rankings-worker.js` 中：
 
 - 删除 `computeSnapshotSignature`、`snapshotSignatureInput`、`storeNormalizedSnapshot`、`mergeSnapshotMetrics` 和所有 `rank_snapshots/rank_entries` INSERT。
 - `postSnapshot` 仍解析 `snapshots` 外层，以兼容现有页面和旧 userscript；规范化后直接调用 `storeUserObservations`。
 - 保留 Rate Limiting binding，并在 JSON 解析前限流。
-- 不把 `source`、raw response 或 fingerprint 写入 D1。
+- 不把 `source`、raw response 或 fingerprint 写入 D1；只写每个来源一行的 ingest watermark。
 - POST 成功返回 `storedSnapshots` 兼容字段，但增加 `changedUsers`、`changedFields`、`unchangedUsers`；同一 payload 重放返回 200，不返回数据库错误。
 
 - [ ] **Step 3: Add front-end raw stripping test before implementation.**

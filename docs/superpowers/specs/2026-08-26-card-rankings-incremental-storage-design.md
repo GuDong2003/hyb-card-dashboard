@@ -68,7 +68,23 @@ Dashboard 启动
 
 ## 新 D1 数据模型
 
-新库建议命名为 `hyb-card-rankings-v2-db`。生产绑定仍使用 `RANKINGS_DB`，切换时只替换 binding 的 database ID；旧库可以另记为 `LEGACY_RANKINGS_DB`，但不让新请求依赖它。
+新库建议命名为 `hyb-card-rankings-v2-db`。业务表为 `rank_seasons`、`rank_ingest_state`、`rank_user_current` 和 `rank_user_days`。生产绑定仍使用 `RANKINGS_DB`，切换时只替换 binding 的 database ID；旧库可以另记为 `LEGACY_RANKINGS_DB`，但不让新请求依赖它。
+
+### `rank_ingest_state`
+
+每个赛季和来源 scope 只保留一行最新来源水位：
+
+```sql
+CREATE TABLE rank_ingest_state (
+  season_id TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  last_captured_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (season_id, scope)
+);
+```
+
+Worker 在处理一个来源前读取这行；当本次 `capturedAt` 不晚于 `last_captured_at` 时，整批来源直接返回 unchanged，不再触碰用户日表或当前表。只有该来源的用户 upsert 全部成功后才推进水位，因此它不会记录每次请求，也不依赖 fingerprint。迟到的旧日期回填由迁移/维护脚本直接按日写入，不通过这个实时上传水位跳过。
 
 ### `rank_user_days`
 
@@ -203,6 +219,13 @@ POST 发送的是当前观察到的用户/榜单字段，而不是完整历史�
 
 保留 `/api/rankings/snapshots` 路径以兼容现有前端和旧脚本，但不再把请求命名为快照存储。Worker 兼容旧的 `snapshots` 外层结构，并把其中的榜单行当作观察增量处理；Dashboard 在 POST 前去掉 `raw` 字段。
 
+实时用户上传在每个 `(season_id, scope)` 来源批次前先执行水位检查：
+
+- `capturedAt <= rank_ingest_state.last_captured_at` 时直接跳过该来源，不执行用户 upsert；
+- 新来源的用户日表、当前表和赛季元数据全部成功后，才更新该来源水位；
+- 任何用户批次失败都不推进水位，重试仍可安全执行；
+- 这个水位只保留每个来源一行，不保存请求历史、body、fingerprint 或幂等 receipt。
+
 每个用户批次执行以下检查：
 
 - `season.id`、`scope`、`capturedAt`、`userId`、`boardKey`、value 和 rank 必须有效。
@@ -210,7 +233,7 @@ POST 发送的是当前观察到的用户/榜单字段，而不是完整历史�
 - 旧日期数据允许迟到回填，但同一天同一字段只接受更晚的观测；较早值不会覆盖较新值。
 - 同一 `(season_id, day_start_at, user_id)` 的重复请求通过主键 upsert 变成 no-op 或字段级更新，不产生第二行。
 - `rank_user_current` 使用与指标类型对应的最大值/最新值规则；同一请求重放仍得到同样结果。
-- 不建立会随请求无限增长的 `idempotency_receipts` 表，也不在浏览器保存 fingerprint。用户级日主键、字段时间条件和条件 upsert 已提供结果幂等；请求重放只会返回 `unchanged` 或实际变化数。
+- 不建立会随请求无限增长的 `idempotency_receipts` 表，也不在浏览器保存 fingerprint。来源水位、用户级日主键、字段时间条件和条件 upsert 已提供结果幂等；请求重放只会返回 `unchanged` 或实际变化数。
 - POST 仍使用 Rate Limiting binding，默认每来源每 60 秒最多 10 次；429 不写入数据库。
 
 为了让“未变化不写入”完全由服务端保证，日表和当前表的 upsert 必须带变化条件：如果 incoming 字段与现有值、rank、资料和来源都没有变化，`changes` 为 0。`observed_at` 不能单独触发更新，否则定时刷新仍会造成写放大。
