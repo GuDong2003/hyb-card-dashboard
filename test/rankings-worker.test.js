@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { handleRankingsRequest } from '../src/rankings-worker.js';
+import { mergeMetric } from '../src/rankings-merge.js';
+import { dayStartAtForCapturedAt } from '../src/rankings-daily.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RESET_HOUR_MS = 4 * 60 * 60 * 1000;
@@ -53,6 +55,14 @@ class FakeD1 {
     if (normalized.includes('from rank_snapshots') && normalized.includes('where season_id = ? and signature = ?')) {
       const [seasonId, signature] = params;
       return this.snapshots.find((row) => row.season_id === seasonId && row.signature === signature) || null;
+    }
+    if (normalized.includes('where season_id = ? and scope = ?')
+      && normalized.includes('order by captured_at desc, id desc')
+      && !normalized.includes('captured_at < ?')) {
+      const [seasonId, scope] = params;
+      return this.snapshots
+        .filter((row) => row.season_id === seasonId && row.scope === scope)
+        .sort((a, b) => b.captured_at - a.captured_at || b.id - a.id)[0] || null;
     }
     if (normalized.includes('where season_id = ? and scope = ? and captured_at < ?')) {
       const [seasonId, scope, capturedAt] = params;
@@ -183,9 +193,13 @@ class FakeD1 {
     const normalized = sql.replace(/\s+/g, ' ').trim().toLowerCase();
     if (normalized.startsWith('insert into rank_snapshots')) {
       const [season_id, season_name, scope, captured_at, captured_bucket, source, signature, raw_json, created_at] = params;
+      const duplicate = this.snapshots.find((row) => row.season_id === season_id && row.signature === signature);
+      if (duplicate && normalized.includes('on conflict (season_id, signature) do nothing')) {
+        return { success: true, meta: { changes: 0, last_row_id: 0 } };
+      }
       const row = { id: this.nextSnapshotId++, season_id, season_name, scope, captured_at, captured_bucket, source, signature, raw_json, created_at };
       this.snapshots.push(row);
-      return { success: true, meta: { last_row_id: row.id } };
+      return { success: true, meta: { changes: 1, last_row_id: row.id } };
     }
     if (normalized.startsWith('insert into rank_entries')) {
       const [snapshot_id, board_key, user_id, user_name, avatar_url, value, rank, is_vip, active_name_decoration, name_display_preference, raw_json] = params;
@@ -193,32 +207,148 @@ class FakeD1 {
       return { success: true, meta: { last_row_id: this.entries.length } };
     }
     if (normalized.startsWith('insert into rank_user_metrics')) {
+      this.queries.push({ sql: normalized, params: [...params] });
       const [season_id, user_id, board_key, user_name, avatar_url, value, rank,
         is_vip, active_name_decoration, name_display_preference,
         value_snapshot_id, value_scope, value_captured_at,
         last_snapshot_id, last_scope, last_captured_at, first_captured_at, source_scopes] = params;
-      const row = {
-        season_id, user_id, board_key, user_name, avatar_url, value, rank,
-        is_vip, active_name_decoration, name_display_preference,
-        value_snapshot_id, value_scope, value_captured_at,
-        last_snapshot_id, last_scope, last_captured_at, first_captured_at, source_scopes
-      };
       const index = this.metrics.findIndex((item) => item.season_id === season_id && item.user_id === user_id && item.board_key === board_key);
+      const incoming = {
+        seasonId: season_id,
+        userId: user_id,
+        boardKey: board_key,
+        userName: user_name,
+        avatar: avatar_url,
+        value,
+        rank,
+        isVip: Boolean(is_vip),
+        activeNameDecoration: active_name_decoration,
+        nameDisplayPreference: name_display_preference,
+        snapshotId: value_snapshot_id,
+        scope: value_scope,
+        capturedAt: value_captured_at,
+        valueSnapshotId: value_snapshot_id,
+        valueScope: value_scope,
+        valueCapturedAt: value_captured_at,
+        lastSnapshotId: last_snapshot_id,
+        lastScope: last_scope,
+        lastCapturedAt: last_captured_at,
+        firstCapturedAt: first_captured_at,
+        sourceScopes: source_scopes
+      };
+      const existing = index >= 0 ? this.metrics[index] : null;
+      const merged = mergeMetric(existing ? {
+        seasonId: existing.season_id,
+        userId: existing.user_id,
+        boardKey: existing.board_key,
+        userName: existing.user_name,
+        avatar: existing.avatar_url,
+        value: existing.value,
+        rank: existing.rank,
+        isVip: Boolean(existing.is_vip),
+        activeNameDecoration: existing.active_name_decoration,
+        nameDisplayPreference: existing.name_display_preference,
+        valueSnapshotId: existing.value_snapshot_id,
+        valueScope: existing.value_scope,
+        valueCapturedAt: existing.value_captured_at,
+        lastSnapshotId: existing.last_snapshot_id,
+        lastScope: existing.last_scope,
+        lastCapturedAt: existing.last_captured_at,
+        firstCapturedAt: existing.first_captured_at,
+        sourceScopes: existing.source_scopes
+      } : null, incoming);
+      const row = {
+        season_id: merged.seasonId,
+        user_id: merged.userId,
+        board_key: merged.boardKey,
+        user_name: merged.userName,
+        avatar_url: merged.avatar,
+        value: merged.value,
+        rank: merged.rank,
+        is_vip: merged.isVip ? 1 : 0,
+        active_name_decoration: merged.activeNameDecoration,
+        name_display_preference: merged.nameDisplayPreference,
+        value_snapshot_id: merged.valueSnapshotId,
+        value_scope: merged.valueScope,
+        value_captured_at: merged.valueCapturedAt,
+        last_snapshot_id: merged.lastSnapshotId,
+        last_scope: merged.lastScope,
+        last_captured_at: merged.lastCapturedAt,
+        first_captured_at: merged.firstCapturedAt,
+        source_scopes: merged.sourceScopes
+      };
       if (index >= 0) this.metrics[index] = row;
       else this.metrics.push(row);
-      return { success: true, meta: { last_row_id: this.metrics.length } };
+      return { success: true, meta: { changes: 1, last_row_id: this.metrics.length } };
     }
     return { success: true, meta: {} };
   }
 }
 
-function env() {
-  return { RANKINGS_DB: new FakeD1() };
+function env(overrides = {}) {
+  return { RANKINGS_DB: new FakeD1(), ...overrides };
 }
 
 function request(path, init) {
   return new Request(`https://card.gudong226.com${path}`, init);
 }
+
+function snapshotAt(capturedAt) {
+  return {
+    season: { id: 'season-write-test', name: '写入测试' },
+    scope: 'global',
+    capturedAt,
+    leaderboards: {
+      epic_total: [{ userId: 'u1', userName: '用户一', value: 10, rank: 1, isVip: false }]
+    }
+  };
+}
+
+function postSnapshot(environment, body) {
+  return handleRankingsRequest(request('/api/rankings/snapshots', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  }), environment);
+}
+
+test('rejects stale snapshots before INSERT and leaves raw tables unchanged', async () => {
+  const environment = env();
+  await postSnapshot(environment, snapshotAt(10_000));
+  const before = environment.RANKINGS_DB.snapshots.length;
+  const response = await postSnapshot(environment, snapshotAt(9_000));
+  const payload = await response.json();
+  assert.equal(payload.status, 'rejected');
+  assert.equal(payload.reason, 'stale_or_existing_data');
+  assert.equal(environment.RANKINGS_DB.snapshots.length, before);
+});
+
+test('does not select the whole rank_user_metrics table during upload', async () => {
+  const environment = env();
+  await postSnapshot(environment, snapshotAt(10_000));
+  assert.equal(
+    environment.RANKINGS_DB.queries.some(({ sql }) => /select \* from rank_user_metrics/.test(sql)),
+    false
+  );
+  assert.equal(
+    environment.RANKINGS_DB.queries.some(({ sql }) => /insert into rank_user_metrics/.test(sql)),
+    true
+  );
+});
+
+test('returns 429 before parsing or writing when the limiter rejects the source', async () => {
+  const environment = env({
+    RANKINGS_WRITE_LIMITER: { limit: async () => ({ success: false }) }
+  });
+  const response = await handleRankingsRequest(request('/api/rankings/snapshots', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'cf-connecting-ip': '1.2.3.4' },
+    body: '{'
+  }), environment);
+  assert.equal(response.status, 429);
+  assert.equal((await response.json()).error, 'rate_limited');
+  assert.equal(environment.RANKINGS_DB.snapshots.length, 0);
+});
 
 test('returns 503 when the D1 binding is missing', async () => {
   const response = await handleRankingsRequest(request('/api/rankings/latest'), {});
@@ -360,8 +490,7 @@ test('keeps historical raw values but does not pair metrics across different day
 
 test('pairs the latest available rows within a day instead of requiring the same hour', async () => {
   const environment = env();
-  const base = Math.floor((Date.now() - (2 * DAY_MS) - RESET_HOUR_MS) / DAY_MS) * DAY_MS
-    + RESET_HOUR_MS;
+  const base = dayStartAtForCapturedAt(Date.now() - (2 * DAY_MS));
   const firstCapture = base + 60 * 60 * 1000;
   const laterSameDayCapture = base + 6 * 60 * 60 * 1000;
   const nextDayCapture = base + DAY_MS + 60 * 60 * 1000;
@@ -408,8 +537,7 @@ test('pairs the latest available rows within a day instead of requiring the same
 
 test('uses the latest complete common day when the newest common day is partial', async () => {
   const environment = env();
-  const base = Math.floor((Date.now() - (3 * DAY_MS) - RESET_HOUR_MS) / DAY_MS) * DAY_MS
-    + RESET_HOUR_MS;
+  const base = dayStartAtForCapturedAt(Date.now() - (3 * DAY_MS));
   const completeCapture = base + 60 * 60 * 1000;
   const partialCapture = base + DAY_MS + 60 * 60 * 1000;
   const post = (snapshot) => handleRankingsRequest(request('/api/rankings/snapshots', {
@@ -582,7 +710,8 @@ test('limits today, week and month user history queries to their period windows'
     assert.ok(query, `${period} should use the compressed daily query`);
     assert.equal(query.params.length, 6, `${period} should bind a start and end timestamp`);
     const expectedDays = period === 'today' ? 1 : period === 'week' ? 7 : 30;
-    assert.equal(query.params[5] - query.params[4], currentCapturedAt - (Math.floor((currentCapturedAt - RESET_HOUR_MS) / DAY_MS) * DAY_MS + RESET_HOUR_MS - (expectedDays - 1) * DAY_MS));
+    const expectedStart = dayStartAtForCapturedAt(currentCapturedAt) - (expectedDays - 1) * DAY_MS;
+    assert.equal(query.params[5] - query.params[4], currentCapturedAt - expectedStart);
     const payload = await response.json();
     assert.deepEqual(payload.rows.map((row) => row.userId), ['current-user']);
   }

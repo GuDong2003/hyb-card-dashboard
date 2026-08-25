@@ -9,10 +9,12 @@ import {
   normalizeSnapshotBundle,
   pairLeaderboardRows
 } from './rankings-core.js';
-import { mergeMetric } from './rankings-merge.js';
+import {
+  DAY_BOUNDARY_OFFSET_MS,
+  DAY_MS,
+  dayStartAtForCapturedAt
+} from './rankings-daily.js';
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-const RESET_HOUR_MS = 4 * 60 * 60 * 1000;
 const DEFAULT_SEASON_START_AT = Date.parse('2026-08-02T04:00:00+08:00');
 const BOARD_GROUPS = new Set(['users', 'epic', 'spend', 'sets', 'luck']);
 const PERIODS = new Set(['today', 'week', 'month', 'total']);
@@ -84,6 +86,9 @@ async function getLatest(env) {
 }
 
 async function postSnapshot(request, env) {
+  const rateLimitResponse = await limitSnapshotWrites(request, env);
+  if (rateLimitResponse) return rateLimitResponse;
+
   let body;
   try {
     body = await request.json();
@@ -105,12 +110,17 @@ async function postSnapshot(request, env) {
   const stored = [];
   const errors = bundle.errors.slice();
   let duplicateSnapshots = 0;
+  let staleSnapshots = 0;
   let storedEntries = 0;
   for (const normalized of bundle.snapshots) {
     try {
       const result = await storeNormalizedSnapshot(normalized, source, now, env);
       if (result.duplicate) {
         duplicateSnapshots += 1;
+        continue;
+      }
+      if (result.stale) {
+        staleSnapshots += 1;
         continue;
       }
       stored.push(result.snapshot);
@@ -120,7 +130,7 @@ async function postSnapshot(request, env) {
     }
   }
 
-  if (!stored.length && !duplicateSnapshots) {
+  if (!stored.length && !duplicateSnapshots && !staleSnapshots) {
     return jsonResponse({
       ok: false,
       error: 'invalid_snapshot',
@@ -129,17 +139,49 @@ async function postSnapshot(request, env) {
     }, 400);
   }
 
+  if (!stored.length && !duplicateSnapshots && staleSnapshots && !errors.length) {
+    return jsonResponse({
+      ok: true,
+      status: 'rejected',
+      reason: 'stale_or_existing_data',
+      staleSnapshots,
+      duplicateSnapshots: 0,
+      storedSnapshots: 0,
+      storedEntries: 0,
+      snapshots: [],
+      errors: []
+    });
+  }
+
   return jsonResponse({
     ok: true,
-    status: errors.length ? 'partial' : duplicateSnapshots && !stored.length ? 'duplicate' : 'accepted',
+    status: errors.length || staleSnapshots
+      ? 'partial'
+      : duplicateSnapshots && !stored.length ? 'duplicate' : 'accepted',
     snapshot: stored[stored.length - 1] || null,
     snapshots: stored,
     storedSnapshots: stored.length,
     duplicateSnapshots,
+    staleSnapshots,
     storedEntries,
-    partial: errors.length > 0,
+    partial: errors.length > 0 || staleSnapshots > 0,
     errors
   });
+}
+
+async function limitSnapshotWrites(request, env) {
+  const limiter = env.RANKINGS_WRITE_LIMITER;
+  if (!limiter || typeof limiter.limit !== 'function') return null;
+  const key = request.headers.get('cf-connecting-ip')
+    || request.headers.get('x-forwarded-for')
+    || 'anonymous';
+  const result = await limiter.limit({ key: String(key).slice(0, 128) });
+  if (!result || result.success !== false) return null;
+  return jsonResponse({
+    ok: false,
+    error: 'rate_limited',
+    retryable: true
+  }, 429, { 'retry-after': '60' });
 }
 
 async function storeNormalizedSnapshot(normalized, source, now, env) {
@@ -154,11 +196,21 @@ async function storeNormalizedSnapshot(normalized, source, now, env) {
   `).bind(normalized.seasonId, signature).first();
   if (duplicate) return { duplicate: true };
 
+  const latest = await env.RANKINGS_DB.prepare(`
+    SELECT id, captured_at
+    FROM rank_snapshots
+    WHERE season_id = ? AND scope = ?
+    ORDER BY captured_at DESC, id DESC
+    LIMIT 1
+  `).bind(normalized.seasonId, normalized.scope).first();
+  if (latest && normalized.capturedAt <= Number(latest.captured_at)) return { stale: true };
+
   const insertResult = await env.RANKINGS_DB.prepare(`
     INSERT INTO rank_snapshots (
       season_id, season_name, scope, captured_at, captured_bucket,
       source, signature, raw_json, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (season_id, signature) DO NOTHING
   `).bind(
     normalized.seasonId,
     normalized.seasonName,
@@ -171,6 +223,7 @@ async function storeNormalizedSnapshot(normalized, source, now, env) {
     now
   ).run();
 
+  if (Number(insertResult.meta && insertResult.meta.changes) === 0) return { duplicate: true };
   const snapshotId = Number(insertResult.meta && insertResult.meta.last_row_id) || 0;
   if (!snapshotId) throw new Error('snapshot_insert_failed');
   for (const chunk of chunks(normalized.entries, 50)) {
@@ -232,110 +285,107 @@ function snapshotSignatureInput(normalized) {
   };
 }
 
+const METRIC_VALUE_REPLACEMENT_SQL = `(
+  (excluded.board_key LIKE '%_total' AND (
+    excluded.value > rank_user_metrics.value
+    OR (excluded.value = rank_user_metrics.value
+      AND excluded.value_captured_at >= rank_user_metrics.value_captured_at)
+  ))
+  OR (excluded.board_key NOT LIKE '%_total' AND (
+    excluded.value_captured_at > rank_user_metrics.value_captured_at
+    OR (excluded.value_captured_at = rank_user_metrics.value_captured_at
+      AND excluded.value >= rank_user_metrics.value)
+  ))
+)`;
+
+const METRIC_SOURCE_SCOPES_SQL = `CASE
+  WHEN (
+    instr(',' || rank_user_metrics.source_scopes || ',', ',global,') > 0
+    OR instr(',' || excluded.source_scopes || ',', ',global,') > 0
+  ) AND (
+    instr(',' || rank_user_metrics.source_scopes || ',', ',friends,') > 0
+    OR instr(',' || excluded.source_scopes || ',', ',friends,') > 0
+  ) THEN 'global,friends'
+  WHEN rank_user_metrics.source_scopes <> '' THEN rank_user_metrics.source_scopes
+  ELSE excluded.source_scopes
+END`;
+
+const RANK_USER_METRIC_UPSERT_SQL = `
+  INSERT INTO rank_user_metrics (
+    season_id, user_id, board_key, user_name, avatar_url, value, rank,
+    is_vip, active_name_decoration, name_display_preference,
+    value_snapshot_id, value_scope, value_captured_at,
+    last_snapshot_id, last_scope, last_captured_at, first_captured_at, source_scopes
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT (season_id, user_id, board_key) DO UPDATE SET
+    user_name = CASE
+      WHEN excluded.last_captured_at >= rank_user_metrics.last_captured_at
+        AND excluded.user_name <> '' THEN excluded.user_name
+      ELSE rank_user_metrics.user_name
+    END,
+    avatar_url = CASE
+      WHEN excluded.last_captured_at >= rank_user_metrics.last_captured_at
+        AND excluded.avatar_url <> '' THEN excluded.avatar_url
+      ELSE rank_user_metrics.avatar_url
+    END,
+    value = CASE WHEN ${METRIC_VALUE_REPLACEMENT_SQL}
+      THEN excluded.value ELSE rank_user_metrics.value END,
+    rank = CASE WHEN ${METRIC_VALUE_REPLACEMENT_SQL}
+      THEN excluded.rank ELSE rank_user_metrics.rank END,
+    is_vip = MAX(rank_user_metrics.is_vip, excluded.is_vip),
+    active_name_decoration = CASE
+      WHEN excluded.last_captured_at >= rank_user_metrics.last_captured_at
+        AND excluded.active_name_decoration IS NOT NULL THEN excluded.active_name_decoration
+      ELSE rank_user_metrics.active_name_decoration
+    END,
+    name_display_preference = CASE
+      WHEN excluded.last_captured_at >= rank_user_metrics.last_captured_at
+        AND excluded.name_display_preference IS NOT NULL THEN excluded.name_display_preference
+      ELSE rank_user_metrics.name_display_preference
+    END,
+    value_snapshot_id = CASE WHEN ${METRIC_VALUE_REPLACEMENT_SQL}
+      THEN excluded.value_snapshot_id ELSE rank_user_metrics.value_snapshot_id END,
+    value_scope = CASE WHEN ${METRIC_VALUE_REPLACEMENT_SQL}
+      THEN excluded.value_scope ELSE rank_user_metrics.value_scope END,
+    value_captured_at = CASE WHEN ${METRIC_VALUE_REPLACEMENT_SQL}
+      THEN excluded.value_captured_at ELSE rank_user_metrics.value_captured_at END,
+    last_snapshot_id = CASE
+      WHEN excluded.last_captured_at >= rank_user_metrics.last_captured_at
+        THEN excluded.last_snapshot_id ELSE rank_user_metrics.last_snapshot_id
+    END,
+    last_scope = CASE
+      WHEN excluded.last_captured_at >= rank_user_metrics.last_captured_at
+        THEN excluded.last_scope ELSE rank_user_metrics.last_scope
+    END,
+    last_captured_at = MAX(rank_user_metrics.last_captured_at, excluded.last_captured_at),
+    first_captured_at = MIN(rank_user_metrics.first_captured_at, excluded.first_captured_at),
+    source_scopes = ${METRIC_SOURCE_SCOPES_SQL}
+`;
+
 async function mergeSnapshotMetrics(env, normalized, snapshotId) {
-  const result = await env.RANKINGS_DB.prepare(`
-    SELECT * FROM rank_user_metrics WHERE season_id = ?
-  `).bind(normalized.seasonId).all();
-  const existing = (result.results || []).map(metricFromDbRow);
-  const incoming = normalized.entries.map((entry) => ({
-    seasonId: normalized.seasonId,
-    userId: entry.userId,
-    boardKey: entry.boardKey,
-    userName: entry.userName,
-    avatar: entry.avatar,
-    value: entry.value,
-    rank: entry.rank,
-    isVip: entry.isVip,
-    activeNameDecoration: entry.activeNameDecoration,
-    nameDisplayPreference: entry.nameDisplayPreference,
-    snapshotId,
-    scope: normalized.scope,
-    capturedAt: normalized.capturedAt
-  }));
-  const existingByKey = new Map(existing.map((row) => [metricKey(row), row]));
-  const merged = [];
-  for (const row of incoming) {
-    const key = metricKey(row);
-    const value = mergeMetric(existingByKey.get(key), row);
-    existingByKey.set(key, value);
-    merged.push(value);
-  }
-  for (const chunk of chunks(merged, 50)) {
-    const statements = chunk.map((row) => env.RANKINGS_DB.prepare(`
-      INSERT INTO rank_user_metrics (
-        season_id, user_id, board_key, user_name, avatar_url, value, rank,
-        is_vip, active_name_decoration, name_display_preference,
-        value_snapshot_id, value_scope, value_captured_at,
-        last_snapshot_id, last_scope, last_captured_at, first_captured_at, source_scopes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT (season_id, user_id, board_key) DO UPDATE SET
-        user_name = excluded.user_name,
-        avatar_url = excluded.avatar_url,
-        value = excluded.value,
-        rank = excluded.rank,
-        is_vip = excluded.is_vip,
-        active_name_decoration = excluded.active_name_decoration,
-        name_display_preference = excluded.name_display_preference,
-        value_snapshot_id = excluded.value_snapshot_id,
-        value_scope = excluded.value_scope,
-        value_captured_at = excluded.value_captured_at,
-        last_snapshot_id = excluded.last_snapshot_id,
-        last_scope = excluded.last_scope,
-        last_captured_at = excluded.last_captured_at,
-        first_captured_at = excluded.first_captured_at,
-        source_scopes = excluded.source_scopes
-    `).bind(
-      row.seasonId,
-      row.userId,
-      row.boardKey,
-      row.userName,
-      row.avatar,
-      row.value,
-      row.rank,
-      row.isVip ? 1 : 0,
-      row.activeNameDecoration,
-      row.nameDisplayPreference,
-      row.valueSnapshotId,
-      row.valueScope,
-      row.valueCapturedAt,
-      row.lastSnapshotId,
-      row.lastScope,
-      row.lastCapturedAt,
-      row.firstCapturedAt,
-      row.sourceScopes
+  for (const chunk of chunks(normalized.entries, 50)) {
+    const statements = chunk.map((entry) => env.RANKINGS_DB.prepare(RANK_USER_METRIC_UPSERT_SQL).bind(
+      normalized.seasonId,
+      entry.userId,
+      entry.boardKey,
+      entry.userName,
+      entry.avatar,
+      entry.value,
+      entry.rank,
+      entry.isVip ? 1 : 0,
+      entry.activeNameDecoration,
+      entry.nameDisplayPreference,
+      snapshotId,
+      normalized.scope,
+      normalized.capturedAt,
+      snapshotId,
+      normalized.scope,
+      normalized.capturedAt,
+      normalized.capturedAt,
+      normalized.scope
     ));
     await env.RANKINGS_DB.batch(statements);
   }
-}
-
-function metricFromDbRow(row) {
-  return {
-    seasonId: String(row.season_id || ''),
-    userId: String(row.user_id || ''),
-    boardKey: String(row.board_key || ''),
-    userName: String(row.user_name || ''),
-    avatar: String(row.avatar_url || ''),
-    value: Number(row.value),
-    rank: Number(row.rank),
-    isVip: Boolean(row.is_vip),
-    activeNameDecoration: row.active_name_decoration == null ? null : String(row.active_name_decoration),
-    nameDisplayPreference: row.name_display_preference == null ? null : String(row.name_display_preference),
-    snapshotId: Number(row.last_snapshot_id),
-    scope: String(row.last_scope || ''),
-    capturedAt: Number(row.last_captured_at),
-    valueSnapshotId: Number(row.value_snapshot_id),
-    valueScope: String(row.value_scope || ''),
-    valueCapturedAt: Number(row.value_captured_at),
-    firstCapturedAt: Number(row.first_captured_at),
-    lastCapturedAt: Number(row.last_captured_at),
-    lastSnapshotId: Number(row.last_snapshot_id),
-    lastScope: String(row.last_scope || ''),
-    sourceScopes: String(row.source_scopes || '')
-  };
-}
-
-function metricKey(row) {
-  return `${row.seasonId}\u0000${row.userId}\u0000${row.boardKey}`;
 }
 
 async function getLeaderboard(url, env) {
@@ -481,7 +531,7 @@ async function dailyMetricsForPeriod(env, seasonId, period, capturedAt = null) {
         s.scope, s.captured_at, s.captured_bucket,
         ROW_NUMBER() OVER (
           PARTITION BY e.user_id, e.board_key,
-            CAST((s.captured_at - ${RESET_HOUR_MS}) / ${DAY_MS} AS INTEGER)
+            CAST((s.captured_at - ${DAY_BOUNDARY_OFFSET_MS}) / ${DAY_MS} AS INTEGER)
           ORDER BY s.captured_at DESC, e.value DESC, s.id DESC, e.rank ASC
         ) AS day_order
       FROM rank_entries e
@@ -672,12 +722,6 @@ function shouldReplaceDailyRow(existing, incoming, capturedAt, kind) {
     return Number(incoming.value) >= Number(existing.value);
   }
   return false;
-}
-
-function dayStartAtForCapturedAt(capturedAt) {
-  const value = Number(capturedAt);
-  if (!Number.isFinite(value) || value <= 0) return null;
-  return Math.floor((value - RESET_HOUR_MS) / DAY_MS) * DAY_MS + RESET_HOUR_MS;
 }
 
 function latestDailyRow(rowsByDay) {
