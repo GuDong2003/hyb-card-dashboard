@@ -1238,8 +1238,8 @@ function encodeHistoryCursor(mode, row, until) {
       mode,
       until,
       dayStartAt: Number(row.day_start_at ?? row.dayStartAt ?? dayStartAtForCapturedAt(row.captured_at)),
-      capturedAt: Number(row.captured_at),
-      snapshotId: Number(row.snapshot_id),
+      capturedAt: Number(row.captured_at ?? row.capturedAt),
+      snapshotId: Number(row.snapshot_id ?? row.snapshotId),
       boardKey: String(row.board_key || row.boardKey || '')
     }
     : {

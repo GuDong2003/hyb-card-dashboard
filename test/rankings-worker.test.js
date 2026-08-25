@@ -1181,6 +1181,11 @@ test('history defaults to 30 days and returns a stable next cursor', async () =>
   assert.equal(payload.limit, 1);
   assert.equal(payload.hasMore, true);
   assert.ok(payload.nextCursor);
+  const cursor = JSON.parse(Buffer.from(payload.nextCursor, 'base64url').toString('utf8'));
+  const lastRow = payload.rows[payload.rows.length - 1];
+  assert.equal(cursor.capturedAt, lastRow.capturedAt);
+  assert.equal(cursor.snapshotId, lastRow.snapshotId);
+  assert.equal(cursor.boardKey, lastRow.boardKey);
 });
 
 test('daily history bounds its raw tail to the current Beijing day', async () => {
