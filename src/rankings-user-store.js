@@ -186,6 +186,112 @@ export function currentSortValues(row = {}, capturedAt = Date.now()) {
 export const USER_DAY_UPSERT_SQL = buildUpsertSql('rank_user_days', USER_DAY_COLUMNS, false);
 export const USER_CURRENT_UPSERT_SQL = buildUpsertSql('rank_user_current', USER_CURRENT_COLUMNS, true);
 
+export const SEASON_UPSERT_SQL = `
+  INSERT INTO rank_seasons (
+    season_id, season_name, last_observed_at, last_day_start_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?)
+  ON CONFLICT (season_id) DO UPDATE SET
+    season_name = CASE WHEN excluded.season_name <> '' THEN excluded.season_name ELSE rank_seasons.season_name END,
+    last_observed_at = MAX(rank_seasons.last_observed_at, excluded.last_observed_at),
+    last_day_start_at = MAX(rank_seasons.last_day_start_at, excluded.last_day_start_at),
+    updated_at = MAX(rank_seasons.updated_at, excluded.updated_at)
+`;
+
+export const INGEST_STATE_UPSERT_SQL = `
+  INSERT INTO rank_ingest_state (
+    season_id, scope, last_captured_at, updated_at
+  ) VALUES (?, ?, ?, ?)
+  ON CONFLICT (season_id, scope) DO UPDATE SET
+    last_captured_at = MAX(rank_ingest_state.last_captured_at, excluded.last_captured_at),
+    updated_at = MAX(rank_ingest_state.updated_at, excluded.updated_at)
+`;
+
+export async function storeUserObservations(db, normalizedSnapshots = [], source = '', now = Date.now()) {
+  void source;
+  const grouped = new Map();
+  for (const normalized of normalizedSnapshots) {
+    if (!normalized || !normalized.seasonId || !normalized.scope) continue;
+    const key = `${normalized.seasonId}\u0000${normalized.scope}`;
+    const group = grouped.get(key) || {
+      seasonId: normalized.seasonId,
+      seasonName: normalized.seasonName || '',
+      scope: normalized.scope,
+      snapshots: [],
+      capturedAt: 0
+    };
+    group.snapshots.push(normalized);
+    group.seasonName = normalized.seasonName || group.seasonName;
+    group.capturedAt = Math.max(group.capturedAt, Number(normalized.capturedAt) || 0);
+    grouped.set(key, group);
+  }
+
+  const result = {
+    users: 0,
+    changedUsers: 0,
+    changedDays: 0,
+    changedFields: 0,
+    skippedScopes: []
+  };
+
+  for (const group of grouped.values()) {
+    const state = await db.prepare(`
+      SELECT last_captured_at
+      FROM rank_ingest_state
+      WHERE season_id = ? AND scope = ?
+      LIMIT 1
+    `).bind(group.seasonId, group.scope).first();
+    if (shouldSkipSourceCapture(state, group.capturedAt)) {
+      result.skippedScopes.push({
+        seasonId: group.seasonId,
+        scope: group.scope,
+        capturedAt: group.capturedAt,
+        lastCapturedAt: Number(state.last_captured_at)
+      });
+      continue;
+    }
+
+    const rows = mergeUserObservations(group.snapshots);
+    if (!rows.length) throw new Error('empty_entries');
+    result.users += rows.length;
+
+    for (const chunk of chunks(rows, 50)) {
+      const statements = [];
+      for (const row of chunk) {
+        statements.push(db.prepare(USER_DAY_UPSERT_SQL).bind(...userDayValues(row)));
+      }
+      for (const row of chunk) {
+        statements.push(db.prepare(USER_CURRENT_UPSERT_SQL).bind(...userCurrentValues(row)));
+      }
+      const batchResults = await db.batch(statements);
+      const changes = Array.isArray(batchResults)
+        ? batchResults.map((item) => Number(item && item.meta && item.meta.changes || 0))
+        : [];
+      const dayChanges = changes.slice(0, chunk.length).reduce((sum, value) => sum + value, 0);
+      const currentChanges = changes.slice(chunk.length).reduce((sum, value) => sum + value, 0);
+      result.changedDays += dayChanges;
+      result.changedFields += dayChanges + currentChanges;
+      result.changedUsers += chunk.filter((_, index) => changes[index] || changes[chunk.length + index]).length;
+    }
+
+    const latestDayStartAt = rows.reduce((max, row) => Math.max(max, Number(row.day_start_at)), 0);
+    await db.prepare(SEASON_UPSERT_SQL).bind(
+      group.seasonId,
+      group.seasonName,
+      group.capturedAt,
+      latestDayStartAt,
+      now
+    ).run();
+    await db.prepare(INGEST_STATE_UPSERT_SQL).bind(
+      group.seasonId,
+      group.scope,
+      group.capturedAt,
+      now
+    ).run();
+  }
+
+  return result;
+}
+
 function buildUpsertSql(tableName, columns, currentTable) {
   const insertColumns = columns.join(', ');
   const placeholders = columns.map(() => '?').join(', ');
@@ -211,14 +317,19 @@ function buildUpsertSql(tableName, columns, currentTable) {
     const cumulative = CUMULATIVE_BOARD_KEYS.has(boardKey);
     const existingObserved = `${tableName}.${observedColumn}`;
     const newer = `(excluded.${observedColumn} IS NOT NULL AND (${existingObserved} IS NULL OR excluded.${observedColumn} > ${existingObserved} OR (excluded.${observedColumn} = ${existingObserved} AND (excluded.${valueColumn} > COALESCE(${tableName}.${valueColumn}, -1) OR (excluded.${valueColumn} = ${tableName}.${valueColumn} AND excluded.${rankColumn} < ${tableName}.${rankColumn})))))`;
+    const dataDiff = `(excluded.${valueColumn} IS NOT ${tableName}.${valueColumn} OR excluded.${rankColumn} IS NOT ${tableName}.${rankColumn})`;
+    const cumulativeValueChanged = `(excluded.${valueColumn} IS NOT NULL AND (${tableName}.${valueColumn} IS NULL OR excluded.${valueColumn} > ${tableName}.${valueColumn}))`;
+    const metricChanged = cumulative
+      ? `(${cumulativeValueChanged} OR (${newer} AND excluded.${rankColumn} IS NOT ${tableName}.${rankColumn}))`
+      : `(${newer} AND ${dataDiff})`;
     if (cumulative) {
-      updates.push(`${valueColumn} = CASE WHEN excluded.${valueColumn} IS NOT NULL AND (${tableName}.${valueColumn} IS NULL OR excluded.${valueColumn} > ${tableName}.${valueColumn}) THEN excluded.${valueColumn} ELSE ${tableName}.${valueColumn} END`);
+      updates.push(`${valueColumn} = CASE WHEN ${cumulativeValueChanged} THEN excluded.${valueColumn} ELSE ${tableName}.${valueColumn} END`);
       updates.push(`${rankColumn} = CASE WHEN ${newer} THEN excluded.${rankColumn} ELSE ${tableName}.${rankColumn} END`);
-      updates.push(`${observedColumn} = MAX(${tableName}.${observedColumn}, excluded.${observedColumn})`);
+      updates.push(`${observedColumn} = CASE WHEN ${metricChanged} THEN MAX(${tableName}.${observedColumn}, excluded.${observedColumn}) ELSE ${tableName}.${observedColumn} END`);
     } else {
       updates.push(`${valueColumn} = CASE WHEN ${newer} THEN excluded.${valueColumn} ELSE ${tableName}.${valueColumn} END`);
       updates.push(`${rankColumn} = CASE WHEN ${newer} THEN excluded.${rankColumn} ELSE ${tableName}.${rankColumn} END`);
-      updates.push(`${observedColumn} = CASE WHEN ${newer} THEN excluded.${observedColumn} ELSE ${tableName}.${observedColumn} END`);
+      updates.push(`${observedColumn} = CASE WHEN ${metricChanged} THEN excluded.${observedColumn} ELSE ${tableName}.${observedColumn} END`);
     }
   }
 
@@ -243,12 +354,6 @@ function meaningfulChangeSql(tableName, columns, currentTable) {
     `(excluded.name_display_preference IS NOT NULL AND excluded.name_display_preference IS NOT ${tableName}.name_display_preference)`,
     `(excluded.source_scopes <> ${tableName}.source_scopes)`
   ];
-  if (currentTable) {
-    checks.push(`(excluded.first_observed_at < ${tableName}.first_observed_at)`);
-    checks.push(`(excluded.last_observed_at > ${tableName}.last_observed_at)`);
-  } else {
-    checks.push(`(excluded.observed_at > ${tableName}.observed_at)`);
-  }
   for (const boardKey of COMPACT_BOARD_KEYS) {
     const valueColumn = `${boardKey}_value`;
     const rankColumn = `${boardKey}_rank`;
@@ -372,4 +477,39 @@ function integerOrNull(value) {
 function numericOrNull(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function userDayValues(row) {
+  return USER_DAY_COLUMNS.map((column) => row[column] ?? null);
+}
+
+function userCurrentValues(row) {
+  const sortValues = currentSortValues(row, row.observed_at);
+  const current = {
+    season_id: row.season_id,
+    user_id: row.user_id,
+    user_name: row.user_name,
+    avatar_url: row.avatar_url,
+    is_vip: row.is_vip,
+    active_name_decoration: row.active_name_decoration,
+    name_display_preference: row.name_display_preference,
+    first_observed_at: row.observed_at,
+    last_observed_at: row.observed_at,
+    source_scopes: row.source_scopes,
+    ...Object.fromEntries(COMPACT_BOARD_KEYS.flatMap((boardKey) => [
+      [`${boardKey}_value`, row[`${boardKey}_value`]],
+      [`${boardKey}_rank`, row[`${boardKey}_rank`]],
+      [`${boardKey}_observed_at`, row[`${boardKey}_observed_at`]]
+    ])),
+    ...sortValues
+  };
+  return USER_CURRENT_COLUMNS.map((column) => current[column] ?? null);
+}
+
+function chunks(values, size) {
+  const result = [];
+  for (let index = 0; index < values.length; index += size) {
+    result.push(values.slice(index, index + size));
+  }
+  return result;
 }

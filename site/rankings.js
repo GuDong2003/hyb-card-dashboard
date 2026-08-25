@@ -1170,6 +1170,41 @@
             });
     }
 
+    function compactSnapshotForUpload(snapshot) {
+        const source = snapshotSource(snapshot);
+        if (!source || typeof source !== 'object') return null;
+        const season = source.season && typeof source.season === 'object'
+            ? {
+                id: String(source.season.id || '').trim(),
+                name: String(source.season.name || '').trim()
+            }
+            : { id: '', name: '' };
+        const leaderboards = {};
+        Object.entries(source.leaderboards || {}).forEach(([boardKey, rows]) => {
+            if (!Array.isArray(rows)) return;
+            leaderboards[boardKey] = rows.map((row) => ({
+                userId: rowUserId(row),
+                userName: rowName(row, rowUserId(row)),
+                avatar: rowAvatar(row),
+                value: rowValue(row),
+                rank: rowRank(row, null),
+                isVip: rowIsVip(row),
+                activeNameDecoration: row && row.activeNameDecoration != null
+                    ? String(row.activeNameDecoration)
+                    : null,
+                nameDisplayPreference: row && row.nameDisplayPreference != null
+                    ? String(row.nameDisplayPreference)
+                    : null
+            })).filter((row) => row.userId && row.value != null && row.rank != null);
+        });
+        return {
+            season,
+            scope: String(source.scope || '').trim(),
+            capturedAt: normalizeCapturedAt(source.capturedAt, null),
+            leaderboards
+        };
+    }
+
     function mergeLocalSnapshots(snapshots = []) {
         const normalizedSnapshots = normalizeSnapshotsForUpload(snapshots);
         const boardRows = new Map();
@@ -2009,8 +2044,10 @@
         if (!normalizedSnapshots.length || normalizedSnapshots.some((item) => !Number.isInteger(item.capturedAt) || item.capturedAt <= 0)) {
             throw new Error('榜单快照缺少有效抓取时间');
         }
+        const compactSnapshots = normalizedSnapshots.map(compactSnapshotForUpload).filter((item) => item && item.scope && item.season.id && item.season.name);
+        if (!compactSnapshots.length) throw new Error('榜单观察数据为空');
         return apiPost('/api/rankings/snapshots', {
-            snapshots: normalizedSnapshots,
+            snapshots: compactSnapshots,
             source: 'card-dashboard-userscript'
         });
     }

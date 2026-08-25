@@ -531,6 +531,14 @@ test('rankings client uses refresh and cloud upload labels', async () => {
   assert.match(source, /state\.busy \? '↻ 同步中…' : '↻ 立即刷新'/);
 });
 
+test('ranking upload keeps current observations but strips raw payload fields', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  assert.match(source, /function compactSnapshotForUpload/);
+  assert.match(source, /leaderboards/);
+  assert.match(source, /userId/);
+  assert.doesNotMatch(source, /raw\s*:\s*row/);
+});
+
 test('rankings refresh bypasses fresh snapshots and exposes running status', async () => {
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
   const css = await readFile(new URL('../site/rankings.css', import.meta.url), 'utf8');

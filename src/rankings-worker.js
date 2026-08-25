@@ -13,6 +13,9 @@ import {
   DAY_MS,
   dayStartAtForCapturedAt
 } from './rankings-daily.js';
+import {
+  storeUserObservations
+} from './rankings-user-store.js';
 
 const DEFAULT_SEASON_START_AT = Date.parse('2026-08-02T04:00:00+08:00');
 const BOARD_GROUPS = new Set(['users', 'epic', 'spend', 'sets', 'luck']);
@@ -118,66 +121,60 @@ async function postSnapshot(request, env) {
   }
 
   const source = String(body && body.source || 'card-dashboard-userscript').slice(0, 64);
-  const stored = [];
-  const errors = bundle.errors.slice();
-  let duplicateSnapshots = 0;
-  let staleSnapshots = 0;
-  let storedEntries = 0;
-  for (const normalized of bundle.snapshots) {
-    try {
-      const result = await storeNormalizedSnapshot(normalized, source, now, env);
-      if (result.duplicate) {
-        duplicateSnapshots += 1;
-        continue;
-      }
-      if (result.stale) {
-        staleSnapshots += 1;
-        continue;
-      }
-      stored.push(result.snapshot);
-      storedEntries += result.storedEntries;
-    } catch (error) {
-      errors.push({ scope: normalized.scope, reason: String(error && error.message || error) });
-    }
-  }
-
-  if (!stored.length && !duplicateSnapshots && !staleSnapshots) {
+  let stored;
+  try {
+    stored = await storeUserObservations(env.RANKINGS_DB, bundle.snapshots, source, now);
+  } catch (error) {
     return jsonResponse({
       ok: false,
-      error: 'invalid_snapshot',
-      reason: errors[0] && errors[0].reason || 'snapshot_insert_failed',
-      errors
-    }, 400);
+      error: 'database_error',
+      reason: String(error && error.message || error).slice(0, 240),
+      errors: bundle.errors
+    }, 500);
   }
 
-  if (!stored.length && !duplicateSnapshots && staleSnapshots && !errors.length) {
-    return jsonResponse({
-      ok: true,
-      status: 'rejected',
-      reason: 'stale_or_existing_data',
-      staleSnapshots,
-      duplicateSnapshots: 0,
-      storedSnapshots: 0,
-      storedEntries: 0,
-      snapshots: [],
-      errors: []
-    });
-  }
+  const errors = bundle.errors.slice();
+  const skippedScopes = stored.skippedScopes || [];
+  const storedSnapshots = Math.max(0, bundle.snapshots.length - skippedScopes.length);
+  const storedEntries = bundle.snapshots
+    .filter((normalized) => !skippedScopes.some((item) => item.seasonId === normalized.seasonId && item.scope === normalized.scope))
+    .reduce((sum, normalized) => sum + normalized.entries.length, 0);
+  const unchangedUsers = Math.max(0, stored.users - stored.changedUsers);
+  const latest = bundle.snapshots[bundle.snapshots.length - 1];
+  const snapshot = latest ? serializeObservedSnapshot(latest, now) : null;
 
   return jsonResponse({
     ok: true,
-    status: errors.length || staleSnapshots
-      ? 'partial'
-      : duplicateSnapshots && !stored.length ? 'duplicate' : 'accepted',
-    snapshot: stored[stored.length - 1] || null,
-    snapshots: stored,
-    storedSnapshots: stored.length,
-    duplicateSnapshots,
-    staleSnapshots,
+    status: errors.length || skippedScopes.length
+      ? (storedSnapshots ? 'partial' : 'unchanged')
+      : 'accepted',
+    snapshot,
+    snapshots: snapshot ? [snapshot] : [],
+    storedSnapshots,
+    duplicateSnapshots: 0,
+    staleSnapshots: skippedScopes.length,
     storedEntries,
-    partial: errors.length > 0 || staleSnapshots > 0,
+    changedUsers: stored.changedUsers,
+    changedFields: stored.changedFields,
+    unchangedUsers,
+    skippedScopes,
+    partial: errors.length > 0 || skippedScopes.length > 0,
     errors
   });
+}
+
+function serializeObservedSnapshot(normalized, createdAt) {
+  return {
+    id: null,
+    seasonId: normalized.seasonId,
+    seasonName: normalized.seasonName,
+    scope: normalized.scope,
+    capturedAt: normalized.capturedAt,
+    capturedBucket: normalized.capturedBucket ?? null,
+    source: 'compact-user-observation',
+    signature: '',
+    createdAt
+  };
 }
 
 async function limitSnapshotWrites(request, env) {
