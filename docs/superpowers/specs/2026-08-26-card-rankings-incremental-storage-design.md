@@ -243,6 +243,7 @@ Worker 在 SQL 中直接对 `rank_user_current` 做过滤、排序和 `LIMIT lim
 
 - `q` 必填，按 `user_id/user_name` 在 SQL 中过滤。
 - 默认最多 20 行，不返回全部用户。
+- 置顶或添加已知用户时允许改用 `ids=u1,u2`，最多 20 个、与 `q` 互斥，只读取指定用户。
 
 `GET /api/rankings/history`：
 
