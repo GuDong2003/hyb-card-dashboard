@@ -8,7 +8,7 @@
 
 - 先完整备份旧 D1，再新建精简 D1；旧库保留作回滚和迁移源，不在旧库内做破坏性清理。
 - 新库以用户为中心，每个赛季、每个北京时间日、每个用户只保存一行；同一行包含该用户各榜单的相关字段。
-- 同一天首次观察某个来源时保存该用户当天的基线；同一天后续刷新只上传发生变化的用户/榜单字段。
+- 同一天首次观察某个来源时保存该用户当天的基线；后续刷新可以继续提交当前观察到的用户行，由 Worker 在 D1 侧判断变化并只更新发生变化的字段。
 - 不保存新的原始快照、榜单明细、`raw_json` 或每次请求的幂等日志。
 - Dashboard 启动只取最新元数据和第一页；换页只取对应页；点击或添加用户时才取该用户的历史。
 - 浏览器和 Worker 都启用短时缓存；上传成功后使用显式 revalidation，避免缓存遮住刚写入的数据。
@@ -47,10 +47,8 @@
 
 ```text
 CDK 返回全量榜单（上游接口限制）
-  └─ userscript 本地规范化并对比上次已上传状态
-       ├─ 同一天无变化：不发 POST
-       ├─ 同一天有变化：只发变化用户/榜单行
-       └─ 新的一天：为当前观察到的用户发送一次日基线
+  └─ userscript 返回当前来源的观察结果
+       └─ Dashboard 去掉 raw 字段后提交当前用户行
             └─ POST /api/rankings/snapshots（保留路径，语义改为观察增量）
                  ├─ 按 userId + Beijing day 合并
                  ├─ 条件 upsert rank_user_days
@@ -193,28 +191,17 @@ day_start_at = floor((captured_at - 04:00) / 24h) * 24h + 04:00
 
 ## 增量上传协议
 
-### 客户端 diff
+### 客户端上传边界
 
-userscript 在 GM storage 中维护按以下键分组的状态：
+上游 CDK 仍然返回全量前 100 名和好友列表，这是上游接口限制；本项目不在 userscript 中维护 fingerprint、GM 上传状态或本地确认日志。userscript 继续负责请求、规范化时间和跨页面 relay，Dashboard 的上传函数负责把当前响应裁剪为不含 `raw` 的规范化观察行。
 
-```text
-season_id / scope / day_start_at / board_key / user_id
-```
+POST 发送的是当前观察到的用户/榜单字段，而不是完整历史，也不包含 `rank_snapshots.raw_json`。同一天重复提交同一批当前行由 Worker/D1 条件 upsert 变成 no-op；新的一天使用新的 `day_start_at` 生成日基线。用户从这次前 100 或好友列表消失时不发送删除标记；缺失不等于数值为零。
 
-状态只保存规范化字段和 fingerprint，不保存 CDK Cookie 或完整原始响应。处理每个来源时：
-
-1. 将当前响应规范化为 `userId、userName、avatar、value、rank、isVip、decoration` 等字段。
-2. 如果当前北京日与本地状态不同，把当前观察到的用户作为该来源当天基线提交一次。
-3. 如果仍在同一天，只提交 fingerprint 发生变化的用户/榜单行，以及新出现的用户/榜单行。
-4. 用户从这次前 100 或好友列表消失时不发送删除标记；缺失不等于数值为零。
-5. POST 成功后才更新本地已上传状态。网络失败、429 或 Worker 错误时保留待发送差异，下一次可以安全重试。
-6. 同一天没有变化时直接跳过 POST，不产生 D1 读写。
-
-新的一天发送一次基线是必要的：如果完全不发送未变化用户，服务器无法知道该用户当天仍被观察到，也无法构造“每日数据”。这仍然是增量上传，因为每个用户每天只有一条合并记录，后续刷新不会重复传全量快照。
+这样“增量”定义在数据库写入层：HTTP body 可能包含当前这次观察到的全部用户行，但 D1 只新增或更新发生变化的用户日字段。由于单次最多是前 100 名和好友列表，避免客户端状态同步复杂度比进一步压缩 body 更重要。
 
 ### Worker 校验与幂等
 
-保留 `/api/rankings/snapshots` 路径以兼容现有前端和旧脚本，但不再把请求命名为快照存储。Worker 兼容旧的 `snapshots` 外层结构，并把其中的榜单行当作观察增量处理；新 userscript 只发送裁剪后的行。
+保留 `/api/rankings/snapshots` 路径以兼容现有前端和旧脚本，但不再把请求命名为快照存储。Worker 兼容旧的 `snapshots` 外层结构，并把其中的榜单行当作观察增量处理；Dashboard 在 POST 前去掉 `raw` 字段。
 
 每个用户批次执行以下检查：
 
@@ -223,10 +210,10 @@ season_id / scope / day_start_at / board_key / user_id
 - 旧日期数据允许迟到回填，但同一天同一字段只接受更晚的观测；较早值不会覆盖较新值。
 - 同一 `(season_id, day_start_at, user_id)` 的重复请求通过主键 upsert 变成 no-op 或字段级更新，不产生第二行。
 - `rank_user_current` 使用与指标类型对应的最大值/最新值规则；同一请求重放仍得到同样结果。
-- 不建立会随请求无限增长的 `idempotency_receipts` 表。用户级日主键、字段时间条件和条件 upsert 已提供结果幂等；请求重放只会返回 `unchanged` 或实际变化数。
+- 不建立会随请求无限增长的 `idempotency_receipts` 表，也不在浏览器保存 fingerprint。用户级日主键、字段时间条件和条件 upsert 已提供结果幂等；请求重放只会返回 `unchanged` 或实际变化数。
 - POST 仍使用 Rate Limiting binding，默认每来源每 60 秒最多 10 次；429 不写入数据库。
 
-为了让“未变化不写入”不仅依赖客户端，日表和当前表的 upsert 必须带变化条件：如果 incoming 字段与现有值、rank、资料和来源都没有变化，`changes` 为 0。`observed_at` 不能单独触发更新，否则定时刷新仍会造成写放大。
+为了让“未变化不写入”完全由服务端保证，日表和当前表的 upsert 必须带变化条件：如果 incoming 字段与现有值、rank、资料和来源都没有变化，`changes` 为 0。`observed_at` 不能单独触发更新，否则定时刷新仍会造成写放大。
 
 ## 查询 API
 
@@ -331,7 +318,7 @@ Dashboard 的 `apiGet` 增加内存缓存，必要时使用 `sessionStorage` 保
 - 新库重复上传同一 payload 三次，只有第一次产生变化。
 - 新库 schema 不包含 `rank_snapshots`、`rank_entries` 或 `raw_json`。
 
-验证通过后只修改 `wrangler.jsonc` 中 `RANKINGS_DB.database_id` 指向新库，部署 Worker 和更新 userscript。旧 Worker 版本、旧 binding 配置和旧 D1 均保留，出现问题时可以直接恢复旧配置并重新部署。
+验证通过后只修改 `wrangler.jsonc` 中 `RANKINGS_DB.database_id` 指向新库，部署 Worker 和 Dashboard 静态资源；userscript 的抓取/relay 逻辑无需为增量存储增加本地状态。旧 Worker 版本、旧 binding 配置和旧 D1 均保留，出现问题时可以直接恢复旧配置并重新部署。
 
 ## 测试与验收
 
@@ -341,7 +328,7 @@ Dashboard 的 `apiGet` 增加内存缓存，必要时使用 `sessionStorage` 保
 - 同用户同日多来源能合并到一行，`source_scopes` 不丢失。
 - 同日重复 payload 不新增行，也不因时间更新产生无意义写入。
 - 较早字段不能覆盖较晚字段；累计榜取最大值，周期榜取最新值。
-- 增量 userscript 在同日只生成变化行，跨日生成一次基线；POST 失败不会丢本地差异。
+- 同一份完整当前观察 payload 重复提交时只产生第一次变化；POST 重放不会新增用户日行。
 - 上传路径不出现旧表查询、`raw_json` 插入或完整快照签名索引依赖。
 - `latest` 只读 season 元数据；leaderboard 使用 SQL `LIMIT + 1` 和 cursor；history 只读取一个 userId 的日行。
 - 非法 cursor、时间范围、limit、用户 ID 和超大 payload 返回 400；限流返回 429。
