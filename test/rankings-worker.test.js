@@ -37,6 +37,7 @@ class FakeD1 {
     this.snapshots = [];
     this.entries = [];
     this.metrics = [];
+    this.daily = [];
     this.nextSnapshotId = 1;
     this.queries = [];
   }
@@ -79,6 +80,52 @@ class FakeD1 {
   async all(sql, params) {
     const normalized = sql.replace(/\s+/g, ' ').trim().toLowerCase();
     this.queries.push({ sql: normalized, params: [...params] });
+    if (normalized.includes('from rank_daily_metrics')) {
+      return { results: fakeDailyQueryRows(this, normalized, params) };
+    }
+    if (normalized.includes('from rank_user_metrics') && normalized.includes('like ?')) {
+      const [seasonId, firstPattern] = params;
+      const pattern = String(firstPattern || '')
+        .replace(/^%|%$/g, '')
+        .replaceAll('\\%', '%')
+        .replaceAll('\\_', '_')
+        .replaceAll('\\\\', '\\')
+        .toLowerCase();
+      const matched = this.metrics
+        .filter((row) => row.season_id === seasonId)
+        .filter((row) => String(row.user_id).toLowerCase().includes(pattern)
+          || String(row.user_name).toLowerCase().includes(pattern))
+        .sort((left, right) => Number(right.last_captured_at) - Number(left.last_captured_at));
+      const users = [];
+      const seen = new Set();
+      for (const row of matched) {
+        if (seen.has(row.user_id)) continue;
+        seen.add(row.user_id);
+        users.push({
+          user_id: row.user_id,
+          user_name: row.user_name,
+          avatar_url: row.avatar_url,
+          is_vip: row.is_vip,
+          last_seen_at: row.last_captured_at
+        });
+      }
+      return { results: users.slice(0, 20) };
+    }
+    if (normalized.includes('with current_rows')
+      && normalized.includes('from rank_entries e')
+      && normalized.includes('board_key in')) {
+      return { results: fakeCurrentRows(this, normalized, params) };
+    }
+    if (normalized.includes('with current_rows')
+      && normalized.includes('from rank_entries e')
+      && normalized.includes('e.user_id = ?')) {
+      return { results: fakeCurrentRows(this, normalized, params) };
+    }
+    if (normalized.includes('with candidates')
+      && normalized.includes('from rank_entries e')
+      && normalized.includes('e.user_id = ?')) {
+      return { results: fakeSnapshotHistoryRows(this, normalized, params) };
+    }
     if (normalized.includes('with daily_rows') && normalized.includes('row_number() over')) {
       const [seasonId, ...rest] = params;
       const keys = rest.slice(0, 3);
@@ -283,6 +330,219 @@ class FakeD1 {
     }
     return { success: true, meta: {} };
   }
+}
+
+function fakeBoardMatches(boardKey, pattern) {
+  if (!pattern) return true;
+  return String(boardKey || '').startsWith(String(pattern).replace(/%$/, ''));
+}
+
+function fakeSnapshotRows(db, options = {}) {
+  const snapshotsById = new Map(db.snapshots.map((row) => [row.id, row]));
+  const rows = [];
+  for (const entry of db.entries) {
+    const snapshot = snapshotsById.get(entry.snapshot_id);
+    if (!snapshot || (options.seasonId != null && snapshot.season_id !== options.seasonId)) continue;
+    if (options.userId != null && entry.user_id !== options.userId) continue;
+    if (options.boardKeys && !options.boardKeys.includes(entry.board_key)) continue;
+    if (!fakeBoardMatches(entry.board_key, options.boardPattern)) continue;
+    if (options.startAt != null && snapshot.captured_at < options.startAt) continue;
+    if (options.endAt != null && snapshot.captured_at >= options.endAt) continue;
+    if (options.maxAt != null && snapshot.captured_at > options.maxAt) continue;
+    rows.push({
+      ...entry,
+      season_id: snapshot.season_id,
+      season_name: snapshot.season_name,
+      scope: snapshot.scope,
+      captured_at: snapshot.captured_at,
+      captured_bucket: snapshot.captured_bucket,
+      snapshot_id: snapshot.id
+    });
+  }
+  return rows;
+}
+
+function fakeLatestClosedDayStart(db) {
+  const latestCapturedAt = db.snapshots.reduce(
+    (latest, row) => Math.max(latest, Number(row.captured_at) || 0),
+    0
+  );
+  return dayStartAtForCapturedAt(latestCapturedAt);
+}
+
+function fakeDailyCandidateCompare(left, right) {
+  return Number(left.captured_at) - Number(right.captured_at)
+    || Number(left.value) - Number(right.value)
+    || Number(left.snapshot_id) - Number(right.snapshot_id)
+    || Number(right.rank) - Number(left.rank);
+}
+
+function fakeMaterializedDailyRows(db, seasonId, startAt = null, endAt = null) {
+  const selected = new Map();
+  const closedBefore = fakeLatestClosedDayStart(db);
+  for (const row of fakeSnapshotRows(db, { seasonId })) {
+    const dayStartAt = dayStartAtForCapturedAt(row.captured_at);
+    if (dayStartAt == null || (closedBefore != null && dayStartAt >= closedBefore)) continue;
+    if (startAt != null && dayStartAt < startAt) continue;
+    if (endAt != null && dayStartAt >= endAt) continue;
+    const candidate = { ...row, day_start_at: dayStartAt };
+    const key = `${row.season_id}\u0000${dayStartAt}\u0000${row.user_id}\u0000${row.board_key}`;
+    const existing = selected.get(key);
+    if (!existing || fakeDailyCandidateCompare(candidate, existing) > 0) selected.set(key, candidate);
+  }
+  for (const row of db.daily) {
+    if (row.season_id !== seasonId) continue;
+    if (startAt != null && row.day_start_at < startAt) continue;
+    if (endAt != null && row.day_start_at >= endAt) continue;
+    const key = `${row.season_id}\u0000${row.day_start_at}\u0000${row.user_id}\u0000${row.board_key}`;
+    const existing = selected.get(key);
+    if (!existing || fakeDailyCandidateCompare(row, existing) > 0) {
+      selected.set(key, { ...row });
+    }
+  }
+  return Array.from(selected.values());
+}
+
+function fakeDailyQueryRows(db, normalized, params) {
+  if (normalized.includes('user_id = ?')) {
+    let index = 0;
+    const seasonId = params[index++];
+    const userId = params[index++];
+    const boardPattern = normalized.includes('board_key like ?') ? params[index++] : null;
+    const since = Number(params[index++]);
+    const until = Number(params[index++]);
+    const rows = fakeMaterializedDailyRows(db, seasonId)
+      .filter((row) => row.user_id === userId)
+      .filter((row) => fakeBoardMatches(row.board_key, boardPattern))
+      .filter((row) => row.captured_at >= since && row.captured_at <= until);
+    if (normalized.includes('day_start_at > ?')) {
+      const cursorStart = params.length - 1 - 10;
+      const cursor = {
+        dayStartAt: Number(params[cursorStart]),
+        capturedAt: Number(params[cursorStart + 2]),
+        snapshotId: Number(params[cursorStart + 5]),
+        boardKey: String(params[cursorStart + 9])
+      };
+      rows.splice(0, rows.length, ...rows.filter((row) => fakeTupleAfter([
+        Number(row.day_start_at), Number(row.captured_at), Number(row.snapshot_id), String(row.board_key)
+      ], [cursor.dayStartAt, cursor.capturedAt, cursor.snapshotId, cursor.boardKey])));
+    }
+    rows.sort((left, right) => Number(left.day_start_at) - Number(right.day_start_at)
+      || Number(left.captured_at) - Number(right.captured_at)
+      || Number(left.snapshot_id) - Number(right.snapshot_id)
+      || String(left.board_key).localeCompare(String(right.board_key)));
+    const limit = Number(params[params.length - 1]);
+    return rows.slice(0, limit);
+  }
+
+  if (normalized.includes('board_key = ?')) {
+    const [seasonId, boardKey, since, until] = params;
+    return fakeMaterializedDailyRows(db, seasonId)
+      .filter((row) => row.board_key === boardKey
+        && row.day_start_at >= Number(since)
+        && row.day_start_at <= Number(until))
+      .sort((left, right) => Number(left.day_start_at) - Number(right.day_start_at)
+        || Number(left.rank) - Number(right.rank)
+        || String(left.user_id).localeCompare(String(right.user_id)));
+  }
+
+  const seasonId = params[0];
+  const keys = params.slice(1, 4);
+  const hasLowerBound = normalized.includes('day_start_at >= ?');
+  const startAt = hasLowerBound ? Number(params[4]) : null;
+  const endAt = hasLowerBound ? Number(params[5]) : Number(params[4]);
+  return fakeMaterializedDailyRows(db, seasonId, startAt, endAt)
+    .filter((row) => keys.includes(row.board_key))
+    .sort((left, right) => Number(left.day_start_at) - Number(right.day_start_at)
+      || Number(left.captured_at) - Number(right.captured_at)
+      || Number(left.rank) - Number(right.rank)
+      || Number(left.snapshot_id) - Number(right.snapshot_id));
+}
+
+function fakeCurrentRows(db, normalized, params) {
+  let index = 0;
+  const seasonId = params[index++];
+  const boardKeys = normalized.includes('board_key in') ? params.slice(index, index + 3) : null;
+  if (boardKeys) index += 3;
+  const userId = normalized.includes('e.user_id = ?') ? params[index++] : null;
+  const boardPattern = normalized.includes('board_key like ?') ? params[index++] : null;
+  const startAt = Number(params[index++]);
+  const endAt = Number(params[index++]);
+  const maxAt = Number(params[index++]);
+  const selected = new Map();
+  for (const row of fakeSnapshotRows(db, {
+    seasonId,
+    userId,
+    boardKeys,
+    boardPattern,
+    startAt,
+    endAt,
+    maxAt
+  })) {
+    const key = `${row.user_id}\u0000${row.board_key}`;
+    const existing = selected.get(key);
+    if (!existing || Number(row.captured_at) > Number(existing.captured_at)
+      || (Number(row.captured_at) === Number(existing.captured_at) && Number(row.value) > Number(existing.value))
+      || (Number(row.captured_at) === Number(existing.captured_at) && Number(row.value) === Number(existing.value) && Number(row.snapshot_id) > Number(existing.snapshot_id))
+      || (Number(row.captured_at) === Number(existing.captured_at) && Number(row.value) === Number(existing.value) && Number(row.snapshot_id) === Number(existing.snapshot_id) && Number(row.rank) < Number(existing.rank))) {
+      selected.set(key, row);
+    }
+  }
+  return Array.from(selected.values()).sort((left, right) => Number(left.captured_at) - Number(right.captured_at)
+    || Number(left.rank) - Number(right.rank)
+    || Number(left.snapshot_id) - Number(right.snapshot_id));
+}
+
+function fakeSnapshotHistoryRows(db, normalized, params) {
+  let index = 0;
+  const seasonId = params[index++];
+  const userId = params[index++];
+  const since = Number(params[index++]);
+  const until = Number(params[index++]);
+  const boardPattern = normalized.includes('board_key like ?') ? params[index++] : null;
+  const candidates = fakeSnapshotRows(db, {
+    seasonId,
+    userId,
+    boardPattern,
+    startAt: since,
+    endAt: until + 1
+  });
+  const selected = new Map();
+  for (const row of candidates) {
+    const key = `${row.board_key}\u0000${row.captured_bucket}`;
+    const existing = selected.get(key);
+    const rowIsTotal = String(row.board_key).endsWith('_total');
+    const valueCompare = rowIsTotal ? Number(row.value) - Number(existing && existing.value) : 0;
+    if (!existing || valueCompare > 0
+      || (valueCompare === 0 && Number(row.captured_at) > Number(existing.captured_at))
+      || (valueCompare === 0 && Number(row.captured_at) === Number(existing.captured_at) && Number(row.snapshot_id) > Number(existing.snapshot_id))
+      || (valueCompare === 0 && Number(row.captured_at) === Number(existing.captured_at) && Number(row.snapshot_id) === Number(existing.snapshot_id) && Number(row.rank) < Number(existing.rank))) {
+      selected.set(key, row);
+    }
+  }
+  let rows = Array.from(selected.values()).sort((left, right) => Number(left.captured_at) - Number(right.captured_at)
+    || Number(left.snapshot_id) - Number(right.snapshot_id)
+    || String(left.board_key).localeCompare(String(right.board_key)));
+  if (normalized.includes('captured_at > ?')) {
+    const cursorStart = params.length - 1 - 6;
+    const cursor = {
+      capturedAt: Number(params[cursorStart]),
+      snapshotId: Number(params[cursorStart + 2]),
+      boardKey: String(params[cursorStart + 5])
+    };
+    rows = rows.filter((row) => fakeTupleAfter([
+      Number(row.captured_at), Number(row.snapshot_id), String(row.board_key)
+    ], [cursor.capturedAt, cursor.snapshotId, cursor.boardKey]));
+  }
+  return rows.slice(0, Number(params[params.length - 1]));
+}
+
+function fakeTupleAfter(left, right) {
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] === right[index]) continue;
+    return left[index] > right[index];
+  }
+  return false;
 }
 
 function env(overrides = {}) {
@@ -676,11 +936,16 @@ test('uses the aggregate table for total users and compresses raw history by day
   const response = await handleRankingsRequest(request('/api/rankings/leaderboard?board=users&period=total'), environment);
   assert.equal(response.status, 200);
   const totalQuery = environment.RANKINGS_DB.queries.find((query) => query.sql.includes('from rank_user_metrics') && query.sql.includes('board_key in'));
-  const dailyQuery = environment.RANKINGS_DB.queries.find((query) => query.sql.includes('with daily_rows'));
+  const dailyQuery = environment.RANKINGS_DB.queries.find((query) => query.sql.includes('from rank_daily_metrics'));
+  const currentQuery = environment.RANKINGS_DB.queries.find((query) => query.sql.includes('with current_rows')
+    && query.sql.includes('from rank_entries e')
+    && query.sql.includes('captured_at >= ?')
+    && query.sql.includes('captured_at < ?'));
   assert.ok(totalQuery, 'total users should read rank_user_metrics');
-  assert.ok(dailyQuery, 'total users should use a compressed daily history query');
-  assert.match(dailyQuery.sql, /row_number\(\) over/);
-  assert.match(dailyQuery.sql, /partition by e\.user_id, e\.board_key/);
+  assert.ok(dailyQuery, 'total users should read the compressed daily history table');
+  assert.ok(currentQuery, 'total users should only read the current-day raw tail');
+  assert.doesNotMatch(dailyQuery.sql, /raw_json/);
+  assert.match(currentQuery.sql, /partition by e\.user_id, e\.board_key/);
 });
 
 test('limits today, week and month user history queries to their period windows', async () => {
@@ -706,12 +971,21 @@ test('limits today, week and month user history queries to their period windows'
     const before = environment.RANKINGS_DB.queries.length;
     const response = await handleRankingsRequest(request(`/api/rankings/leaderboard?board=users&period=${period}`), environment);
     assert.equal(response.status, 200);
-    const query = environment.RANKINGS_DB.queries.slice(before).find((item) => item.sql.includes('with daily_rows'));
-    assert.ok(query, `${period} should use the compressed daily query`);
+    const query = environment.RANKINGS_DB.queries.slice(before).find((item) => item.sql.includes('from rank_daily_metrics'));
+    const currentQuery = environment.RANKINGS_DB.queries.slice(before).find((item) => item.sql.includes('with current_rows')
+      && item.sql.includes('from rank_entries e')
+      && item.sql.includes('captured_at >= ?')
+      && item.sql.includes('captured_at < ?'));
+    assert.ok(query, `${period} should use the compressed daily table`);
+    assert.ok(currentQuery, `${period} should use a bounded current-day raw query`);
     assert.equal(query.params.length, 6, `${period} should bind a start and end timestamp`);
     const expectedDays = period === 'today' ? 1 : period === 'week' ? 7 : 30;
     const expectedStart = dayStartAtForCapturedAt(currentCapturedAt) - (expectedDays - 1) * DAY_MS;
-    assert.equal(query.params[5] - query.params[4], currentCapturedAt - expectedStart);
+    assert.equal(query.params[4], expectedStart);
+    assert.equal(query.params[5], dayStartAtForCapturedAt(currentCapturedAt));
+    assert.equal(currentQuery.params[4], dayStartAtForCapturedAt(currentCapturedAt));
+    assert.equal(currentQuery.params[5], dayStartAtForCapturedAt(currentCapturedAt) + DAY_MS);
+    assert.equal(currentQuery.params[6], currentCapturedAt);
     const payload = await response.json();
     assert.deepEqual(payload.rows.map((row) => row.userId), ['current-user']);
   }
@@ -861,4 +1135,129 @@ test('deduplicates raw history rows from global and friends in the same capture 
   const epicRows = payload.rows.filter((row) => row.boardKey === 'epic_total');
   assert.equal(epicRows.length, 1);
   assert.equal(epicRows[0].value, 12);
+});
+
+test('daily user metrics use the materialized table and only bounded current-day raw rows', async () => {
+  const environment = env();
+  await postSnapshot(environment, snapshotAt(Date.now() - 1000));
+  const response = await handleRankingsRequest(
+    request('/api/rankings/leaderboard?board=users&period=total'),
+    environment
+  );
+  assert.equal(response.status, 200);
+  const queries = environment.RANKINGS_DB.queries;
+  assert.ok(queries.some(({ sql }) => sql.includes('from rank_daily_metrics')));
+  assert.equal(queries.some(({ sql }) => sql.includes('with daily_rows')), false);
+  assert.ok(queries.some(({ sql }) => sql.includes('from rank_entries e')
+    && sql.includes('captured_at >= ?')
+    && sql.includes('captured_at < ?')));
+});
+
+test('history defaults to 30 days and returns a stable next cursor', async () => {
+  const environment = env();
+  const base = Date.now() - (3 * DAY_MS);
+  for (const [index, capturedAt] of [base, base + DAY_MS, base + (2 * DAY_MS)].entries()) {
+    await postSnapshot(environment, {
+      ...snapshotAt(capturedAt),
+      leaderboards: {
+        epic_total: [{ userId: 'u1', userName: '用户一', value: index + 1, rank: 1, isVip: false }]
+      }
+    });
+  }
+  const response = await handleRankingsRequest(
+    request('/api/rankings/history?userId=u1&limit=1'),
+    environment
+  );
+  const payload = await response.json();
+  assert.equal(payload.mode, 'daily');
+  assert.equal(payload.limit, 1);
+  assert.equal(payload.hasMore, true);
+  assert.ok(payload.nextCursor);
+});
+
+test('daily history bounds its raw tail to the current Beijing day', async () => {
+  const environment = env();
+  const currentCapturedAt = Date.now() - 1000;
+  await postSnapshot(environment, snapshotAt(currentCapturedAt - 10 * DAY_MS));
+  await postSnapshot(environment, snapshotAt(currentCapturedAt));
+  const response = await handleRankingsRequest(
+    request(`/api/rankings/history?userId=u1&since=1&until=${currentCapturedAt}`),
+    environment
+  );
+  assert.equal(response.status, 200);
+  const query = environment.RANKINGS_DB.queries.find(({ sql }) => sql.includes('with current_rows')
+    && sql.includes('from rank_entries e')
+    && sql.includes('e.user_id = ?')
+    && sql.includes('captured_at >= ?')
+    && sql.includes('captured_at < ?'));
+  assert.ok(query, 'daily history should read only a bounded current-day raw tail');
+  const currentDayStartAt = dayStartAtForCapturedAt(currentCapturedAt);
+  assert.equal(query.params[2], currentDayStartAt);
+  assert.equal(query.params[3], currentDayStartAt + DAY_MS);
+  assert.equal(query.params[4], currentCapturedAt);
+});
+
+test('snapshot history is opt-in and always has a bounded captured_at predicate', async () => {
+  const environment = env();
+  await postSnapshot(environment, snapshotAt(Date.now() - 1000));
+  const response = await handleRankingsRequest(
+    request('/api/rankings/history?userId=u1&mode=snapshot&since=1&until=2'),
+    environment
+  );
+  assert.equal(response.status, 200);
+  const query = environment.RANKINGS_DB.queries.find(({ sql }) => sql.includes('from rank_entries e')
+    && sql.includes('captured_at >= ?'));
+  assert.ok(query);
+  assert.doesNotMatch(query.sql, /select e\.\*,/);
+});
+
+test('user search applies the match and result limit in D1', async () => {
+  const environment = env();
+  await postSnapshot(environment, {
+    ...snapshotAt(Date.now() - 1000),
+    leaderboards: {
+      epic_total: [{ userId: 'alice-1', userName: 'Alice', value: 10, rank: 1, isVip: false }]
+    }
+  });
+  const response = await handleRankingsRequest(
+    request('/api/rankings/users?query=alice'),
+    environment
+  );
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.deepEqual(payload.users.map((row) => row.userId), ['alice-1']);
+  const query = environment.RANKINGS_DB.queries.find(({ sql }) => sql.includes('from rank_user_metrics') && sql.includes('like ?'));
+  assert.ok(query);
+  assert.match(query.sql, /collate nocase/);
+  assert.match(query.sql, /limit 20/);
+  assert.doesNotMatch(query.sql, /limit 2000/);
+});
+
+test('events default to a bounded daily aggregate query', async () => {
+  const environment = env();
+  await postSnapshot(environment, snapshotAt(Date.now() - 1000));
+  const response = await handleRankingsRequest(
+    request('/api/rankings/events?board=epic'),
+    environment
+  );
+  assert.equal(response.status, 200);
+  const query = environment.RANKINGS_DB.queries.find(({ sql }) => sql.includes('from rank_daily_metrics')
+    && sql.includes('day_start_at >= ?')
+    && sql.includes('day_start_at <= ?'));
+  assert.ok(query);
+  assert.doesNotMatch(query.sql, /from rank_snapshots/);
+});
+
+test('raw event mode is explicit and bounded by the requested range', async () => {
+  const environment = env();
+  await postSnapshot(environment, snapshotAt(Date.now() - 1000));
+  const response = await handleRankingsRequest(
+    request('/api/rankings/events?board=epic&mode=snapshot&since=1&until=2'),
+    environment
+  );
+  assert.equal(response.status, 200);
+  const query = environment.RANKINGS_DB.queries.find(({ sql }) => sql.includes('from rank_snapshots')
+    && sql.includes('captured_at >= ?')
+    && sql.includes('captured_at <= ?'));
+  assert.ok(query);
 });
