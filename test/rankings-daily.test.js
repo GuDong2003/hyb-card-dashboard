@@ -6,6 +6,7 @@ import {
   previousBeijingDayStart
 } from '../src/rankings-daily.js';
 import { scheduled } from '../src/index.js';
+import { currentSortValues } from '../src/rankings-user-store.js';
 
 class FakeStatement {
   constructor(db, sql) {
@@ -97,6 +98,84 @@ class FakeDailyDb {
   }
 }
 
+class CompactMaintenanceStatement {
+  constructor(db, sql) {
+    this.db = db;
+    this.sql = sql;
+    this.params = [];
+  }
+
+  bind(...params) {
+    this.params = params;
+    return this;
+  }
+
+  all() {
+    return this.db.all(this.sql, this.params);
+  }
+
+  run() {
+    return this.db.run(this.sql, this.params);
+  }
+}
+
+class CompactMaintenanceDb {
+  constructor(rows = []) {
+    this.current = rows.map((row) => ({ ...row }));
+    this.seasons = [{
+      season_id: 's1',
+      last_day_start_at: 0,
+      updated_at: 0
+    }];
+    this.queries = [];
+  }
+
+  prepare(sql) {
+    return new CompactMaintenanceStatement(this, sql);
+  }
+
+  async all(sql, params) {
+    const normalized = sql.replace(/\s+/g, ' ').trim().toLowerCase();
+    this.queries.push({ sql: normalized, params: [...params] });
+    if (normalized.includes('from rank_user_current')) return { results: this.current.map((row) => ({ ...row })) };
+    return { results: [] };
+  }
+
+  async batch(statements) {
+    const results = [];
+    for (const statement of statements) results.push(await statement.run());
+    return results;
+  }
+
+  async run(sql, params) {
+    const normalized = sql.replace(/\s+/g, ' ').trim().toLowerCase();
+    this.queries.push({ sql: normalized, params: [...params] });
+    if (normalized.startsWith('update rank_user_current')) {
+      const [legend, spend, pulls, sets, probability, seasonId, userId] = params;
+      const row = this.current.find((item) => item.season_id === seasonId && item.user_id === userId);
+      if (!row) return { success: true, meta: { changes: 0 } };
+      Object.assign(row, {
+        sort_legend_value: legend,
+        sort_spend_usd: spend,
+        sort_estimated_pulls: pulls,
+        sort_exchange_count: sets,
+        sort_probability: probability
+      });
+      return { success: true, meta: { changes: 1 } };
+    }
+    if (normalized.startsWith('update rank_seasons')) {
+      const [dayStartAt, updatedAt, seasonId] = params;
+      const season = this.seasons.find((item) => item.season_id === seasonId);
+      if (season) {
+        season.last_day_start_at = Math.max(Number(season.last_day_start_at), Number(dayStartAt));
+        season.updated_at = Math.max(Number(season.updated_at), Number(updatedAt));
+      }
+      return { success: true, meta: { changes: season ? 1 : 0 } };
+    }
+    return { success: true, meta: { changes: 0 } };
+  }
+}
+
 function snapshot(id, seasonId, capturedAt, scope = 'global') {
   return { id, season_id: seasonId, captured_at: capturedAt, scope };
 }
@@ -134,13 +213,30 @@ test('previous Beijing day closes at 04:00', () => {
   );
 });
 
-test('scheduled aggregation targets the previous Beijing day', async () => {
-  const db = new FakeDailyDb();
-  await scheduled({ scheduledTime: Date.parse('2026-08-25T04:05:00+08:00') }, { RANKINGS_DB: db });
-  assert.deepEqual(db.queries[0].params, [
-    Date.parse('2026-08-24T04:00:00+08:00'),
-    Date.parse('2026-08-25T04:00:00+08:00')
-  ]);
+test('scheduled maintenance never queries legacy ranking tables', async () => {
+  const row = {
+    season_id: 's1',
+    user_id: 'u1',
+    spend_total_value: 500_000,
+    epic_total_value: 10,
+    sets_total_value: 3,
+    is_vip: 0,
+    last_observed_at: 10_000,
+    sort_legend_value: null,
+    sort_spend_usd: null,
+    sort_estimated_pulls: null,
+    sort_exchange_count: null,
+    sort_probability: null
+  };
+  const db = new CompactMaintenanceDb([row]);
+  const result = await scheduled({ scheduledTime: Date.parse('2026-08-25T04:05:00+08:00') }, { RANKINGS_DB: db });
+  assert.equal(result.usersScanned, 1);
+  assert.ok(db.queries.some(({ sql }) => /from rank_user_current/i.test(sql)));
+  assert.equal(db.queries.some(({ sql }) => /rank_snapshots|rank_entries|rank_daily_metrics|raw_json/i.test(sql)), false);
+  assert.deepEqual(
+    [db.current[0].sort_legend_value, db.current[0].sort_spend_usd, db.current[0].sort_estimated_pulls, db.current[0].sort_exchange_count, db.current[0].sort_probability],
+    Object.values(currentSortValues(db.current[0], db.current[0].last_observed_at))
+  );
 });
 
 test('aggregateRankingsDay writes one representative per season/day/user/board and can repeat', async () => {

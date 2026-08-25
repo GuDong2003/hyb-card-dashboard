@@ -333,14 +333,14 @@ test('rankings client uses same-origin Worker APIs and the Card bridge events', 
   assert.match(source, /partialRows/);
 });
 
-test('rankings view provides daily and raw-capture user trend controls', async () => {
+test('rankings view provides daily user trend controls', async () => {
   const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
   const css = await readFile(new URL('../site/rankings.css', import.meta.url), 'utf8');
 
   assert.match(html, /id="rankingsTrendPanel"/);
   assert.match(html, /id="rankingsTrendModeDaily"/);
-  assert.match(html, /id="rankingsTrendModeSnapshot"/);
+  assert.doesNotMatch(html, /id="rankingsTrendModeSnapshot"/);
   assert.match(html, /id="rankingsTrendPeriodSelect"/);
   assert.match(html, /id="rankingsTrendMetric"/);
   assert.match(html, /id="rankingsTrendUserSearch"/);
@@ -357,7 +357,7 @@ test('rankings view provides daily and raw-capture user trend controls', async (
   assert.match(source, /function openTrendModal/);
   assert.match(source, /function closeTrendModal/);
   assert.match(source, /\/api\/rankings\/history\?/);
-  assert.match(source, /mode.*state\.trend\.mode/);
+  assert.match(source, /mode: 'daily'/);
   assert.match(source, /since/);
   assert.match(source, /until/);
   assert.match(source, /limit/);
@@ -537,6 +537,24 @@ test('ranking upload keeps current observations but strips raw payload fields', 
   assert.match(source, /leaderboards/);
   assert.match(source, /userId/);
   assert.doesNotMatch(source, /raw\s*:\s*row/);
+});
+
+test('dashboard requests only the current leaderboard page', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
+  assert.match(source, /limit/);
+  assert.match(source, /nextCursor/);
+  assert.match(source, /leaderboard.*cursor|cursor.*leaderboard/i);
+  assert.doesNotMatch(html, /<option value="all">全部<\/option>/);
+});
+
+test('trend mode stays daily and each selected user keeps an independent history request', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
+  assert.match(source, /userId/);
+  assert.match(source, /\/api\/rankings\/history\?/);
+  assert.match(source, /nextCursor/);
+  assert.doesNotMatch(html, /id="rankingsTrendModeSnapshot"/);
 });
 
 test('rankings refresh bypasses fresh snapshots and exposes running status', async () => {

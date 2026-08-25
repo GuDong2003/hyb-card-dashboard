@@ -35,6 +35,14 @@
     const BOOST_VIP_DAILY_FREE_PULLS = 80;
     const LOCAL_SOURCE_SCOPES = Object.freeze(['global', 'friends']);
     const LOCAL_SOURCE_SCOPE_CONFIG = Object.freeze({ scope: 'global,friends', order: LOCAL_SOURCE_SCOPES });
+    const API_CACHE_TTL = Object.freeze({
+        latest: 15 * 1000,
+        leaderboard: 30 * 1000,
+        users: 30 * 1000,
+        history: 60 * 1000,
+        events: 30 * 1000
+    });
+    const apiMemoryCache = new Map();
 
     const BOARD_LABELS = Object.freeze({ epic: '欧皇榜', spend: '消费榜', sets: '兑换榜', luck: '运气榜' });
 
@@ -115,8 +123,18 @@
         rows: [],
         partialRows: [],
         userQuery: '',
+        remotePage: true,
         page: 1,
         pageSize: 50,
+        leaderboard: {
+            cursor: null,
+            nextCursor: null,
+            previousCursors: [],
+            hasMore: false,
+            limit: 50
+        },
+        pinnedRows: [],
+        searchTimer: null,
         onlyCompleteDays: false,
         status: '等待榜单数据',
         trend: {
@@ -136,7 +154,24 @@
         return new URL(path, window.location.origin).href;
     }
 
+    function apiCacheType(path) {
+        const pathname = new URL(path, window.location.origin).pathname;
+        if (pathname.endsWith('/latest')) return 'latest';
+        if (pathname.endsWith('/leaderboard')) return 'leaderboard';
+        if (pathname.endsWith('/users')) return 'users';
+        if (pathname.endsWith('/history')) return 'history';
+        if (pathname.endsWith('/events')) return 'events';
+        return '';
+    }
+
     async function apiGet(path, options = {}) {
+        const cacheKey = String(path);
+        const cacheType = apiCacheType(path);
+        const ttl = API_CACHE_TTL[cacheType] || 0;
+        const fresh = options.fresh === true || options.cache === 'reload';
+        const cached = apiMemoryCache.get(cacheKey);
+        if (!fresh && cached && cached.expiresAt > Date.now()) return cached.body;
+        if (fresh) apiMemoryCache.delete(cacheKey);
         const response = await fetch(apiUrl(path), {
             method: 'GET',
             credentials: 'same-origin',
@@ -154,7 +189,17 @@
             error.retryable = body.retryable !== false && response.status >= 500;
             throw error;
         }
+        if (response.ok && ttl > 0) apiMemoryCache.set(cacheKey, {
+            body,
+            expiresAt: Date.now() + ttl
+        });
         return body;
+    }
+
+    function invalidateRankingsCache() {
+        for (const key of apiMemoryCache.keys()) {
+            if (key.includes('/api/rankings/')) apiMemoryCache.delete(key);
+        }
     }
 
     async function apiPost(path, payload) {
@@ -831,7 +876,7 @@
 
     function renderTrendModeButtons() {
         document.querySelectorAll('[data-trend-mode]').forEach((button) => {
-            const active = button.dataset.trendMode === state.trend.mode;
+            const active = button.dataset.trendMode === 'daily';
             button.classList.toggle('is-active', active);
             button.setAttribute('aria-pressed', String(active));
         });
@@ -967,7 +1012,7 @@
         const matched = exact || state.rows.find((row) => String(row.userId).toLowerCase().includes(normalized) || String(row.userName).toLowerCase().includes(normalized));
         return matched
             ? { userId: matched.userId, userName: matched.userName || matched.userId }
-            : { userId: String(query).trim(), userName: String(query).trim() };
+            : null;
     }
 
     function selectTrendUser(userId, userName = '') {
@@ -981,7 +1026,7 @@
             rows: [],
             nextCursor: null,
             hasMore: false,
-            mode: state.trend.mode,
+            mode: 'daily',
             since: null,
             until: null
         });
@@ -1024,7 +1069,7 @@
         const range = trendHistoryRange(state.trend.period);
         const params = new URLSearchParams({
             userId,
-            mode: state.trend.mode,
+            mode: 'daily',
             since: String(record.since == null || !append ? range.since : record.since),
             until: String(record.until == null || !append ? range.until : record.until),
             limit: String(TREND_HISTORY_PAGE_LIMIT)
@@ -1039,7 +1084,7 @@
             rows: [...existingRows, ...rows],
             nextCursor: payload.nextCursor || null,
             hasMore: Boolean(payload.hasMore),
-            mode: state.trend.mode,
+            mode: 'daily',
             since: Number(payload.since) || range.since,
             until: Number(payload.until) || range.until
         };
@@ -1094,9 +1139,19 @@
         renderTrendChart();
     }
 
-    function addTrendUser() {
+    async function addTrendUser() {
         const input = $('#rankingsTrendUserSearch');
-        const user = resolveTrendUser(input && input.value);
+        const query = String(input && input.value || '').trim();
+        let user = resolveTrendUser(query);
+        if (!user && query) {
+            try {
+                const payload = await apiGet(`/api/rankings/users?${new URLSearchParams({ q: query, limit: '20' }).toString()}`);
+                const first = Array.isArray(payload.users) ? payload.users[0] : null;
+                if (first) user = { userId: first.userId, userName: first.userName || first.userId };
+            } catch (_) {
+                user = null;
+            }
+        }
         if (!user || !selectTrendUser(user.userId, user.userName)) return;
         if (input) input.value = '';
         renderTrendSelection();
@@ -1876,7 +1931,11 @@
         if (state.pinnedUserIds.has(normalized)) state.pinnedUserIds.delete(normalized);
         else state.pinnedUserIds.add(normalized);
         savePinnedUsers(seasonId, state.pinnedUserIds);
-        renderRankingsTableRows();
+        if (state.remotePage) {
+            loadPinnedRows().then(() => renderRankingsTableRows()).catch(() => renderRankingsTableRows());
+        } else {
+            renderRankingsTableRows();
+        }
     }
 
     function localLeaderboardPayload(snapshotOrBundle) {
@@ -2046,10 +2105,12 @@
         }
         const compactSnapshots = normalizedSnapshots.map(compactSnapshotForUpload).filter((item) => item && item.scope && item.season.id && item.season.name);
         if (!compactSnapshots.length) throw new Error('榜单观察数据为空');
-        return apiPost('/api/rankings/snapshots', {
+        const response = await apiPost('/api/rankings/snapshots', {
             snapshots: compactSnapshots,
             source: 'card-dashboard-userscript'
         });
+        invalidateRankingsCache();
+        return response;
     }
 
     async function ensureFreshSnapshot(force = false, retry = false, manual = false) {
@@ -2126,13 +2187,54 @@
     }
 
     async function loadLeaderboard(options = {}) {
-        const query = `/api/rankings/leaderboard?board=users&period=${encodeURIComponent(state.period)}&sort=${encodeURIComponent(state.sort)}`;
-        const leaderboard = await apiGet(query, {
-            cache: options.fresh ? 'reload' : 'default'
+        const params = new URLSearchParams({
+            board: 'users',
+            period: state.period,
+            sort: state.sort,
+            direction: state.sortDirection,
+            limit: String(state.leaderboard.limit)
         });
+        if (state.leaderboard.cursor) params.set('cursor', state.leaderboard.cursor);
+        if (state.userQuery.trim()) params.set('q', state.userQuery.trim());
+        const leaderboard = await apiGet(`/api/rankings/leaderboard?${params.toString()}`, {
+            fresh: options.fresh === true
+        });
+        state.remotePage = true;
         state.rows = (Array.isArray(leaderboard.rows) ? leaderboard.rows : []).map(enrichRankingEstimate);
         state.partialRows = (Array.isArray(leaderboard.partialRows) ? leaderboard.partialRows : []).map(enrichRankingEstimate);
+        state.leaderboard.nextCursor = leaderboard.nextCursor || null;
+        state.leaderboard.hasMore = Boolean(leaderboard.hasMore);
+        if (leaderboard.snapshot) {
+            state.latest = { ...(state.latest || {}), snapshot: leaderboard.snapshot };
+            syncPinnedSeason(leaderboard.snapshot.seasonId);
+        }
+        await loadPinnedRows();
         renderLeaderboard(leaderboard);
+    }
+
+    function resetLeaderboardPagination() {
+        state.page = 1;
+        state.leaderboard.cursor = null;
+        state.leaderboard.nextCursor = null;
+        state.leaderboard.previousCursors = [];
+        state.leaderboard.hasMore = false;
+    }
+
+    async function loadPinnedRows() {
+        if (!state.remotePage || !state.pinnedUserIds.size) {
+            state.pinnedRows = [];
+            return;
+        }
+        const params = new URLSearchParams({
+            ids: Array.from(state.pinnedUserIds).join(','),
+            limit: '20',
+            board: 'users',
+            period: state.period
+        });
+        const payload = await apiGet(`/api/rankings/users?${params.toString()}`);
+        state.pinnedRows = (Array.isArray(payload.users) ? payload.users : [])
+            .map((row) => row && row.boardKey ? enrichRankingEstimate(row) : row)
+            .filter((row) => row && row.userId);
     }
 
     async function loadRankingsView(options = {}) {
@@ -2169,11 +2271,14 @@
                 setStatus(`已读取云端快照 · ${formatDate(latest.snapshot.capturedAt)}`);
             }
             if (source && source.localOnly) {
+                state.remotePage = false;
+                state.pinnedRows = [];
                 const payload = localLeaderboardPayload(source.snapshots);
                 state.rows = payload ? payload.rows : [];
                 state.partialRows = payload ? payload.partialRows : [];
                 renderLeaderboard(payload || { rows: [] });
             } else {
+                state.remotePage = true;
                 await loadLeaderboard({ fresh: refresh || autoRefresh });
             }
             state.loaded = true;
@@ -2287,12 +2392,8 @@
 
     function rankingsPageMeta(totalRows) {
         const total = Math.max(0, Number(totalRows) || 0);
-        const pageSize = state.pageSize === 'all'
-            ? Infinity
-            : Math.max(1, Number(state.pageSize) || 50);
-        const pageCount = Number.isFinite(pageSize)
-            ? Math.max(1, Math.ceil(total / pageSize))
-            : 1;
+        const pageSize = Math.max(1, Number(state.pageSize) || 50);
+        const pageCount = Math.max(1, Math.ceil(total / pageSize));
         state.page = Math.min(Math.max(1, Number(state.page) || 1), pageCount);
         return {
             total,
@@ -2310,7 +2411,7 @@
         const previous = $('#rankingsPreviousPage');
         const next = $('#rankingsNextPage');
         if (summary) summary.textContent = `共 ${formatNumber(totalRows)} 位用户`;
-        if (pageSize) pageSize.value = state.pageSize === 'all' ? 'all' : String(state.pageSize);
+        if (pageSize) pageSize.value = String(state.pageSize);
         if (indicator) indicator.textContent = `${state.page} / ${pageCount}`;
         if (previous) previous.disabled = state.page <= 1;
         if (next) next.disabled = state.page >= pageCount;
@@ -2321,6 +2422,50 @@
         const body = $('#rankingsTableBody');
         const pinnedBody = $('#rankingsPinnedBody');
         if (!body) return;
+
+        if (state.remotePage) {
+            const visibleRows = state.rows.filter((row) => !state.onlyCompleteDays || isCompleteDayRow(row));
+            const pinnedRows = state.pinnedRows
+                .filter((row) => !state.onlyCompleteDays || isCompleteDayRow(row))
+                .filter((row) => state.pinnedUserIds.has(row.userId));
+            const normalRows = visibleRows.filter((row) => !state.pinnedUserIds.has(row.userId));
+            if (pinnedBody) {
+                pinnedBody.innerHTML = pinnedRows
+                    .map((row, index) => renderRankingsRow(row, Number(row.rank) || index + 1, true, index))
+                    .join('');
+            }
+            body.innerHTML = normalRows.length
+                ? normalRows.map((row, index) => renderRankingsRow(row, Number(row.rank) || index + 1)).join('')
+                : pinnedRows.length
+                    ? ''
+                    : `<tr><td class="rankings-empty" colspan="12">${state.onlyCompleteDays ? '没有符合条件的完整天数用户' : state.userQuery ? '没有匹配的用户' : '暂无榜单数据'}</td></tr>`;
+            const summaryRows = [...pinnedRows, ...normalRows];
+            const summary = $('#rankingsPaginationSummary');
+            const controls = $('#rankingsPaginationControls');
+            const pageSize = $('#rankingsPageSize');
+            const indicator = $('#rankingsPageIndicator');
+            const previous = $('#rankingsPreviousPage');
+            const next = $('#rankingsNextPage');
+            if (summary) summary.textContent = `第 ${state.page} 页 · 当前 ${formatNumber(summaryRows.length)} 位用户`;
+            if (pageSize) pageSize.value = String(state.leaderboard.limit);
+            if (indicator) indicator.textContent = `第 ${state.page} 页`;
+            if (previous) previous.disabled = state.leaderboard.previousCursors.length === 0;
+            if (next) next.disabled = !state.leaderboard.hasMore;
+            if (controls) controls.dataset.pageCount = state.leaderboard.hasMore ? 'more' : String(state.page);
+            const partialNotice = $('#rankingsPartialNotice');
+            if (partialNotice) {
+                const incompleteCount = summaryRows.filter((row) => row.isPartial).length;
+                partialNotice.textContent = incompleteCount
+                    ? `当前表格中有 ${formatNumber(incompleteCount)} 位用户的估算数据不完整，缺失项保持空白。`
+                    : '';
+                partialNotice.classList.toggle('is-hidden', !incompleteCount);
+            }
+            bindRankingsTableEvents(pinnedBody);
+            bindRankingsTableEvents(body);
+            updatePinButtons();
+            renderSummary(summaryRows);
+            return;
+        }
 
         const sortedRows = sortRowsForDisplay(state.rows);
         const rankByUserId = new Map(sortedRows.map((row, index) => [row.userId, index + 1]));
@@ -2521,7 +2666,7 @@
         document.querySelectorAll('[data-rank-board]').forEach((button) => {
             button.addEventListener('click', () => {
                 state.board = button.dataset.rankBoard;
-                state.page = 1;
+                resetLeaderboardPagination();
                 document.querySelectorAll('[data-rank-board]').forEach((item) => {
                     const active = item === button;
                     item.classList.toggle('is-active', active);
@@ -2533,7 +2678,7 @@
         document.querySelectorAll('[data-rank-period]').forEach((button) => {
             button.addEventListener('click', () => {
                 state.period = button.dataset.rankPeriod;
-                state.page = 1;
+                resetLeaderboardPagination();
                 syncTrendPeriodFromOuter();
                 document.querySelectorAll('[data-rank-period]').forEach((item) => {
                     const active = item === button;
@@ -2545,7 +2690,7 @@
         });
         $('#rankingsPeriodSelect')?.addEventListener('change', (event) => {
             state.period = event.target.value || 'total';
-            state.page = 1;
+            resetLeaderboardPagination();
             syncTrendPeriodFromOuter();
             if (state.view === 'rankings') loadRankingsView({ refresh: false });
         });
@@ -2558,7 +2703,7 @@
                     state.sort = nextSort;
                     state.sortDirection = 'desc';
                 }
-                state.page = 1;
+                resetLeaderboardPagination();
                 renderSortHeaders();
                 if (state.view === 'rankings') loadRankingsView({ refresh: false });
             });
@@ -2602,8 +2747,16 @@
         searchInput?.addEventListener('input', (event) => {
             state.userQuery = String(event.target.value || '');
             if (state.userQuery.trim()) setSearchExpanded(true);
-            state.page = 1;
-            renderLeaderboard({ snapshot: state.latest && state.latest.snapshot });
+            resetLeaderboardPagination();
+            if (state.searchTimer) window.clearTimeout(state.searchTimer);
+            state.searchTimer = window.setTimeout(() => {
+                state.searchTimer = null;
+                if (state.view === 'rankings' && state.remotePage) {
+                    loadLeaderboard().catch((error) => setStatus(`搜索失败：${String(error && error.message || error)}`, true));
+                } else {
+                    renderLeaderboard({ snapshot: state.latest && state.latest.snapshot });
+                }
+            }, 250);
         });
         $('#rankingsCompleteDaysOnly')?.addEventListener('change', (event) => {
             state.onlyCompleteDays = Boolean(event.target.checked);
@@ -2612,24 +2765,32 @@
         });
         $('#rankingsPageSize')?.addEventListener('change', (event) => {
             const value = String(event.target.value || '50');
-            state.pageSize = value === 'all' ? 'all' : [50, 100].includes(Number(value)) ? Number(value) : 50;
-            state.page = 1;
-            renderRankingsTableRows();
+            state.pageSize = [50, 100].includes(Number(value)) ? Number(value) : 50;
+            state.leaderboard.limit = state.pageSize;
+            resetLeaderboardPagination();
+            if (state.remotePage) loadLeaderboard().catch((error) => setStatus(`换页失败：${String(error && error.message || error)}`, true));
+            else renderRankingsTableRows();
         });
-        $('#rankingsPreviousPage')?.addEventListener('click', () => {
-            if (state.page <= 1) return;
-            state.page -= 1;
-            renderRankingsTableRows();
+        $('#rankingsPreviousPage')?.addEventListener('click', async () => {
+            if (!state.remotePage || !state.leaderboard.previousCursors.length) return;
+            state.leaderboard.cursor = state.leaderboard.previousCursors.pop() || null;
+            state.page = Math.max(1, state.page - 1);
+            try {
+                await loadLeaderboard();
+            } catch (error) {
+                setStatus(`换页失败：${String(error && error.message || error)}`, true);
+            }
         });
-        $('#rankingsNextPage')?.addEventListener('click', () => {
-            const normalRows = sortRowsForDisplay(filterUserRows(state.rows))
-                .filter((row) => !state.pinnedUserIds.has(row.userId));
-            const pageCount = state.pageSize === 'all'
-                ? 1
-                : Math.max(1, Math.ceil(normalRows.length / (Number(state.pageSize) || 50)));
-            if (state.page >= pageCount) return;
+        $('#rankingsNextPage')?.addEventListener('click', async () => {
+            if (!state.remotePage || !state.leaderboard.hasMore || !state.leaderboard.nextCursor) return;
+            state.leaderboard.previousCursors.push(state.leaderboard.cursor);
+            state.leaderboard.cursor = state.leaderboard.nextCursor;
             state.page += 1;
-            renderRankingsTableRows();
+            try {
+                await loadLeaderboard();
+            } catch (error) {
+                setStatus(`换页失败：${String(error && error.message || error)}`, true);
+            }
         });
         $('#rankingsTrendMetric')?.addEventListener('change', (event) => {
             const metric = String(event.target.value || '');
@@ -2644,8 +2805,7 @@
         });
         document.querySelectorAll('[data-trend-mode]').forEach((button) => {
             button.addEventListener('click', () => {
-                const mode = button.dataset.trendMode === 'snapshot' ? 'snapshot' : 'daily';
-                state.trend.mode = mode;
+                state.trend.mode = 'daily';
                 renderTrendModeButtons();
                 renderTrendChart();
                 if (state.trend.modalOpen) refreshTrendHistories();

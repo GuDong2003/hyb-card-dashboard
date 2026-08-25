@@ -183,6 +183,162 @@ export function currentSortValues(row = {}, capturedAt = Date.now()) {
   };
 }
 
+export function encodeCurrentCursor(sort, direction, row, context = {}) {
+  const rawValue = currentSortValue(row, context.board || 'users', context.period || 'total', sort);
+  const payload = {
+    seasonId: String(context.seasonId || row.season_id || ''),
+    board: String(context.board || 'users'),
+    period: String(context.period || 'total'),
+    sort: String(sort || 'legend'),
+    direction: direction === 'asc' ? 'asc' : 'desc',
+    nullRank: rawValue == null ? 1 : 0,
+    value: rawValue == null ? null : rawValue,
+    userId: String(row.user_id || '')
+  };
+  return encodeBase64Url(payload);
+}
+
+export function decodeCurrentCursor(value, sort, direction, context = {}) {
+  if (value == null || value === '') return { cursor: null };
+  try {
+    const cursor = decodeBase64Url(value);
+    if (!cursor
+      || cursor.seasonId !== String(context.seasonId || '')
+      || cursor.board !== String(context.board || 'users')
+      || cursor.period !== String(context.period || 'total')
+      || cursor.sort !== String(sort || 'legend')
+      || cursor.direction !== (direction === 'asc' ? 'asc' : 'desc')
+      || !String(cursor.userId || '')
+      || ![0, 1].includes(Number(cursor.nullRank))) {
+      return { error: 'invalid_cursor' };
+    }
+    return { cursor };
+  } catch (_) {
+    return { error: 'invalid_cursor' };
+  }
+}
+
+export async function queryCurrentBoard(db, options = {}) {
+  const seasonId = String(options.seasonId || '').trim();
+  const board = String(options.board || 'users');
+  const period = String(options.period || 'total');
+  const sort = String(options.sort || 'legend');
+  const direction = options.direction === 'asc' ? 'asc' : 'desc';
+  const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 50)));
+  const sortColumn = currentSortColumn(board, period, sort);
+  const nullRank = `CASE WHEN ${sortColumn} IS NULL THEN 1 ELSE 0 END`;
+  const params = [seasonId];
+  const where = ['r.season_id = ?'];
+
+  if (Array.isArray(options.ids) && options.ids.length) {
+    const ids = options.ids.map((id) => String(id || '').trim()).filter(Boolean).slice(0, 20);
+    where.push(`r.user_id IN (${ids.map(() => '?').join(', ')})`);
+    params.push(...ids);
+  } else if (String(options.q || '').trim()) {
+    const pattern = `%${escapeLikePattern(String(options.q).trim())}%`;
+    where.push(`(r.user_id COLLATE NOCASE LIKE ? ESCAPE '\\' OR r.user_name COLLATE NOCASE LIKE ? ESCAPE '\\')`);
+    params.push(pattern, pattern);
+  }
+
+  if (options.cursor) {
+    const cursor = options.cursor;
+    const cursorNullRank = Number(cursor.nullRank);
+    where.push(`(
+      ${nullRank} > ?
+      OR (${nullRank} = ? AND (
+        ${cursorNullRank === 1
+          ? 'r.user_id > ?'
+          : `(${sortColumn} ${direction === 'asc' ? '>' : '<'} ?
+              OR (${sortColumn} = ? AND r.user_id > ?))`}
+      ))
+    )`);
+    params.push(cursorNullRank, cursorNullRank);
+    if (cursorNullRank === 1) params.push(String(cursor.userId));
+    else params.push(cursor.value, cursor.value, String(cursor.userId));
+  }
+
+  const result = await db.prepare(`
+    SELECT ${USER_CURRENT_COLUMNS.map((column) => `r.${column} AS ${column}`).join(', ')}
+    FROM rank_user_current r
+    WHERE ${where.join(' AND ')}
+    ORDER BY ${nullRank} ASC, ${sortColumn} ${direction.toUpperCase()}, r.user_id ASC
+    LIMIT ?
+  `).bind(...params, limit + 1).all();
+  const rows = result.results || [];
+  const pageRows = rows.slice(0, limit);
+  return {
+    rows: pageRows,
+    hasMore: rows.length > limit,
+    nextCursor: rows.length > limit && pageRows.length
+      ? encodeCurrentCursor(sort, direction, pageRows[pageRows.length - 1], { seasonId, board, period })
+      : null
+  };
+}
+
+export async function queryPinnedUsers(db, options = {}) {
+  return queryCurrentBoard(db, {
+    ...options,
+    ids: Array.isArray(options.ids) ? options.ids.slice(0, 20) : [],
+    limit: Math.min(20, Number(options.limit) || 20),
+    cursor: null
+  });
+}
+
+function currentSortColumn(board, period, sort) {
+  if (board === 'users') {
+    return sort === 'user'
+      ? 'r.user_name COLLATE NOCASE'
+      : sort === 'spend'
+        ? 'r.sort_spend_usd'
+        : sort === 'pulls'
+          ? 'r.sort_estimated_pulls'
+          : sort === 'sets'
+            ? 'r.sort_exchange_count'
+            : sort === 'probability'
+              ? 'r.sort_probability'
+              : 'r.sort_legend_value';
+  }
+  if (board === 'luck') return 'r.sort_probability';
+  if (!['epic', 'spend', 'sets'].includes(board) || !['today', 'week', 'month', 'total'].includes(period)) {
+    return 'r.sort_legend_value';
+  }
+  return `r.${board}_${period}_value`;
+}
+
+function currentSortValue(row, board, period, sort) {
+  if (board === 'users') {
+    if (sort === 'user') return String(row.user_name || '');
+    if (sort === 'spend') return row.sort_spend_usd;
+    if (sort === 'pulls') return row.sort_estimated_pulls;
+    if (sort === 'sets') return row.sort_exchange_count;
+    if (sort === 'probability') return row.sort_probability;
+    return row.sort_legend_value;
+  }
+  if (board === 'luck') return row.sort_probability;
+  return row[`${board}_${period}_value`];
+}
+
+function escapeLikePattern(value) {
+  return String(value)
+    .replaceAll('\\', '\\\\')
+    .replaceAll('%', '\\%')
+    .replaceAll('_', '\\_');
+}
+
+function encodeBase64Url(value) {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function decodeBase64Url(value) {
+  const text = String(value);
+  const binary = atob(text.replace(/-/g, '+').replace(/_/g, '/')
+    + '='.repeat((4 - (text.length % 4)) % 4));
+  return JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (character) => character.charCodeAt(0))));
+}
+
 export const USER_DAY_UPSERT_SQL = buildUpsertSql('rank_user_days', USER_DAY_COLUMNS, false);
 export const USER_CURRENT_UPSERT_SQL = buildUpsertSql('rank_user_current', USER_CURRENT_COLUMNS, true);
 
