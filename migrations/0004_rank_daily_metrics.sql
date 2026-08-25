@@ -1,3 +1,6 @@
+ALTER TABLE rank_snapshots
+  ADD COLUMN accepted INTEGER NOT NULL DEFAULT 1;
+
 CREATE TABLE IF NOT EXISTS rank_daily_metrics (
   season_id TEXT NOT NULL,
   day_start_at INTEGER NOT NULL,
@@ -27,6 +30,9 @@ CREATE INDEX IF NOT EXISTS idx_rank_snapshots_season_scope_time
 
 CREATE INDEX IF NOT EXISTS idx_rank_snapshots_latest
   ON rank_snapshots (captured_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_rank_snapshots_accepted_captured_id
+  ON rank_snapshots (accepted, captured_at DESC, id DESC);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_rank_snapshots_season_signature
   ON rank_snapshots (season_id, signature);

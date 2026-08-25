@@ -4,9 +4,21 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
 function extractFunction(source, name) {
-  const start = source.indexOf(`function ${name}(`);
-  assert.ok(start >= 0, `missing ${name}`);
-  const bodyStart = source.indexOf('{', start);
+    const start = source.indexOf(`function ${name}(`);
+    assert.ok(start >= 0, `missing ${name}`);
+    const parameterStart = source.indexOf('(', start);
+    let parameterDepth = 0;
+    let parameterEnd = -1;
+    for (let index = parameterStart; index < source.length; index += 1) {
+        if (source[index] === '(') parameterDepth += 1;
+        if (source[index] !== ')') continue;
+        parameterDepth -= 1;
+        if (parameterDepth === 0) {
+            parameterEnd = index;
+            break;
+        }
+    }
+    const bodyStart = source.indexOf('{', parameterEnd >= 0 ? parameterEnd : start);
   let depth = 0;
   for (let index = bodyStart; index < source.length; index += 1) {
     if (source[index] === '{') depth += 1;
@@ -344,7 +356,12 @@ test('rankings view provides daily and raw-capture user trend controls', async (
   assert.match(source, /endsWith\(`_\$\{period\}`\)/);
   assert.match(source, /function openTrendModal/);
   assert.match(source, /function closeTrendModal/);
-  assert.match(source, /\/api\/rankings\/history\?userId=/);
+  assert.match(source, /\/api\/rankings\/history\?/);
+  assert.match(source, /mode.*state\.trend\.mode/);
+  assert.match(source, /since/);
+  assert.match(source, /until/);
+  assert.match(source, /limit/);
+  assert.match(source, /nextCursor/);
   assert.match(source, /function renderTrendChart/);
   assert.match(source, /const TREND_CHART_FIXED_AXIS_WIDTH = 86;/);
   assert.match(source, /number > 0 \? number : null/);
@@ -487,8 +504,24 @@ test('rankings client persists upload consent and gates snapshot uploads', async
   assert.match(source, /userQuery/);
   assert.match(source, /filterUserRows/);
   assert.doesNotMatch(source, /\/api\/rankings\/users\?query=/);
-  assert.match(source, /\/api\/rankings\/history\?userId=/);
+  assert.match(source, /\/api\/rankings\/history\?/);
   assert.doesNotMatch(source, /function loadUserHistory/);
+});
+
+test('rankings GET caching and trend history loading stay lazy', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  const apiGet = extractFunction(source, 'apiGet');
+  const loadLatestSnapshot = extractFunction(source, 'loadLatestSnapshot');
+  assert.match(apiGet, /options\s*=\s*\{\}/);
+  assert.doesNotMatch(apiGet, /cache:\s*'no-store'/);
+  assert.match(apiGet, /cache:\s*options\.cache\s*\|\|\s*'default'/);
+  assert.match(loadLatestSnapshot, /fresh/);
+  assert.match(loadLatestSnapshot, /cache:[^\n]*'reload'/);
+  assert.match(source, /modalOpen:\s*false/);
+  assert.match(source, /state\.trend\.modalOpen\s*=\s*true/);
+  assert.match(source, /state\.trend\.modalOpen\s*=\s*false/);
+  assert.match(source, /state\.trend\.modalOpen\)\s*refreshTrendHistories/);
+  assert.doesNotMatch(source, /if \(state\.trend\.selectedIds\.length\) await refreshTrendHistories\(\);/);
 });
 
 test('rankings client uses refresh and cloud upload labels', async () => {

@@ -85,6 +85,8 @@ CREATE TABLE IF NOT EXISTS rank_daily_metrics (
 );
 ```
 
+`rank_snapshots` 另外增加 `accepted INTEGER NOT NULL DEFAULT 1`。现有快照迁移后默认有效；上传入口在 INSERT 前拦截重复和过期提交，因此新写入的原始快照也只会是有效数据。
+
 索引：
 
 - `(season_id, board_key, day_start_at, rank)`：周期榜和事件查询的日期范围读取。
@@ -95,6 +97,7 @@ CREATE TABLE IF NOT EXISTS rank_daily_metrics (
 - `rank_snapshots(season_id, scope, captured_at DESC, id DESC)`：最新/过期检查和同 scope 时间范围。
 - `rank_snapshots(season_id, signature)` 唯一索引：把签名幂等从应用层检查落实到数据库约束，避免并发重复插入。
 - `rank_snapshots(captured_at DESC, id DESC)`：无 season 条件的 latest 查询。
+- `rank_snapshots(accepted, captured_at DESC, id DESC)`：有效快照过滤、全局 latest 和时间范围读取。
 - `rank_entries(snapshot_id, board_key, rank)`：当前/上一快照按榜单和排名读取。
 - `rank_user_metrics(season_id, last_captured_at DESC, user_id)`：用户搜索不再读取整张表后在 Worker 过滤。
 
@@ -140,7 +143,7 @@ CREATE TABLE IF NOT EXISTS rank_daily_metrics (
 
 在 `src/index.js` 增加 `scheduled(controller, env)`，在 `wrangler.jsonc` 增加 UTC Cron：`5 20 * * *`。任务目标是当前北京时间日开始时间减一天的封口日。
 
-任务执行一条限定日期范围的窗口查询，从 `rank_entries JOIN rank_snapshots` 选择代表行，写入 `rank_daily_metrics`。不读取 `raw_json`，不删除任何行。由于输入只增不减，任务可以安全重试；迟到但属于该日的快照会通过同一日 upsert 修正代表行。
+任务执行一条限定日期范围的窗口查询，从 `rank_entries JOIN rank_snapshots` 选择 `accepted = 1` 的代表行，写入 `rank_daily_metrics`。不读取 `raw_json`，不删除任何行。由于输入只增不减，任务可以安全重试；迟到但属于该日的快照会通过同一日 upsert 修正代表行。
 
 首次部署的历史 backfill 与每日任务共用同一个 `aggregateDay()`，但由独立运维命令按天调用；正常请求路径不触发 backfill。
 

@@ -125,7 +125,8 @@
             metric: 'epicTotal',
             selectedIds: [],
             histories: new Map(),
-            busy: false
+            busy: false,
+            modalOpen: false
         }
     };
 
@@ -135,11 +136,11 @@
         return new URL(path, window.location.origin).href;
     }
 
-    async function apiGet(path) {
+    async function apiGet(path, options = {}) {
         const response = await fetch(apiUrl(path), {
             method: 'GET',
             credentials: 'same-origin',
-            cache: 'no-store',
+            cache: options.cache || 'default',
             headers: { accept: 'application/json' }
         });
         const body = await response.json().catch(() => ({}));
@@ -487,6 +488,7 @@
         month: '本月'
     });
     const TREND_COLORS = ['#2563eb', '#db2777', '#059669', '#d97706', '#7c3aed', '#0891b2', '#dc2626', '#65a30d'];
+    const TREND_HISTORY_PAGE_LIMIT = 200;
 
     function trendNumber(value) {
         const number = Number(value);
@@ -781,6 +783,7 @@
         state.trend.period = state.period;
         renderTrendPeriodControl();
         renderTrendChart();
+        if (state.trend.modalOpen) refreshTrendHistories();
     }
 
     function renderTrendUserOptions() {
@@ -975,12 +978,18 @@
         state.trend.histories.set(normalizedId, {
             userId: normalizedId,
             userName: userName || row?.userName || normalizedId,
-            rows: []
+            rows: [],
+            nextCursor: null,
+            hasMore: false,
+            mode: state.trend.mode,
+            since: null,
+            until: null
         });
         return true;
     }
 
     function openTrendModal(userId) {
+        state.trend.modalOpen = true;
         const row = state.rows.find((item) => item.userId === userId);
         selectTrendUser(userId, row?.userName || userId);
         const backdrop = $('#rankingsTrendBackdrop');
@@ -992,27 +1001,87 @@
     }
 
     function closeTrendModal() {
+        state.trend.modalOpen = false;
         const backdrop = $('#rankingsTrendBackdrop');
         if (backdrop) backdrop.classList.add('is-hidden');
         document.body.classList.remove('modal-open');
     }
 
+    function trendHistoryRange(period = state.trend.period) {
+        const latestCapturedAt = Number(state.latest?.snapshot?.capturedAt)
+            || Math.max(...state.rows.map((row) => Number(row && row.capturedAt) || 0), Date.now());
+        const latestDayStartAt = dayStartAtForCapturedAt(latestCapturedAt);
+        const dayCount = period === 'today' ? 1 : period === 'week' ? 7 : period === 'month' ? 30 : 30;
+        return {
+            since: Math.max(0, latestDayStartAt - (dayCount - 1) * DAY_MS),
+            until: latestCapturedAt
+        };
+    }
+
+    async function loadTrendHistoryPage(userId, options = {}) {
+        const record = trendUserRecord(userId);
+        const append = options.append === true;
+        const range = trendHistoryRange(state.trend.period);
+        const params = new URLSearchParams({
+            userId,
+            mode: state.trend.mode,
+            since: String(record.since == null || !append ? range.since : record.since),
+            until: String(record.until == null || !append ? range.until : record.until),
+            limit: String(TREND_HISTORY_PAGE_LIMIT)
+        });
+        if (append && record.nextCursor) params.set('cursor', record.nextCursor);
+        const payload = await apiGet(`/api/rankings/history?${params.toString()}`);
+        const rows = Array.isArray(payload.rows) ? payload.rows : [];
+        const existingRows = append && Array.isArray(record.rows) ? record.rows : [];
+        return {
+            userId,
+            userName: state.rows.find((row) => row.userId === userId)?.userName || payload.userName || record.userName || userId,
+            rows: [...existingRows, ...rows],
+            nextCursor: payload.nextCursor || null,
+            hasMore: Boolean(payload.hasMore),
+            mode: state.trend.mode,
+            since: Number(payload.since) || range.since,
+            until: Number(payload.until) || range.until
+        };
+    }
+
+    function renderTrendPagination() {
+        const button = $('#rankingsTrendLoadMore');
+        if (!button) return;
+        const hasMore = state.trend.selectedIds.some((userId) => trendUserRecord(userId).hasMore);
+        button.classList.toggle('is-hidden', !hasMore);
+        button.disabled = state.trend.busy;
+    }
+
+    async function loadMoreTrendHistories() {
+        if (!state.trend.modalOpen || state.trend.busy) return;
+        const users = state.trend.selectedIds.filter((userId) => trendUserRecord(userId).hasMore);
+        if (!users.length) return;
+        state.trend.busy = true;
+        renderTrendPagination();
+        const results = await Promise.allSettled(users.map((userId) => loadTrendHistoryPage(userId, { append: true })));
+        results.forEach((result, index) => {
+            if (result.status === 'fulfilled' && state.trend.selectedIds.includes(users[index])) {
+                state.trend.histories.set(users[index], result.value);
+            }
+        });
+        state.trend.busy = false;
+        renderTrendSelection();
+        renderTrendPagination();
+        renderTrendChart();
+    }
+
     async function refreshTrendHistories() {
+        if (!state.trend.modalOpen) return;
         if (!state.trend.selectedIds.length) {
             state.trend.busy = false;
             renderTrendChart();
+            renderTrendPagination();
             return;
         }
         state.trend.busy = true;
         renderTrendChart();
-        const results = await Promise.allSettled(state.trend.selectedIds.map(async (userId) => {
-            const payload = await apiGet(`/api/rankings/history?userId=${encodeURIComponent(userId)}`);
-            return {
-                userId,
-                userName: state.rows.find((row) => row.userId === userId)?.userName || payload.userName || userId,
-                rows: Array.isArray(payload.rows) ? payload.rows : []
-            };
-        }));
+        const results = await Promise.allSettled(state.trend.selectedIds.map((userId) => loadTrendHistoryPage(userId)));
         results.forEach((result, index) => {
             const userId = state.trend.selectedIds[index];
             if (result.status === 'fulfilled' && state.trend.selectedIds.includes(userId)) {
@@ -1021,6 +1090,7 @@
         });
         state.trend.busy = false;
         renderTrendSelection();
+        renderTrendPagination();
         renderTrendChart();
     }
 
@@ -1031,13 +1101,14 @@
         if (input) input.value = '';
         renderTrendSelection();
         renderTrendChart();
-        refreshTrendHistories();
+        if (state.trend.modalOpen) refreshTrendHistories();
     }
 
     function removeTrendUser(userId) {
         state.trend.selectedIds = state.trend.selectedIds.filter((id) => id !== userId);
         state.trend.histories.delete(userId);
         renderTrendSelection();
+        renderTrendPagination();
         renderTrendChart();
     }
 
@@ -1920,8 +1991,10 @@
         return state.bridgeRequest;
     }
 
-    async function loadLatestSnapshot() {
-        const latest = await apiGet('/api/rankings/latest');
+    async function loadLatestSnapshot(options = {}) {
+        const latest = await apiGet('/api/rankings/latest', {
+            cache: options.fresh ? 'reload' : 'default'
+        });
         state.latest = latest;
         if (latest.snapshot) {
             syncPinnedSeason(latest.snapshot.seasonId);
@@ -1947,7 +2020,7 @@
             setStatus('已显示本地抓取数据，尚未上传云端');
             return { localOnly: true, snapshots: state.localSnapshots };
         }
-        const latest = await loadLatestSnapshot();
+        const latest = await loadLatestSnapshot({ fresh: force || retry });
         if (!force && !retry && latest.snapshot && !latest.stale) {
             clearRankingsRetry();
             setStatus(`数据新鲜 · ${formatDate(latest.snapshot.capturedAt)}`);
@@ -1985,7 +2058,7 @@
             setStatus('正在上传榜单快照…', false, true);
             await uploadSnapshot(bundle);
             state.localSnapshots = [];
-            const refreshed = await loadLatestSnapshot();
+            const refreshed = await loadLatestSnapshot({ fresh: true });
             setStatus(partial
                 ? `${bundle.blocked
                     ? '已同步，但部分来源被限制，已暂停自动请求。'
@@ -2015,9 +2088,11 @@
         }
     }
 
-    async function loadLeaderboard() {
+    async function loadLeaderboard(options = {}) {
         const query = `/api/rankings/leaderboard?board=users&period=${encodeURIComponent(state.period)}&sort=${encodeURIComponent(state.sort)}`;
-        const leaderboard = await apiGet(query);
+        const leaderboard = await apiGet(query, {
+            cache: options.fresh ? 'reload' : 'default'
+        });
         state.rows = (Array.isArray(leaderboard.rows) ? leaderboard.rows : []).map(enrichRankingEstimate);
         state.partialRows = (Array.isArray(leaderboard.partialRows) ? leaderboard.partialRows : []).map(enrichRankingEstimate);
         renderLeaderboard(leaderboard);
@@ -2048,7 +2123,6 @@
                     state.rows = [];
                     state.partialRows = [];
                     renderLeaderboard(latest || { rows: [] });
-                    if (state.trend.selectedIds.length) await refreshTrendHistories();
                     setStatus('暂无云端快照，请点击立即刷新');
                     state.loaded = true;
                     return;
@@ -2063,9 +2137,8 @@
                 state.partialRows = payload ? payload.partialRows : [];
                 renderLeaderboard(payload || { rows: [] });
             } else {
-                await loadLeaderboard();
+                await loadLeaderboard({ fresh: refresh || autoRefresh });
             }
-            if (state.trend.selectedIds.length) await refreshTrendHistories();
             state.loaded = true;
         } catch (error) {
             const canScheduleRetry = !manualRefresh && errorCanAutoRetry(error);
@@ -2098,9 +2171,8 @@
         try {
             await uploadSnapshot({ snapshots: state.localSnapshots });
             state.localSnapshots = [];
-            const refreshed = await loadLatestSnapshot();
-            await loadLeaderboard();
-            if (state.trend.selectedIds.length) await refreshTrendHistories();
+            const refreshed = await loadLatestSnapshot({ fresh: true });
+            await loadLeaderboard({ fresh: true });
             setStatus(`已上传并同步 · ${formatDate(refreshed.snapshot && refreshed.snapshot.capturedAt)}`);
         } catch (error) {
             setStatus(`上传失败：${String(error && error.message || error)}`, true);
@@ -2531,6 +2603,7 @@
         $('#rankingsTrendPeriodSelect')?.addEventListener('change', (event) => {
             state.trend.period = normalizeTrendPeriod(String(event.target.value || 'total'));
             renderTrendChart();
+            if (state.trend.modalOpen) refreshTrendHistories();
         });
         document.querySelectorAll('[data-trend-mode]').forEach((button) => {
             button.addEventListener('click', () => {
@@ -2538,9 +2611,11 @@
                 state.trend.mode = mode;
                 renderTrendModeButtons();
                 renderTrendChart();
+                if (state.trend.modalOpen) refreshTrendHistories();
             });
         });
         $('#rankingsTrendAddButton')?.addEventListener('click', addTrendUser);
+        $('#rankingsTrendLoadMore')?.addEventListener('click', loadMoreTrendHistories);
         $('#rankingsTrendUserSearch')?.addEventListener('keydown', (event) => {
             if (event.key !== 'Enter') return;
             event.preventDefault();

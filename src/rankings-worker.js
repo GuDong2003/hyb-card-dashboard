@@ -24,6 +24,13 @@ const HISTORY_MAX_LIMIT = 500;
 const EVENTS_DEFAULT_WINDOW_MS = 7 * DAY_MS;
 const MAX_LIMIT = 1000;
 const MAX_EVENT_ROWS = 200;
+const CACHE_HEADERS = Object.freeze({
+  latest: { 'cache-control': 'public, max-age=15, stale-while-revalidate=30' },
+  leaderboard: { 'cache-control': 'public, max-age=30, stale-while-revalidate=60' },
+  history: { 'cache-control': 'public, max-age=60, stale-while-revalidate=120' },
+  users: { 'cache-control': 'public, max-age=30, stale-while-revalidate=60' },
+  events: { 'cache-control': 'public, max-age=30, stale-while-revalidate=60' }
+});
 
 export async function handleRankingsRequest(request, env) {
   const url = new URL(request.url);
@@ -78,7 +85,7 @@ export async function handleRankingsRequest(request, env) {
 async function getLatest(env) {
   const row = await latestSnapshot(env);
   if (!row) {
-    return jsonResponse({ ok: true, snapshot: null, stale: true, boards: [] });
+    return jsonResponse({ ok: true, snapshot: null, stale: true, boards: [] }, 200, CACHE_HEADERS.latest);
   }
   const boards = await distinctBoards(env, row.id);
   return jsonResponse({
@@ -86,7 +93,7 @@ async function getLatest(env) {
     snapshot: serializeSnapshot(row),
     stale: Date.now() - Number(row.captured_at) >= REFRESH_INTERVAL_MS,
     boards
-  });
+  }, 200, CACHE_HEADERS.latest);
 }
 
 async function postSnapshot(request, env) {
@@ -195,7 +202,7 @@ async function storeNormalizedSnapshot(normalized, source, now, env) {
     SELECT id, season_id, season_name, scope, captured_at, captured_bucket,
       source, signature, created_at
     FROM rank_snapshots
-    WHERE season_id = ? AND signature = ?
+    WHERE accepted = 1 AND season_id = ? AND signature = ?
     LIMIT 1
   `).bind(normalized.seasonId, signature).first();
   if (duplicate) return { duplicate: true };
@@ -203,7 +210,7 @@ async function storeNormalizedSnapshot(normalized, source, now, env) {
   const latest = await env.RANKINGS_DB.prepare(`
     SELECT id, captured_at
     FROM rank_snapshots
-    WHERE season_id = ? AND scope = ?
+    WHERE accepted = 1 AND season_id = ? AND scope = ?
     ORDER BY captured_at DESC, id DESC
     LIMIT 1
   `).bind(normalized.seasonId, normalized.scope).first();
@@ -399,7 +406,7 @@ async function getLeaderboard(url, env) {
     return jsonResponse({ ok: false, error: 'invalid_board_or_period' }, 400);
   }
   const latest = await latestSnapshot(env);
-  if (!latest) return jsonResponse({ ok: true, snapshot: null, rows: [], board, period });
+  if (!latest) return jsonResponse({ ok: true, snapshot: null, rows: [], board, period }, 200, CACHE_HEADERS.leaderboard);
 
   if (board === 'users') return getUsersLeaderboard(url, env, latest);
 
@@ -452,7 +459,7 @@ async function getLeaderboard(url, env) {
     estimated: true,
     rows,
     partialRows
-  });
+  }, 200, CACHE_HEADERS.leaderboard);
 }
 
 async function getUsersLeaderboard(url, env, latest) {
@@ -504,7 +511,7 @@ async function getUsersLeaderboard(url, env, latest) {
     estimated: true,
     rows,
     partialRows: []
-  });
+  }, 200, CACHE_HEADERS.leaderboard);
 }
 
 async function metricsForPeriod(env, seasonId, period) {
@@ -561,6 +568,7 @@ async function dailyMetricsForPeriod(env, seasonId, period, capturedAt = null) {
       FROM rank_entries e
       JOIN rank_snapshots s ON s.id = e.snapshot_id
       WHERE s.season_id = ? AND e.board_key IN (?, ?, ?)
+        AND s.accepted = 1
         AND s.captured_at >= ? AND s.captured_at < ? AND s.captured_at <= ?
     )
     SELECT snapshot_id, board_key, user_id, user_name, avatar_url, value, rank,
@@ -1012,7 +1020,7 @@ async function getHistory(url, env) {
       nextCursor: null,
       hasMore: false,
       events: []
-    });
+    }, 200, CACHE_HEADERS.history);
   }
 
   const range = parseHistoryRange(url, latest);
@@ -1040,7 +1048,7 @@ async function getHistory(url, env) {
       : null,
     hasMore: page.hasMore,
     events: buildUserEvents(serialized)
-  });
+  }, 200, CACHE_HEADERS.history);
 }
 
 async function historyDailyPage(url, env, latest, userId, board, range, limit, cursor) {
@@ -1117,6 +1125,7 @@ async function currentHistoryRows(env, latest, userId, board, range, cursor) {
       FROM rank_entries e
       JOIN rank_snapshots s ON s.id = e.snapshot_id
       WHERE s.season_id = ? AND e.user_id = ?${boardClause}
+        AND s.accepted = 1
         AND s.captured_at >= ? AND s.captured_at < ? AND s.captured_at <= ?
     )
     SELECT season_id, season_name, snapshot_id, board_key, user_id, user_name,
@@ -1166,6 +1175,7 @@ async function historySnapshotPage(url, env, latest, userId, board, range, limit
       FROM rank_entries e
       JOIN rank_snapshots s ON s.id = e.snapshot_id
       WHERE s.season_id = ? AND e.user_id = ?
+        AND s.accepted = 1
         AND s.captured_at >= ? AND s.captured_at <= ?${boardClause}
     ), deduped AS (
       SELECT season_id, season_name, snapshot_id, board_key, user_id, user_name,
@@ -1332,9 +1342,9 @@ function compareTuple(left, right) {
 
 async function getUsers(url, env) {
   const query = String(url.searchParams.get('query') || '').trim().toLowerCase();
-  if (query.length < 1) return jsonResponse({ ok: true, users: [] });
+  if (query.length < 1) return jsonResponse({ ok: true, users: [] }, 200, CACHE_HEADERS.users);
   const latest = await latestSnapshot(env);
-  if (!latest) return jsonResponse({ ok: true, users: [] });
+  if (!latest) return jsonResponse({ ok: true, users: [] }, 200, CACHE_HEADERS.users);
   const pattern = `%${escapeLikePattern(query)}%`;
   const rows = await env.RANKINGS_DB.prepare(`
     WITH matched AS (
@@ -1373,7 +1383,7 @@ async function getUsers(url, env) {
     });
     if (users.length >= 20) break;
   }
-  return jsonResponse({ ok: true, users });
+  return jsonResponse({ ok: true, users }, 200, CACHE_HEADERS.users);
 }
 
 async function getEvents(url, env) {
@@ -1382,7 +1392,7 @@ async function getEvents(url, env) {
   const mode = String(url.searchParams.get('mode') || 'daily').trim().toLowerCase();
   if (!HISTORY_MODES.has(mode)) return jsonResponse({ ok: false, error: 'invalid_event_mode' }, 400);
   const latest = await latestSnapshot(env);
-  if (!latest) return jsonResponse({ ok: true, board, mode, since: 0, until: 0, events: [] });
+  if (!latest) return jsonResponse({ ok: true, board, mode, since: 0, until: 0, events: [] }, 200, CACHE_HEADERS.events);
   const range = parseBoundedRange(url, latest, EVENTS_DEFAULT_WINDOW_MS);
   if (range.error) return jsonResponse({ ok: false, error: range.error }, 400);
 
@@ -1411,13 +1421,13 @@ async function getEvents(url, env) {
       appendBoardEvents(events, board, rowsByDay.get(days[index - 1]), rowsByDay.get(currentDay),
         rowsByDay.get(currentDay)[0] && rowsByDay.get(currentDay)[0].capturedAt);
     }
-    return jsonResponse({ ok: true, board, mode, since: range.since, until: range.until, events: events.slice(-MAX_EVENT_ROWS) });
+    return jsonResponse({ ok: true, board, mode, since: range.since, until: range.until, events: events.slice(-MAX_EVENT_ROWS) }, 200, CACHE_HEADERS.events);
   }
 
   const snapshots = await env.RANKINGS_DB.prepare(`
     SELECT id, season_id, season_name, scope, captured_at, captured_bucket, source, signature, created_at
     FROM rank_snapshots
-    WHERE season_id = ? AND captured_at >= ? AND captured_at <= ?
+    WHERE accepted = 1 AND season_id = ? AND captured_at >= ? AND captured_at <= ?
     ORDER BY captured_at ASC, id ASC
   `).bind(latest.season_id, range.since, range.until).all();
   const list = snapshots.results || [];
@@ -1434,7 +1444,7 @@ async function getEvents(url, env) {
     const currentRows = currentRowsRaw.map(serializeEntry);
     appendBoardEvents(events, board, previousRows, currentRows, Number(current.captured_at));
   }
-  return jsonResponse({ ok: true, board, mode, since: range.since, until: range.until, events: events.slice(-MAX_EVENT_ROWS) });
+  return jsonResponse({ ok: true, board, mode, since: range.since, until: range.until, events: events.slice(-MAX_EVENT_ROWS) }, 200, CACHE_HEADERS.events);
 }
 
 function appendBoardEvents(events, board, previousRows = [], currentRows = [], capturedAt = null) {
@@ -1461,6 +1471,7 @@ async function latestSnapshot(env) {
   return env.RANKINGS_DB.prepare(`
     SELECT id, season_id, season_name, scope, captured_at, captured_bucket, source, signature, created_at
     FROM rank_snapshots
+    WHERE accepted = 1
     ORDER BY captured_at DESC, id DESC
     LIMIT 1
   `).first();
@@ -1470,7 +1481,7 @@ async function previousSnapshot(env, latest) {
   return env.RANKINGS_DB.prepare(`
     SELECT id, season_id, season_name, scope, captured_at, captured_bucket, source, signature, created_at
     FROM rank_snapshots
-    WHERE season_id = ? AND scope = ? AND captured_at < ?
+    WHERE accepted = 1 AND season_id = ? AND scope = ? AND captured_at < ?
     ORDER BY captured_at DESC, id DESC
     LIMIT 1
   `).bind(latest.season_id, latest.scope, latest.captured_at).first();
@@ -1658,12 +1669,13 @@ function chunks(array, size) {
   return result;
 }
 
-function jsonResponse(body, status = 200) {
+function jsonResponse(body, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
       'content-type': 'application/json; charset=utf-8',
-      'cache-control': 'no-store'
+      'cache-control': 'no-store',
+      ...extraHeaders
     }
   });
 }

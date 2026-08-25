@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   aggregateRankingsDay,
-  dayStartAtForCapturedAt
+  dayStartAtForCapturedAt,
+  previousBeijingDayStart
 } from '../src/rankings-daily.js';
+import { scheduled } from '../src/index.js';
 
 class FakeStatement {
   constructor(db, sql) {
@@ -123,6 +125,22 @@ test('maps captures to a Beijing day starting at 04:00', () => {
     dayStartAtForCapturedAt(Date.parse('2026-08-25T04:00:00+08:00')),
     Date.parse('2026-08-25T04:00:00+08:00')
   );
+});
+
+test('previous Beijing day closes at 04:00', () => {
+  assert.equal(
+    previousBeijingDayStart(Date.parse('2026-08-25T05:00:00+08:00')),
+    Date.parse('2026-08-24T04:00:00+08:00')
+  );
+});
+
+test('scheduled aggregation targets the previous Beijing day', async () => {
+  const db = new FakeDailyDb();
+  await scheduled({ scheduledTime: Date.parse('2026-08-25T04:05:00+08:00') }, { RANKINGS_DB: db });
+  assert.deepEqual(db.queries[0].params, [
+    Date.parse('2026-08-24T04:00:00+08:00'),
+    Date.parse('2026-08-25T04:00:00+08:00')
+  ]);
 });
 
 test('aggregateRankingsDay writes one representative per season/day/user/board and can repeat', async () => {

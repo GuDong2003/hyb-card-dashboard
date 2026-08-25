@@ -12,7 +12,7 @@ export const DAILY_AGGREGATION_SQL = `
       s.scope, s.captured_at
     FROM rank_entries e
     JOIN rank_snapshots s ON s.id = e.snapshot_id
-    WHERE s.captured_at >= ? AND s.captured_at < ?
+    WHERE s.accepted = 1 AND s.captured_at >= ? AND s.captured_at < ?
   ), ranked AS (
     SELECT candidates.*,
       ROW_NUMBER() OVER (
@@ -46,6 +46,56 @@ export const DAILY_UPSERT_SQL = `
     scope = excluded.scope,
     captured_at = excluded.captured_at
 `;
+
+export function buildDailyAggregationSql(dayStartAt) {
+  const normalizedDayStartAt = dayStartAtForCapturedAt(dayStartAt);
+  if (normalizedDayStartAt == null || normalizedDayStartAt !== Number(dayStartAt)) {
+    throw new Error('invalid_day_start_at');
+  }
+  const dayEndAt = normalizedDayStartAt + DAY_MS;
+  return `
+    WITH candidates AS (
+      SELECT s.season_id, s.id AS snapshot_id,
+        CAST((s.captured_at - ${DAY_BOUNDARY_OFFSET_MS}) / ${DAY_MS} AS INTEGER) * ${DAY_MS} + ${DAY_BOUNDARY_OFFSET_MS} AS day_start_at,
+        e.board_key, e.user_id, e.user_name, e.avatar_url, e.value, e.rank,
+        e.is_vip, e.active_name_decoration, e.name_display_preference,
+        s.scope, s.captured_at
+      FROM rank_entries e
+      JOIN rank_snapshots s ON s.id = e.snapshot_id
+      WHERE s.accepted = 1
+        AND s.captured_at >= ${normalizedDayStartAt}
+        AND s.captured_at < ${dayEndAt}
+    ), ranked AS (
+      SELECT candidates.*,
+        ROW_NUMBER() OVER (
+          PARTITION BY season_id, day_start_at, user_id, board_key
+          ORDER BY captured_at DESC, value DESC, snapshot_id DESC, rank ASC
+        ) AS day_order
+      FROM candidates
+    )
+    INSERT INTO rank_daily_metrics (
+      season_id, day_start_at, user_id, board_key, user_name, avatar_url,
+      value, rank, is_vip, active_name_decoration, name_display_preference,
+      snapshot_id, scope, captured_at
+    )
+    SELECT season_id, day_start_at, user_id, board_key, user_name, avatar_url,
+      value, rank, is_vip, active_name_decoration, name_display_preference,
+      snapshot_id, scope, captured_at
+    FROM ranked
+    WHERE day_order = 1
+    ON CONFLICT (season_id, day_start_at, user_id, board_key) DO UPDATE SET
+      user_name = excluded.user_name,
+      avatar_url = excluded.avatar_url,
+      value = excluded.value,
+      rank = excluded.rank,
+      is_vip = excluded.is_vip,
+      active_name_decoration = excluded.active_name_decoration,
+      name_display_preference = excluded.name_display_preference,
+      snapshot_id = excluded.snapshot_id,
+      scope = excluded.scope,
+      captured_at = excluded.captured_at;
+  `;
+}
 
 export function dayStartAtForCapturedAt(capturedAt) {
   const value = Number(capturedAt);

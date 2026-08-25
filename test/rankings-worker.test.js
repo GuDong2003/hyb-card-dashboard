@@ -53,26 +53,30 @@ class FakeD1 {
 
   async first(sql, params) {
     const normalized = sql.replace(/\s+/g, ' ').trim().toLowerCase();
-    if (normalized.includes('from rank_snapshots') && normalized.includes('where season_id = ? and signature = ?')) {
+    if (normalized.includes('from rank_snapshots')
+      && normalized.includes('signature = ?')
+      && normalized.includes('season_id = ?')) {
       const [seasonId, signature] = params;
-      return this.snapshots.find((row) => row.season_id === seasonId && row.signature === signature) || null;
+      return this.snapshots.find((row) => isAccepted(row)
+        && row.season_id === seasonId && row.signature === signature) || null;
     }
-    if (normalized.includes('where season_id = ? and scope = ?')
+    if (normalized.includes('scope = ?')
       && normalized.includes('order by captured_at desc, id desc')
       && !normalized.includes('captured_at < ?')) {
       const [seasonId, scope] = params;
       return this.snapshots
-        .filter((row) => row.season_id === seasonId && row.scope === scope)
+        .filter((row) => isAccepted(row) && row.season_id === seasonId && row.scope === scope)
         .sort((a, b) => b.captured_at - a.captured_at || b.id - a.id)[0] || null;
     }
-    if (normalized.includes('where season_id = ? and scope = ? and captured_at < ?')) {
+    if (normalized.includes('scope = ?') && normalized.includes('captured_at < ?')) {
       const [seasonId, scope, capturedAt] = params;
       return this.snapshots
-        .filter((row) => row.season_id === seasonId && row.scope === scope && row.captured_at < capturedAt)
+        .filter((row) => isAccepted(row)
+          && row.season_id === seasonId && row.scope === scope && row.captured_at < capturedAt)
         .sort((a, b) => b.captured_at - a.captured_at || b.id - a.id)[0] || null;
     }
     if (normalized.includes('from rank_snapshots') && normalized.includes('order by captured_at desc')) {
-      return this.snapshots.slice().sort((a, b) => b.captured_at - a.captured_at || b.id - a.id)[0] || null;
+      return this.snapshots.filter(isAccepted).slice().sort((a, b) => b.captured_at - a.captured_at || b.id - a.id)[0] || null;
     }
     return null;
   }
@@ -330,6 +334,10 @@ class FakeD1 {
     }
     return { success: true, meta: {} };
   }
+}
+
+function isAccepted(row) {
+  return row && row.accepted !== 0 && row.accepted !== false;
 }
 
 function fakeBoardMatches(boardKey, pattern) {
@@ -1260,4 +1268,30 @@ test('raw event mode is explicit and bounded by the requested range', async () =
     && sql.includes('captured_at >= ?')
     && sql.includes('captured_at <= ?'));
   assert.ok(query);
+});
+
+test('successful GET responses use endpoint-specific short caches', async () => {
+  const environment = env();
+  const body = snapshotAt(Date.now() - 1000);
+  const postResponse = await postSnapshot(environment, body);
+  assert.equal(postResponse.headers.get('cache-control'), 'no-store');
+
+  const latestResponse = await handleRankingsRequest(request('/api/rankings/latest'), environment);
+  const leaderboardResponse = await handleRankingsRequest(
+    request('/api/rankings/leaderboard?board=epic&period=total'),
+    environment
+  );
+  const historyResponse = await handleRankingsRequest(
+    request('/api/rankings/history?userId=u1'),
+    environment
+  );
+  assert.match(latestResponse.headers.get('cache-control'), /public, max-age=15/);
+  assert.match(leaderboardResponse.headers.get('cache-control'), /public, max-age=30/);
+  assert.match(historyResponse.headers.get('cache-control'), /public, max-age=60/);
+
+  const errorResponse = await handleRankingsRequest(
+    request('/api/rankings/leaderboard?board=not-a-board'),
+    environment
+  );
+  assert.equal(errorResponse.headers.get('cache-control'), 'no-store');
 });
