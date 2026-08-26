@@ -182,7 +182,7 @@ function snapshotAt(capturedAt, values = {}) {
   const spend = values.spend ?? 500_000;
   return {
     season: { id: 'season-1', name: 'Season 1' },
-    scope: 'global',
+    scope: values.scope ?? 'global',
     capturedAt,
     leaderboards: {
       epic_total: [{ userId: 'u-1', userName: 'Alice', value: epic, rank: 2, isVip: false }],
@@ -192,10 +192,14 @@ function snapshotAt(capturedAt, values = {}) {
 }
 
 async function postSnapshot(environment, snapshot) {
+  return postSnapshots(environment, [snapshot]);
+}
+
+async function postSnapshots(environment, snapshots) {
   return handleRankingsRequest(new Request('https://card.test/api/rankings/snapshots', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ snapshots: [snapshot] })
+    body: JSON.stringify({ snapshots })
   }), environment);
 }
 
@@ -227,6 +231,19 @@ test('creates a second daily row only after the Beijing 04:00 boundary', async (
   await postSnapshot(environment, snapshotAt(Date.parse('2026-08-25T03:59:00+08:00')));
   await postSnapshot(environment, snapshotAt(Date.parse('2026-08-25T04:01:00+08:00')));
   assert.equal(environment.RANKINGS_DB.userDays.length, 2);
+});
+
+test('merges global and friends before one day/current upsert per user', async () => {
+  const environment = compactEnv();
+  const friends = snapshotAt(11_000, { scope: 'friends', epic: 12 });
+  friends.leaderboards.sets_today = [{ userId: 'u-1', userName: 'Alice', value: 4, rank: 8, isVip: false }];
+  const response = await postSnapshots(environment, [snapshotAt(10_000), friends]);
+  assert.equal(response.status, 200);
+  assert.equal(environment.RANKINGS_DB.userDays.length, 1);
+  assert.equal(environment.RANKINGS_DB.currentUsers.length, 1);
+  assert.equal(environment.RANKINGS_DB.userDays[0].source_scopes, 'global,friends');
+  assert.equal(environment.RANKINGS_DB.userDays[0].sets_today_value, 4);
+  assert.equal(environment.RANKINGS_DB.queries.filter(({ sql }) => /insert into rank_user_(days|current)/i.test(sql)).length, 2);
 });
 
 test('latest reads only rank_seasons', async () => {
@@ -261,12 +278,27 @@ test('leaderboard returns one page and an opaque cursor', async () => {
   assert.equal(firstBody.totalRows, 120);
   assert.equal(firstBody.hasMore, true);
   assert.ok(firstBody.nextCursor);
-  assert.match(environment.RANKINGS_DB.queries.at(-1).sql, /limit \?/i);
+  assert.ok(environment.RANKINGS_DB.queries.some(({ sql }) => /from rank_user_current[\s\S]*limit \?/i.test(sql)));
 
   const second = await handleRankingsRequest(new Request(`https://card.test/api/rankings/leaderboard?board=users&period=total&sort=user&limit=50&cursor=${encodeURIComponent(firstBody.nextCursor)}`), environment);
   const secondBody = await second.json();
   assert.equal(secondBody.rows[0].userId, 'u-50');
   assert.equal(secondBody.totalRows, 120);
+  assert.equal(environment.RANKINGS_DB.queries.filter(({ sql }) => /select count\(\*\).*from rank_user_current/i.test(sql)).length, 1);
+});
+
+test('leaderboard total uses a separate count and does not build a full ranked window', async () => {
+  const environment = compactEnv();
+  seedSeason(environment);
+  for (let index = 0; index < 120; index += 1) seedCurrentUser(environment, `u-${index}`, index);
+
+  const response = await handleRankingsRequest(new Request('https://card.test/api/rankings/leaderboard?board=users&period=total&sort=user&limit=50'), environment);
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.totalRows, 120);
+  const readQueries = environment.RANKINGS_DB.queries.filter(({ sql }) => /from rank_user_current/i.test(sql));
+  assert.equal(readQueries.some(({ sql }) => /with ranked/i.test(sql)), false);
+  assert.equal(readQueries.some(({ sql }) => /select count\(\*\)/i.test(sql)), true);
 });
 
 test('leaderboard returns pinned rows with their global ranks in the same response', async () => {
@@ -284,7 +316,7 @@ test('leaderboard returns pinned rows with their global ranks in the same respon
     { userId: 'u-69', rank: 51 }
   ]);
   assert.equal(body.totalRows, 120);
-  assert.equal(environment.RANKINGS_DB.queries.filter(({ sql }) => /WITH ranked/i.test(sql)).length, 1);
+  assert.equal(environment.RANKINGS_DB.queries.filter(({ sql }) => /WITH ranked/i.test(sql)).length, 0);
 });
 
 test('pinned rows keep global ranks when leaderboard search is active', async () => {
@@ -298,12 +330,13 @@ test('pinned rows keep global ranks when leaderboard search is active', async ()
   const body = await response.json();
   assert.equal(response.status, 200);
   assert.deepEqual(body.rows.map((row) => row.userId), ['alice-1']);
+  assert.equal(body.rows[0].rank, 2);
   assert.deepEqual(body.pinnedRows.map((row) => ({ userId: row.userId, rank: row.rank })), [
     { userId: 'alice-1', rank: 2 },
     { userId: 'bob-1', rank: 3 }
   ]);
   assert.equal(body.totalRows, 1);
-  assert.equal(environment.RANKINGS_DB.queries.filter(({ sql }) => /WITH ranked/i.test(sql)).length, 1);
+  assert.equal(environment.RANKINGS_DB.queries.filter(({ sql }) => /WITH ranked/i.test(sql)).length, 0);
 });
 
 test('history reads only one user day row per requested day', async () => {

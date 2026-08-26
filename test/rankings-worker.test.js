@@ -108,6 +108,24 @@ function seedUser(environment, userId, userName = userId) {
   );
 }
 
+function seedEmptyUser(environment, userId, userName = userId) {
+  seedUser(environment, userId, userName);
+  const emptyColumns = [
+    ...COMPACT_BOARD_KEYS.flatMap((boardKey) => [
+      `${boardKey}_value`, `${boardKey}_rank`, `${boardKey}_observed_at`
+    ]),
+    'sort_legend_value', 'sort_spend_usd', 'sort_estimated_pulls',
+    'sort_exchange_count', 'sort_probability',
+    'sort_today_estimated_pulls', 'sort_today_probability',
+    'sort_week_estimated_pulls', 'sort_week_probability',
+    'sort_month_estimated_pulls', 'sort_month_probability'
+  ];
+  environment.RANKINGS_DB.run(
+    `UPDATE rank_user_current SET ${emptyColumns.map((column) => `${column} = NULL`).join(', ')} WHERE season_id = ? AND user_id = ?`,
+    ['s1', userId]
+  );
+}
+
 test('returns 503 when the compact D1 binding is missing', async () => {
   const response = await handleRankingsRequest(new Request('https://card.test/api/rankings/latest'), {});
   assert.equal(response.status, 503);
@@ -152,6 +170,26 @@ test('user search and targeted ids read only current rows', async () => {
   assert.equal(environment.RANKINGS_DB.queries.some(({ sql }) => /from rank_user_current/.test(sql)), true);
   assert.equal(environment.RANKINGS_DB.queries.some(({ sql }) => /COUNT\(\*\)/i.test(sql)), false);
   assert.equal(environment.RANKINGS_DB.queries.some(({ sql }) => /rank_snapshots|rank_entries|rank_user_metrics|rank_daily_metrics|raw_json|fingerprint/.test(sql)), false);
+});
+
+test('current users without any metric data stay out of leaderboard, search, totals, and pins', async () => {
+  const environment = env();
+  seedSeason(environment);
+  seedUser(environment, 'alice-1', 'Alice');
+  seedEmptyUser(environment, 'empty-1', 'Empty User');
+
+  const leaderboard = await handleRankingsRequest(new Request(
+    'https://card.test/api/rankings/leaderboard?sort=user&direction=asc&limit=20&pinned=empty-1'
+  ), environment);
+  const leaderboardPayload = await leaderboard.json();
+  assert.deepEqual(leaderboardPayload.rows.map((row) => row.userId), ['alice-1']);
+  assert.deepEqual(leaderboardPayload.pinnedRows, []);
+  assert.equal(leaderboardPayload.totalRows, 1);
+
+  const search = await handleRankingsRequest(new Request(
+    'https://card.test/api/rankings/users?q=empty&limit=20'
+  ), environment);
+  assert.deepEqual((await search.json()).users, []);
 });
 
 test('leaderboard search filters the requested page before pagination', async () => {

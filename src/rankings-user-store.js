@@ -10,6 +10,10 @@ export const COMPACT_BOARD_KEYS = Object.freeze([
   'spend_total', 'spend_month', 'spend_week', 'spend_today'
 ]);
 
+export const COMPACT_VALUE_COLUMNS = Object.freeze(
+  COMPACT_BOARD_KEYS.map((boardKey) => `${boardKey}_value`)
+);
+
 const CUMULATIVE_BOARD_KEYS = new Set(
   COMPACT_BOARD_KEYS.filter((boardKey) => boardKey.endsWith('_total'))
 );
@@ -218,6 +222,8 @@ export function encodeCurrentCursor(sort, direction, row, context = {}) {
     value: rawValue == null ? null : rawValue,
     userId: String(row.user_id || '')
   };
+  const totalRows = Number(context.totalRows);
+  if (Number.isFinite(totalRows) && totalRows >= 0) payload.totalRows = Math.floor(totalRows);
   return encodeBase64Url(payload);
 }
 
@@ -244,6 +250,8 @@ export function decodeCurrentCursor(value, sort, direction, context = {}) {
       || cursor.query !== String(context.query || '')
       || !Number.isFinite(Number(cursor.rank))
       || Number(cursor.rank) < 0
+      || (cursor.totalRows != null
+        && (!Number.isFinite(Number(cursor.totalRows)) || Number(cursor.totalRows) < 0))
       || !String(cursor.userId || '')
       || ![0, 1].includes(nullRank)
       || !valueMatchesNullRank) {
@@ -269,7 +277,7 @@ export async function queryCurrentBoard(db, options = {}) {
   const sortColumn = currentSortColumn(board, period, sort);
   const nullRank = `CASE WHEN ${sortColumn} IS NULL THEN 1 ELSE 0 END`;
   const params = [seasonId];
-  const baseWhere = ['r.season_id = ?'];
+  const baseWhere = ['r.season_id = ?', currentDataWhere('r')];
   const filterWhere = [];
 
   if (Array.isArray(options.ids) && options.ids.length) {
@@ -336,7 +344,14 @@ export async function queryCurrentBoard(db, options = {}) {
     totalRows: null,
     hasMore: rows.length > limit,
     nextCursor: rows.length > limit && rankedPageRows.length
-      ? encodeCurrentCursor(sort, direction, rankedPageRows[rankedPageRows.length - 1], { seasonId, board, period, query: String(options.q || '').trim().slice(0, 128), rank: rankOffset + rankedPageRows.length })
+      ? encodeCurrentCursor(sort, direction, rankedPageRows[rankedPageRows.length - 1], {
+        seasonId,
+        board,
+        period,
+        query: String(options.q || '').trim().slice(0, 128),
+        rank: rankOffset + rankedPageRows.length,
+        totalRows: options.totalRows
+      })
       : null
   };
 }
@@ -359,117 +374,109 @@ async function queryCurrentBoardWithTotal(db, options) {
     query,
     pinnedIds
   } = options;
-  const selectedColumns = USER_CURRENT_COLUMNS.map((column) => `r.${column} AS ${column}`).join(', ');
-  const outputColumns = USER_CURRENT_COLUMNS.join(', ');
-  const pageWhere = [];
-  const pageParams = [];
-
-  if (cursor) {
-    const cursorNullRank = Number(cursor.nullRank);
-    pageWhere.push(`(
-      __null_rank > ?
-      OR (__null_rank = ? AND (
-        ${cursorNullRank === 1
-          ? 'user_id > ?'
-          : `(__sort_value ${direction === 'asc' ? '>' : '<'} ?
-              OR (__sort_value = ? AND user_id > ?))`}
-      ))
-    )`);
-    pageParams.push(cursorNullRank, cursorNullRank);
-    if (cursorNullRank === 1) pageParams.push(String(cursor.userId));
-    else pageParams.push(cursor.value, cursor.value, String(cursor.userId));
-  } else {
-    pageWhere.push('1 = 1');
-  }
-
-  const pinnedClause = pinnedIds.length
-    ? `
-    UNION ALL
-    SELECT ${outputColumns}, __current_rank, __total_rows,
-      NULL AS __filtered_total_rows, 1 AS __row_kind
-    FROM ranked
-    WHERE user_id IN (${pinnedIds.map(() => '?').join(', ')})
-      AND user_id NOT IN (SELECT user_id FROM display_page)`
-    : '';
-  const nullColumns = USER_CURRENT_COLUMNS.map((column) => `NULL AS ${column}`).join(', ');
-  const result = await db.prepare(`
-    WITH ranked AS (
-      SELECT ${selectedColumns},
-        ${nullRank} AS __null_rank,
-        ${sortColumn} AS __sort_value,
-        ROW_NUMBER() OVER (
-          ORDER BY ${nullRank} ASC, ${sortColumn} ${direction.toUpperCase()}, r.user_id ASC
-        ) AS __current_rank,
-        COUNT(*) OVER () AS __total_rows
+  const cursorTotalRows = cursor
+    && Number.isFinite(Number(cursor.totalRows))
+    && Number(cursor.totalRows) >= 0
+    ? Math.floor(Number(cursor.totalRows))
+    : null;
+  let totalRows = cursorTotalRows;
+  if (totalRows == null) {
+    const totalResult = await db.prepare(`
+      SELECT COUNT(*) AS total_rows
       FROM rank_user_current r
-      WHERE ${baseWhere.join(' AND ')}
-    ), filtered AS (
-      SELECT ranked.*, COUNT(*) OVER () AS __filtered_total_rows
-      FROM ranked
-      WHERE ${filterWhere.length ? filterWhere.join(' AND ') : '1 = 1'}
-    ), page_candidates AS (
-      SELECT ${outputColumns}, __current_rank, __total_rows, __filtered_total_rows, 0 AS __row_kind
-      FROM filtered
-      WHERE ${pageWhere.join(' AND ')}
-      ORDER BY __null_rank ASC, __sort_value ${direction.toUpperCase()}, user_id ASC
-      LIMIT ?
-    ), display_page AS (
-      SELECT * FROM page_candidates
-      LIMIT ?
-    )
-    SELECT * FROM page_candidates
-    ${pinnedClause}
-    UNION ALL
-    SELECT ${nullColumns}, NULL AS __current_rank,
-      COALESCE(MAX(__filtered_total_rows), 0) AS __total_rows,
-      NULL AS __filtered_total_rows, 2 AS __row_kind
-    FROM filtered
-  `).bind(...baseParams, ...filterParams, ...pageParams, limit + 1, limit, ...pinnedIds).all();
-  const resultRows = result.results || [];
-  const totalRow = resultRows.find((row) => Number(row.__row_kind) === 2);
-  const pageResultRows = resultRows
-    .filter((row) => Number(row.__row_kind) === 0);
-  const pageRows = pageResultRows.slice(0, limit)
-    .map((row) => stripRankedRow(row));
-  const pinnedRowsById = new Map([
-    ...pageRows.map((row) => [String(row.user_id), row]),
-    ...resultRows
-      .filter((row) => Number(row.__row_kind) === 1)
-      .map((row) => [String(row.user_id), stripRankedRow(row)])
-  ]);
-  const rankedPinnedRows = pinnedIds
-    .map((userId) => pinnedRowsById.get(userId))
-    .filter(Boolean);
-  const hasMore = pageResultRows.length > limit;
+      WHERE ${[...baseWhere, ...filterWhere].join(' AND ')}
+    `).bind(...baseParams, ...filterParams).first();
+    totalRows = Number(totalResult && totalResult.total_rows || 0);
+  }
+  const page = await queryCurrentBoard(db, {
+    seasonId,
+    board,
+    period,
+    sort,
+    direction,
+    limit,
+    q: query,
+    cursor,
+    includeTotal: false,
+    totalRows
+  });
+  const rankedPageRows = query && page.rows.length
+    ? await queryPinnedWithRanks(db, {
+      seasonId,
+      board,
+      period,
+      sort,
+      direction,
+      ids: page.rows.map((row) => row.user_id),
+      maxIds: page.rows.length
+    })
+    : page.rows;
+  const rankedPageById = new Map(rankedPageRows.map((row) => [String(row.user_id), row]));
+  const rankedPinnedRows = pinnedIds.length
+    ? await queryPinnedWithRanks(db, {
+      seasonId,
+      board,
+      period,
+      sort,
+      direction,
+      ids: pinnedIds
+    })
+    : [];
   return {
-    rows: pageRows,
+    ...page,
+    rows: query
+      ? page.rows.map((row) => rankedPageById.get(String(row.user_id)) || row)
+      : page.rows,
     pinnedRows: rankedPinnedRows,
-    totalRows: Number(totalRow && totalRow.__total_rows || 0),
-    hasMore,
-    nextCursor: hasMore && pageRows.length
-      ? encodeCurrentCursor(sort, direction, pageRows[pageRows.length - 1], {
-        seasonId,
-        board,
-        period,
-        query,
-        rank: Number(pageRows[pageRows.length - 1].current_rank) || 0
-      })
-      : null
+    totalRows
   };
 }
 
-function stripRankedRow(row) {
-  const {
-    __current_rank: currentRank,
-    __total_rows: _totalRows,
-    __filtered_total_rows: _filteredTotalRows,
-    __row_kind: _rowKind,
-    ...userRow
-  } = row;
-  return {
-    ...userRow,
-    current_rank: Number(currentRank) || null
-  };
+async function queryPinnedWithRanks(db, options = {}) {
+  const seasonId = String(options.seasonId || '').trim();
+  const board = String(options.board || 'users');
+  const period = String(options.period || 'total');
+  const sort = String(options.sort || 'legend');
+  const direction = options.direction === 'asc' ? 'asc' : 'desc';
+  const maxIds = Math.max(1, Math.min(100, Math.floor(Number(options.maxIds) || 20)));
+  const ids = Array.isArray(options.ids)
+    ? options.ids.map((id) => String(id || '').trim()).filter(Boolean).slice(0, maxIds)
+    : [];
+  if (!ids.length) return [];
+
+  const sortColumn = currentSortColumn(board, period, sort);
+  const pinnedSortColumn = sortColumn.replace(/\br\./g, 'p.');
+  const nullRank = `CASE WHEN ${sortColumn} IS NULL THEN 1 ELSE 0 END`;
+  const pinnedNullRank = `CASE WHEN ${pinnedSortColumn} IS NULL THEN 1 ELSE 0 END`;
+  const before = `(
+    ${pinnedNullRank} < ${nullRank}
+    OR (${pinnedNullRank} = ${nullRank} AND (
+      ${nullRank} = 1
+      OR ${pinnedSortColumn} ${direction === 'asc' ? '<' : '>'} ${sortColumn}
+      OR (${pinnedSortColumn} = ${sortColumn} AND p.user_id < r.user_id)
+    ))
+  )`;
+  const selectedColumns = USER_CURRENT_COLUMNS
+    .map((column) => `r.${column} AS ${column}`)
+    .join(', ');
+  const result = await db.prepare(`
+    SELECT ${selectedColumns},
+      1 + (
+        SELECT COUNT(*)
+        FROM rank_user_current p
+        WHERE p.season_id = r.season_id
+          AND ${currentDataWhere('p')}
+          AND ${before}
+      ) AS current_rank
+    FROM rank_user_current r
+    WHERE r.season_id = ?
+      AND ${currentDataWhere('r')}
+      AND r.user_id IN (${ids.map(() => '?').join(', ')})
+  `).bind(seasonId, ...ids).all();
+  const rowsById = new Map((result.results || []).map((row) => [String(row.user_id), row]));
+  return ids
+    .map((userId) => rowsById.get(userId))
+    .filter(Boolean);
 }
 
 export async function queryPinnedUsers(db, options = {}) {
@@ -500,6 +507,10 @@ function currentSortColumn(board, period, sort) {
     return 'r.sort_legend_value';
   }
   return `r.${board}_${period}_value`;
+}
+
+function currentDataWhere(alias = 'r') {
+  return `(${COMPACT_VALUE_COLUMNS.map((column) => `${alias}.${column} IS NOT NULL`).join(' OR ')})`;
 }
 
 function currentSortValue(row, board, period, sort) {
@@ -561,11 +572,11 @@ export const INGEST_STATE_UPSERT_SQL = `
 
 export async function storeUserObservations(db, normalizedSnapshots = [], source = '', now = Date.now()) {
   void source;
-  const grouped = new Map();
+  const sourceGroups = new Map();
   for (const normalized of normalizedSnapshots) {
     if (!normalized || !normalized.seasonId || !normalized.scope) continue;
     const key = `${normalized.seasonId}\u0000${normalized.scope}`;
-    const group = grouped.get(key) || {
+    const group = sourceGroups.get(key) || {
       seasonId: normalized.seasonId,
       seasonName: normalized.seasonName || '',
       scope: normalized.scope,
@@ -575,7 +586,7 @@ export async function storeUserObservations(db, normalizedSnapshots = [], source
     group.snapshots.push(normalized);
     group.seasonName = normalized.seasonName || group.seasonName;
     group.capturedAt = Math.max(group.capturedAt, Number(normalized.capturedAt) || 0);
-    grouped.set(key, group);
+    sourceGroups.set(key, group);
   }
 
   const result = {
@@ -586,7 +597,8 @@ export async function storeUserObservations(db, normalizedSnapshots = [], source
     skippedScopes: []
   };
 
-  for (const group of grouped.values()) {
+  const seasonGroups = new Map();
+  for (const group of sourceGroups.values()) {
     const state = await db.prepare(`
       SELECT last_captured_at
       FROM rank_ingest_state
@@ -603,6 +615,19 @@ export async function storeUserObservations(db, normalizedSnapshots = [], source
       continue;
     }
 
+    const seasonGroup = seasonGroups.get(group.seasonId) || {
+      seasonId: group.seasonId,
+      seasonName: group.seasonName,
+      snapshots: [],
+      sourceGroups: []
+    };
+    seasonGroup.snapshots.push(...group.snapshots);
+    seasonGroup.sourceGroups.push(group);
+    seasonGroup.seasonName = group.seasonName || seasonGroup.seasonName;
+    seasonGroups.set(group.seasonId, seasonGroup);
+  }
+
+  for (const group of seasonGroups.values()) {
     const rows = mergeUserObservations(group.snapshots);
     if (!rows.length) throw new Error('empty_entries');
     result.users += rows.length;
@@ -630,16 +655,18 @@ export async function storeUserObservations(db, normalizedSnapshots = [], source
     await db.prepare(SEASON_UPSERT_SQL).bind(
       group.seasonId,
       group.seasonName,
-      group.capturedAt,
+      group.snapshots.reduce((max, snapshot) => Math.max(max, Number(snapshot.capturedAt) || 0), 0),
       latestDayStartAt,
       now
     ).run();
-    await db.prepare(INGEST_STATE_UPSERT_SQL).bind(
-      group.seasonId,
-      group.scope,
-      group.capturedAt,
-      now
-    ).run();
+    for (const sourceGroup of group.sourceGroups) {
+      await db.prepare(INGEST_STATE_UPSERT_SQL).bind(
+        sourceGroup.seasonId,
+        sourceGroup.scope,
+        sourceGroup.capturedAt,
+        now
+      ).run();
+    }
   }
 
   return result;
