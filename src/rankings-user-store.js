@@ -270,14 +270,15 @@ export async function queryCurrentBoard(db, options = {}) {
   const nullRank = `CASE WHEN ${sortColumn} IS NULL THEN 1 ELSE 0 END`;
   const params = [seasonId];
   const baseWhere = ['r.season_id = ?'];
+  const filterWhere = [];
 
   if (Array.isArray(options.ids) && options.ids.length) {
     const ids = options.ids.map((id) => String(id || '').trim()).filter(Boolean).slice(0, 20);
-    baseWhere.push(`r.user_id IN (${ids.map(() => '?').join(', ')})`);
+    filterWhere.push(`user_id IN (${ids.map(() => '?').join(', ')})`);
     params.push(...ids);
   } else if (String(options.q || '').trim()) {
     const pattern = `%${escapeLikePattern(String(options.q).trim().slice(0, 128))}%`;
-    baseWhere.push(`(r.user_id COLLATE NOCASE LIKE ? ESCAPE '\\' OR r.user_name COLLATE NOCASE LIKE ? ESCAPE '\\')`);
+    filterWhere.push(`(user_id COLLATE NOCASE LIKE ? ESCAPE '\\' OR user_name COLLATE NOCASE LIKE ? ESCAPE '\\')`);
     params.push(pattern, pattern);
   }
 
@@ -292,14 +293,16 @@ export async function queryCurrentBoard(db, options = {}) {
       sortColumn,
       nullRank,
       baseWhere: baseWhere.slice(),
-      baseParams: params.slice(),
+      baseParams: params.slice(0, 1),
+      filterWhere: filterWhere.slice(),
+      filterParams: params.slice(1),
       cursor: options.cursor || null,
       query: String(options.q || '').trim().slice(0, 128),
       pinnedIds
     });
   }
 
-  const where = [...baseWhere];
+  const where = [...baseWhere, ...filterWhere.map((clause) => clause.replace(/\br\./g, ''))];
   if (options.cursor) {
     const cursor = options.cursor;
     const cursorNullRank = Number(cursor.nullRank);
@@ -350,6 +353,8 @@ async function queryCurrentBoardWithTotal(db, options) {
     nullRank,
     baseWhere,
     baseParams,
+    filterWhere,
+    filterParams,
     cursor,
     query,
     pinnedIds
@@ -380,7 +385,8 @@ async function queryCurrentBoardWithTotal(db, options) {
   const pinnedClause = pinnedIds.length
     ? `
     UNION ALL
-    SELECT ${outputColumns}, __current_rank, __total_rows, 1 AS __row_kind
+    SELECT ${outputColumns}, __current_rank, __total_rows,
+      NULL AS __filtered_total_rows, 1 AS __row_kind
     FROM ranked
     WHERE user_id IN (${pinnedIds.map(() => '?').join(', ')})
       AND user_id NOT IN (SELECT user_id FROM display_page)`
@@ -397,9 +403,13 @@ async function queryCurrentBoardWithTotal(db, options) {
         COUNT(*) OVER () AS __total_rows
       FROM rank_user_current r
       WHERE ${baseWhere.join(' AND ')}
-    ), page_candidates AS (
-      SELECT ${outputColumns}, __current_rank, __total_rows, 0 AS __row_kind
+    ), filtered AS (
+      SELECT ranked.*, COUNT(*) OVER () AS __filtered_total_rows
       FROM ranked
+      WHERE ${filterWhere.length ? filterWhere.join(' AND ') : '1 = 1'}
+    ), page_candidates AS (
+      SELECT ${outputColumns}, __current_rank, __total_rows, __filtered_total_rows, 0 AS __row_kind
+      FROM filtered
       WHERE ${pageWhere.join(' AND ')}
       ORDER BY __null_rank ASC, __sort_value ${direction.toUpperCase()}, user_id ASC
       LIMIT ?
@@ -411,9 +421,10 @@ async function queryCurrentBoardWithTotal(db, options) {
     ${pinnedClause}
     UNION ALL
     SELECT ${nullColumns}, NULL AS __current_rank,
-      COALESCE(MAX(__total_rows), 0) AS __total_rows, 2 AS __row_kind
-    FROM ranked
-  `).bind(...baseParams, ...pageParams, limit + 1, limit, ...pinnedIds).all();
+      COALESCE(MAX(__filtered_total_rows), 0) AS __total_rows,
+      NULL AS __filtered_total_rows, 2 AS __row_kind
+    FROM filtered
+  `).bind(...baseParams, ...filterParams, ...pageParams, limit + 1, limit, ...pinnedIds).all();
   const resultRows = result.results || [];
   const totalRow = resultRows.find((row) => Number(row.__row_kind) === 2);
   const pageResultRows = resultRows
@@ -451,6 +462,7 @@ function stripRankedRow(row) {
   const {
     __current_rank: currentRank,
     __total_rows: _totalRows,
+    __filtered_total_rows: _filteredTotalRows,
     __row_kind: _rowKind,
     ...userRow
   } = row;

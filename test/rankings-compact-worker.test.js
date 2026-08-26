@@ -287,6 +287,25 @@ test('leaderboard returns pinned rows with their global ranks in the same respon
   assert.equal(environment.RANKINGS_DB.queries.filter(({ sql }) => /WITH ranked/i.test(sql)).length, 1);
 });
 
+test('pinned rows keep global ranks when leaderboard search is active', async () => {
+  const environment = compactEnv();
+  seedSeason(environment);
+  seedCurrentUser(environment, 'top-1', 200);
+  seedCurrentUser(environment, 'alice-1', 100);
+  seedCurrentUser(environment, 'bob-1', 50);
+
+  const response = await handleRankingsRequest(new Request('https://card.test/api/rankings/leaderboard?board=users&period=total&sort=legend&direction=desc&limit=20&q=alice&pinned=alice-1,bob-1'), environment);
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.deepEqual(body.rows.map((row) => row.userId), ['alice-1']);
+  assert.deepEqual(body.pinnedRows.map((row) => ({ userId: row.userId, rank: row.rank })), [
+    { userId: 'alice-1', rank: 2 },
+    { userId: 'bob-1', rank: 3 }
+  ]);
+  assert.equal(body.totalRows, 1);
+  assert.equal(environment.RANKINGS_DB.queries.filter(({ sql }) => /WITH ranked/i.test(sql)).length, 1);
+});
+
 test('history reads only one user day row per requested day', async () => {
   const environment = compactEnv();
   seedHistory(environment);
