@@ -171,6 +171,7 @@ async function getLeaderboard(url, env) {
       partialRows: [],
       board,
       period,
+      totalRows: 0,
       hasMore: false,
       nextCursor: null
     }, 200, CACHE_HEADERS.leaderboard);
@@ -196,6 +197,7 @@ async function getLeaderboard(url, env) {
     direction,
     limit,
     q: query,
+    includeTotal: true,
     cursor: cursorResult.cursor
   });
   const capturedAt = Number(season.last_observed_at);
@@ -211,6 +213,7 @@ async function getLeaderboard(url, env) {
     estimated: true,
     rows,
     partialRows: rows.filter((row) => row.isPartial),
+    totalRows: page.totalRows,
     hasMore: page.hasMore,
     nextCursor: page.nextCursor
   }, 200, CACHE_HEADERS.leaderboard);

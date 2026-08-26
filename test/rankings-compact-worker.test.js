@@ -238,6 +238,16 @@ test('latest reads only rank_seasons', async () => {
   assert.ok(environment.RANKINGS_DB.queries.some(({ sql }) => /from rank_seasons/i.test(sql)));
 });
 
+test('empty leaderboard exposes a zero total user count', async () => {
+  const environment = compactEnv();
+  const response = await handleRankingsRequest(new Request('https://card.test/api/rankings/leaderboard?board=users&period=total&limit=50'), environment);
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.rows.length, 0);
+  assert.equal(body.totalRows, 0);
+  assert.equal(body.hasMore, false);
+});
+
 test('leaderboard returns one page and an opaque cursor', async () => {
   const environment = compactEnv();
   seedSeason(environment);
@@ -247,12 +257,15 @@ test('leaderboard returns one page and an opaque cursor', async () => {
   const firstBody = await first.json();
   assert.equal(first.status, 200);
   assert.equal(firstBody.rows.length, 50);
+  assert.equal(firstBody.totalRows, 120);
   assert.equal(firstBody.hasMore, true);
   assert.ok(firstBody.nextCursor);
   assert.match(environment.RANKINGS_DB.queries.at(-1).sql, /limit \?/i);
 
   const second = await handleRankingsRequest(new Request(`https://card.test/api/rankings/leaderboard?board=users&period=total&sort=user&limit=50&cursor=${encodeURIComponent(firstBody.nextCursor)}`), environment);
-  assert.equal((await second.json()).rows[0].userId, 'u-50');
+  const secondBody = await second.json();
+  assert.equal(secondBody.rows[0].userId, 'u-50');
+  assert.equal(secondBody.totalRows, 120);
 });
 
 test('history reads only one user day row per requested day', async () => {

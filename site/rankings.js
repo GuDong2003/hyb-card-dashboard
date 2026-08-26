@@ -131,6 +131,7 @@
             nextCursor: null,
             previousCursors: [],
             hasMore: false,
+            totalRows: 0,
             limit: 50
         },
         pinnedRows: [],
@@ -2202,6 +2203,7 @@
         state.remotePage = true;
         state.rows = (Array.isArray(leaderboard.rows) ? leaderboard.rows : []).map(enrichRankingEstimate);
         state.partialRows = (Array.isArray(leaderboard.partialRows) ? leaderboard.partialRows : []).map(enrichRankingEstimate);
+        state.leaderboard.totalRows = Math.max(0, Number(leaderboard.totalRows) || 0);
         state.leaderboard.nextCursor = leaderboard.nextCursor || null;
         state.leaderboard.hasMore = Boolean(leaderboard.hasMore);
         if (leaderboard.snapshot) {
@@ -2463,7 +2465,7 @@
             bindRankingsTableEvents(pinnedBody);
             bindRankingsTableEvents(body);
             updatePinButtons();
-            renderSummary(summaryRows);
+            renderSummary(summaryRows, state.leaderboard.totalRows);
             return;
         }
 
@@ -2609,14 +2611,14 @@
         return delta > 0 ? `↑ ${delta}` : `↓ ${Math.abs(delta)}`;
     }
 
-    function renderSummary(rows = state.rows) {
+    function renderSummary(rows = state.rows, totalRows = rows.length) {
         const spends = rows.map((row) => row.spendUsd).filter((value) => value != null && Number.isFinite(Number(value))).map(Number);
         const pulls = rows.map((row) => row.estimatedPulls).filter((value) => value != null && Number.isFinite(Number(value))).map(Number);
         const probabilities = rows.map((row) => row.estimatedLegendProbability).filter((value) => value != null && Number.isFinite(Number(value))).map(Number);
         const summary = $('#rankingsSummary');
         if (!summary) return;
         const cards = [
-            ['用户数', formatNumber(rows.length)],
+            ['用户数', formatNumber(totalRows)],
             ['总消费 USD', spends.length ? formatUsd(spends.reduce((a, b) => a + b, 0)) : '—'],
             ['平均估算抽数', pulls.length ? formatNumber(pulls.reduce((a, b) => a + b, 0) / pulls.length) : '—'],
             ['平均出卡率', probabilities.length ? formatProbability(probabilities.reduce((a, b) => a + b, 0) / probabilities.length) : '—']

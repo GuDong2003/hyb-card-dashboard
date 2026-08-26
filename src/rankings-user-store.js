@@ -251,6 +251,7 @@ export async function queryCurrentBoard(db, options = {}) {
   const sort = String(options.sort || 'legend');
   const direction = options.direction === 'asc' ? 'asc' : 'desc';
   const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 50)));
+  const includeTotal = options.includeTotal === true;
   const sortColumn = currentSortColumn(board, period, sort);
   const nullRank = `CASE WHEN ${sortColumn} IS NULL THEN 1 ELSE 0 END`;
   const params = [seasonId];
@@ -265,6 +266,14 @@ export async function queryCurrentBoard(db, options = {}) {
     baseWhere.push(`(r.user_id COLLATE NOCASE LIKE ? ESCAPE '\\' OR r.user_name COLLATE NOCASE LIKE ? ESCAPE '\\')`);
     params.push(pattern, pattern);
   }
+
+  const countResult = includeTotal
+    ? await db.prepare(`
+      SELECT COUNT(*) AS total_rows
+      FROM rank_user_current r
+      WHERE ${baseWhere.join(' AND ')}
+    `).bind(...params).first()
+    : null;
 
   const where = [...baseWhere];
   if (options.cursor) {
@@ -297,6 +306,7 @@ export async function queryCurrentBoard(db, options = {}) {
   const rankedPageRows = pageRows.map((row, index) => ({ ...row, current_rank: rankOffset + index + 1 }));
   return {
     rows: rankedPageRows,
+    totalRows: includeTotal ? Number(countResult && countResult.total_rows || 0) : null,
     hasMore: rows.length > limit,
     nextCursor: rows.length > limit && rankedPageRows.length
       ? encodeCurrentCursor(sort, direction, rankedPageRows[rankedPageRows.length - 1], { seasonId, board, period, query: String(options.q || '').trim().slice(0, 128), rank: rankOffset + rankedPageRows.length })

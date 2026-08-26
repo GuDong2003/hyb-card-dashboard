@@ -150,6 +150,7 @@ test('user search and targeted ids read only current rows', async () => {
   const targeted = await handleRankingsRequest(new Request('https://card.test/api/rankings/users?ids=bob-1'), environment);
   assert.deepEqual((await targeted.json()).users.map((row) => row.userId), ['bob-1']);
   assert.equal(environment.RANKINGS_DB.queries.some(({ sql }) => /from rank_user_current/.test(sql)), true);
+  assert.equal(environment.RANKINGS_DB.queries.some(({ sql }) => /COUNT\(\*\)/i.test(sql)), false);
   assert.equal(environment.RANKINGS_DB.queries.some(({ sql }) => /rank_snapshots|rank_entries|rank_user_metrics|rank_daily_metrics|raw_json|fingerprint/.test(sql)), false);
 });
 
@@ -159,7 +160,9 @@ test('leaderboard search filters the requested page before pagination', async ()
   seedUser(environment, 'alice-1', 'Alice');
   seedUser(environment, 'bob-1', 'Bob');
   const response = await handleRankingsRequest(new Request('https://card.test/api/rankings/leaderboard?sort=user&direction=asc&q=alice&limit=20'), environment);
-  assert.deepEqual((await response.json()).rows.map((row) => row.userId), ['alice-1']);
+  const payload = await response.json();
+  assert.deepEqual(payload.rows.map((row) => row.userId), ['alice-1']);
+  assert.equal(payload.totalRows, 1);
 });
 
 test('leaderboard page ranks continue across a keyset cursor', async () => {

@@ -548,6 +548,14 @@ test('dashboard requests only the current leaderboard page', async () => {
   assert.doesNotMatch(html, /<option value="all">全部<\/option>/);
 });
 
+test('dashboard uses the remote total user count for the summary card', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  assert.match(source, /leaderboard\.totalRows\s*=\s*Math\.max\(0, Number\(leaderboard\.totalRows\) \|\| 0\)/);
+  assert.match(source, /renderSummary\(summaryRows,\s*state\.leaderboard\.totalRows\)/);
+  assert.match(source, /function renderSummary\(rows = state\.rows, totalRows = rows\.length\)/);
+  assert.match(source, /\['用户数', formatNumber\(totalRows\)\]/);
+});
+
 test('trend mode stays daily and each selected user keeps an independent history request', async () => {
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
   const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
@@ -682,7 +690,7 @@ test('adds a complete-days filter to the status header', async () => {
   const css = await readFile(new URL('../site/rankings.css', import.meta.url), 'utf8');
 
   assert.match(html, /id="rankingsCompleteDaysOnly"/);
-  assert.match(html, /仅完整/);
+  assert.match(html, /仅完整（当前页）/);
   assert.match(source, /onlyCompleteDays:\s*false/);
   assert.match(source, /function isCompleteDayRow/);
   assert.match(source, /state\.onlyCompleteDays/);
