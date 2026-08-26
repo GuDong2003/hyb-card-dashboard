@@ -195,11 +195,11 @@ async function postSnapshot(environment, snapshot) {
   return postSnapshots(environment, [snapshot]);
 }
 
-async function postSnapshots(environment, snapshots) {
+async function postSnapshots(environment, snapshots, options = {}) {
   return handleRankingsRequest(new Request('https://card.test/api/rankings/snapshots', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ snapshots })
+    body: JSON.stringify({ snapshots, mode: options.mode || 'manual' })
   }), environment);
 }
 
@@ -214,6 +214,25 @@ test('stores one user-day row without snapshots, entries, raw_json, or fingerpri
   assert.equal(environment.RANKINGS_DB.userDays[0].raw_json, undefined);
   assert.equal(environment.RANKINGS_DB.userDays[0].fingerprint, undefined);
   assert.equal(environment.RANKINGS_DB.queries.some(({ sql }) => /rank_snapshots|rank_entries|raw_json|fingerprint/i.test(sql)), false);
+});
+
+test('automatic uploads share one server-side three-hour gate and manual refresh bypasses it', async () => {
+  const environment = compactEnv();
+  const capturedAt = Date.now() - 2_000;
+  const first = await postSnapshots(environment, [snapshotAt(capturedAt, { epic: 10 })], { mode: 'automatic' });
+  assert.equal((await first.json()).status, 'accepted');
+  const writesAfterFirst = environment.RANKINGS_DB.queries.filter(({ sql }) => /insert into rank_user_(days|current)/i.test(sql)).length;
+
+  const blocked = await postSnapshots(environment, [snapshotAt(capturedAt + 1_000, { epic: 12 })], { mode: 'automatic' });
+  const blockedBody = await blocked.json();
+  assert.equal(blockedBody.status, 'unchanged');
+  assert.equal(blockedBody.skippedScopes[0].reason, 'automatic_cooldown');
+  assert.equal(environment.RANKINGS_DB.queries.filter(({ sql }) => /insert into rank_user_(days|current)/i.test(sql)).length, writesAfterFirst);
+  assert.equal(environment.RANKINGS_DB.currentUsers[0].epic_total_value, 10);
+
+  const manual = await postSnapshots(environment, [snapshotAt(capturedAt + 1_000, { epic: 12 })], { mode: 'manual' });
+  assert.equal((await manual.json()).status, 'accepted');
+  assert.equal(environment.RANKINGS_DB.currentUsers[0].epic_total_value, 12);
 });
 
 test('updates only changed fields and preserves a single row on a new capture', async () => {
@@ -327,7 +346,9 @@ test('leaderboard returns pinned rows with their global ranks in the same respon
     { userId: 'u-69', rank: 51 }
   ]);
   assert.equal(body.totalRows, 120);
-  assert.equal(environment.RANKINGS_DB.queries.filter(({ sql }) => /WITH ranked/i.test(sql)).length, 0);
+  const rankQueries = environment.RANKINGS_DB.queries.filter(({ sql }) => /WITH ranked/i.test(sql));
+  assert.equal(rankQueries.length, 1);
+  assert.doesNotMatch(rankQueries[0].sql, /select count\(\*\)[\s\S]*from rank_user_current p/i);
 });
 
 test('pinned rows keep global ranks when leaderboard search is active', async () => {
@@ -347,7 +368,7 @@ test('pinned rows keep global ranks when leaderboard search is active', async ()
     { userId: 'bob-1', rank: 3 }
   ]);
   assert.equal(body.totalRows, 1);
-  assert.equal(environment.RANKINGS_DB.queries.filter(({ sql }) => /WITH ranked/i.test(sql)).length, 0);
+  assert.equal(environment.RANKINGS_DB.queries.filter(({ sql }) => /WITH ranked/i.test(sql)).length, 1);
 });
 
 test('history reads only one user day row per requested day', async () => {

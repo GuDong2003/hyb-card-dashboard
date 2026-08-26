@@ -106,9 +106,10 @@ async function postSnapshot(request, env) {
   }
 
   const source = String(body && body.source || 'card-dashboard-userscript').slice(0, 64);
+  const mode = body && body.mode === 'manual' ? 'manual' : 'automatic';
   let stored;
   try {
-    stored = await storeUserObservations(env.RANKINGS_DB, bundle.snapshots, source, now);
+    stored = await storeUserObservations(env.RANKINGS_DB, bundle.snapshots, { source, mode }, now);
   } catch (error) {
     return jsonResponse({
       ok: false,

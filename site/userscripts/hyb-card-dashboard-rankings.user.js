@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HYB Card Dashboard 榜单同步
 // @namespace    https://card.gudong226.com/
-// @version      1.3.2
+// @version      1.3.3
 // @description  在 Card Dashboard 页面按需读取 CDK 卡牌榜单并回传给榜单统计视图。
 // @updateURL    https://card.gudong226.com/userscripts/hyb-card-dashboard-rankings.user.js
 // @downloadURL  https://card.gudong226.com/userscripts/hyb-card-dashboard-rankings.user.js
@@ -18,7 +18,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.3.2';
+  const SCRIPT_VERSION = '1.3.3';
   const CARD_ORIGIN = 'https://card.gudong226.com';
   const CDK_ORIGIN = 'https://cdk.hybgzs.com';
   const SOURCE_APIS = Object.freeze({
@@ -148,12 +148,15 @@
       ? snapshot.data
       : snapshot;
     if (!source || typeof source !== 'object') return snapshot;
+    const capturedAt = normalizeCapturedAt(source.capturedAt, null)
+      || normalizeCapturedAt(source.lastUpdatedAt, null);
+    const observedAt = normalizeCapturedAt(source.observedAt, null) || Date.now();
     return {
       ...source,
       scope: String(source.scope || scopeHint || '').trim(),
-      capturedAt: normalizeCapturedAt(source.capturedAt, null)
-        || normalizeCapturedAt(source.lastUpdatedAt, null)
-        || Date.now()
+      capturedAt,
+      observedAt,
+      capturedAtSource: capturedAt ? 'upstream' : 'observed'
     };
   }
 

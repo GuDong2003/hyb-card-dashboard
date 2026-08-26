@@ -10,7 +10,7 @@ test('userscript matches Card and CDK while keeping the bridge UI on Card', asyn
   assert.match(source, /@match\s+https:\/\/card\.gudong226\.com\/\*/);
   assert.match(source, /@match\s+https:\/\/cdk\.hybgzs\.com\/\*/);
   assert.match(source, /@connect\s+cdk\.hybgzs\.com/);
-  assert.match(source, /@version\s+1\.3\.2/);
+  assert.match(source, /@version\s+1\.3\.3/);
   assert.match(source, /@updateURL\s+https:\/\/card\.gudong226\.com\/userscripts\/hyb-card-dashboard-rankings\.user\.js/);
   assert.match(source, /@downloadURL\s+https:\/\/card\.gudong226\.com\/userscripts\/hyb-card-dashboard-rankings\.user\.js/);
   assert.match(source, /GM_addValueChangeListener/);
@@ -32,6 +32,24 @@ test('userscript matches Card and CDK while keeping the bridge UI on Card', asyn
   assert.match(source, /looksLikeProtectionPage/);
   assert.match(source, /parseJsonPayload/);
   assert.match(source, /scriptVersion: SCRIPT_VERSION/);
+});
+
+test('userscript labels missing upstream timestamps as observations instead of fake source versions', async () => {
+  const source = await readFile(SCRIPT_PATH, 'utf8');
+  const harness = createUserscriptContext(source, {}, {
+    status: 200,
+    payload: {
+      season: { id: 'season-1', name: 'Season 1' },
+      leaderboards: { epic_total: [] }
+    }
+  });
+  const response = await harness.request(true);
+  assert.equal(response.ok, true);
+  assert.equal(response.snapshots.length, 2);
+  assert.equal(response.snapshots[0].capturedAt, null);
+  assert.equal(response.snapshots[0].capturedAtSource, 'observed');
+  assert.ok(Number(response.snapshots[0].observedAt) > 0);
+  harness.dispose();
 });
 
 test('userscript separates manual refreshes from automatic cooldowns and retries', async () => {
@@ -95,10 +113,11 @@ function createUserscriptContext(source, initialState, requestResult) {
     GM_xmlhttpRequest(options) {
       requestCalls.push(options.url);
       if (requestResult.status >= 200 && requestResult.status < 300) {
+        const payload = requestResult.payload || { capturedAt: Date.now() };
         options.onload({
           status: requestResult.status,
-          response: { capturedAt: Date.now(), scope: options.url.includes('friends') ? 'friends' : 'global' },
-          responseText: JSON.stringify({ capturedAt: Date.now() }),
+          response: payload,
+          responseText: JSON.stringify(payload),
           responseHeaders: 'content-type: application/json'
         });
       } else {

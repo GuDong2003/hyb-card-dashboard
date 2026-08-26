@@ -19,6 +19,7 @@ const CUMULATIVE_BOARD_KEYS = new Set(
 );
 const SOURCE_ORDER = Object.freeze(['global', 'friends']);
 const SOURCE_ORDER_SET = new Set(SOURCE_ORDER);
+export const AUTO_INGEST_INTERVAL_MS = 3 * 60 * 60 * 1000;
 const DERIVED_PERIODS = Object.freeze(['today', 'week', 'month']);
 const DERIVED_SORT_COLUMNS = Object.freeze([
   'sort_legend_value', 'sort_spend_usd', 'sort_estimated_pulls',
@@ -421,34 +422,30 @@ async function queryCurrentBoardWithTotal(db, options) {
     totalRows,
     latestDayStartAt
   });
-  const rankedPageRows = query && page.rows.length
+  const idsNeedingGlobalRanks = Array.from(new Set([
+    ...(query ? page.rows.map((row) => String(row.user_id)) : []),
+    ...pinnedIds
+  ]));
+  const globallyRankedRows = idsNeedingGlobalRanks.length
     ? await queryPinnedWithRanks(db, {
       seasonId,
       board,
       period,
       sort,
       direction,
-      ids: page.rows.map((row) => row.user_id),
-      maxIds: page.rows.length,
-      latestDayStartAt
-    })
-    : page.rows;
-  const rankedPageById = new Map(rankedPageRows.map((row) => [String(row.user_id), row]));
-  const rankedPinnedRows = pinnedIds.length
-    ? await queryPinnedWithRanks(db, {
-      seasonId,
-      board,
-      period,
-      sort,
-      direction,
-      ids: pinnedIds,
+      ids: idsNeedingGlobalRanks,
+      maxIds: 120,
       latestDayStartAt
     })
     : [];
+  const globallyRankedById = new Map(globallyRankedRows.map((row) => [String(row.user_id), row]));
+  const rankedPinnedRows = pinnedIds
+    .map((userId) => globallyRankedById.get(String(userId)))
+    .filter(Boolean);
   return {
     ...page,
     rows: query
-      ? page.rows.map((row) => rankedPageById.get(String(row.user_id)) || row)
+      ? page.rows.map((row) => globallyRankedById.get(String(row.user_id)) || row)
       : page.rows,
     pinnedRows: rankedPinnedRows,
     totalRows,
@@ -463,40 +460,30 @@ async function queryPinnedWithRanks(db, options = {}) {
   const sort = String(options.sort || 'legend');
   const direction = options.direction === 'asc' ? 'asc' : 'desc';
   const latestDayStartAt = Number(options.latestDayStartAt);
-  const maxIds = Math.max(1, Math.min(100, Math.floor(Number(options.maxIds) || 20)));
+  const maxIds = Math.max(1, Math.min(120, Math.floor(Number(options.maxIds) || 20)));
   const ids = Array.isArray(options.ids)
     ? options.ids.map((id) => String(id || '').trim()).filter(Boolean).slice(0, maxIds)
     : [];
   if (!ids.length) return [];
 
   const sortColumn = currentSortColumn(board, period, sort);
-  const pinnedSortColumn = sortColumn.replace(/\br\./g, 'p.');
   const nullRank = `CASE WHEN ${sortColumn} IS NULL THEN 1 ELSE 0 END`;
-  const pinnedNullRank = `CASE WHEN ${pinnedSortColumn} IS NULL THEN 1 ELSE 0 END`;
-  const before = `(
-    ${pinnedNullRank} < ${nullRank}
-    OR (${pinnedNullRank} = ${nullRank} AND (
-      ${nullRank} = 1
-      OR ${pinnedSortColumn} ${direction === 'asc' ? '<' : '>'} ${sortColumn}
-      OR (${pinnedSortColumn} = ${sortColumn} AND p.user_id < r.user_id)
-    ))
-  )`;
   const selectedColumns = USER_CURRENT_COLUMNS
     .map((column) => `r.${column} AS ${column}`)
     .join(', ');
   const result = await db.prepare(`
-    SELECT ${selectedColumns},
-      1 + (
-        SELECT COUNT(*)
-        FROM rank_user_current p
-        WHERE p.season_id = r.season_id
-          AND ${currentDataWhere('p', latestDayStartAt)}
-          AND ${before}
-      ) AS current_rank
-    FROM rank_user_current r
-    WHERE r.season_id = ?
-      AND ${currentDataWhere('r', latestDayStartAt)}
-      AND r.user_id IN (${ids.map(() => '?').join(', ')})
+    WITH ranked AS (
+      SELECT ${selectedColumns},
+        ROW_NUMBER() OVER (
+          ORDER BY ${nullRank} ASC, ${sortColumn} ${direction.toUpperCase()}, r.user_id ASC
+        ) AS current_rank
+      FROM rank_user_current r
+      WHERE r.season_id = ?
+        AND ${currentDataWhere('r', latestDayStartAt)}
+    )
+    SELECT *
+    FROM ranked
+    WHERE user_id IN (${ids.map(() => '?').join(', ')})
   `).bind(seasonId, ...ids).all();
   const rowsById = new Map((result.results || []).map((row) => [String(row.user_id), row]));
   return ids
@@ -618,17 +605,28 @@ export const SEASON_UPSERT_SQL = `
      OR excluded.last_day_start_at > rank_seasons.last_day_start_at
 `;
 
-export const INGEST_STATE_UPSERT_SQL = `
+export const AUTO_INGEST_CLAIM_SQL = `
+  INSERT INTO rank_ingest_state (
+    season_id, scope, last_captured_at, updated_at
+  ) VALUES (?, ?, 0, ?)
+  ON CONFLICT (season_id, scope) DO UPDATE SET
+    updated_at = excluded.updated_at
+  WHERE rank_ingest_state.last_captured_at < ?
+    AND (rank_ingest_state.updated_at = 0 OR rank_ingest_state.updated_at <= ?)
+`;
+
+export const INGEST_STATE_FINALIZE_SQL = `
   INSERT INTO rank_ingest_state (
     season_id, scope, last_captured_at, updated_at
   ) VALUES (?, ?, ?, ?)
   ON CONFLICT (season_id, scope) DO UPDATE SET
-    last_captured_at = MAX(rank_ingest_state.last_captured_at, excluded.last_captured_at),
-    updated_at = MAX(rank_ingest_state.updated_at, excluded.updated_at)
+    last_captured_at = MAX(rank_ingest_state.last_captured_at, excluded.last_captured_at)
+  WHERE excluded.last_captured_at > rank_ingest_state.last_captured_at
 `;
 
 export async function storeUserObservations(db, normalizedSnapshots = [], source = '', now = Date.now()) {
-  void source;
+  const options = source && typeof source === 'object' ? source : { source, mode: 'manual' };
+  const automatic = options.mode !== 'manual';
   const sourceGroups = new Map();
   for (const normalized of normalizedSnapshots) {
     if (!normalized || !normalized.seasonId || !normalized.scope) continue;
@@ -655,83 +653,152 @@ export async function storeUserObservations(db, normalizedSnapshots = [], source
   };
 
   const seasonGroups = new Map();
-  for (const group of sourceGroups.values()) {
-    const state = await db.prepare(`
-      SELECT last_captured_at
-      FROM rank_ingest_state
-      WHERE season_id = ? AND scope = ?
-      LIMIT 1
-    `).bind(group.seasonId, group.scope).first();
-    if (shouldSkipSourceCapture(state, group.capturedAt)) {
-      result.skippedScopes.push({
+  const acceptedSourceGroups = [];
+  const automaticClaims = [];
+  try {
+    for (const group of sourceGroups.values()) {
+      const state = await db.prepare(`
+        SELECT last_captured_at, updated_at
+        FROM rank_ingest_state
+        WHERE season_id = ? AND scope = ?
+        LIMIT 1
+      `).bind(group.seasonId, group.scope).first();
+      const skipReason = sourceCaptureSkipReason(state, group.capturedAt, automatic, now);
+      if (skipReason) {
+        result.skippedScopes.push({
+          seasonId: group.seasonId,
+          scope: group.scope,
+          capturedAt: group.capturedAt,
+          lastCapturedAt: Number(state && state.last_captured_at || 0),
+          reason: skipReason
+        });
+        continue;
+      }
+
+      if (automatic) {
+        const claim = await db.prepare(AUTO_INGEST_CLAIM_SQL).bind(
+          group.seasonId,
+          group.scope,
+          now,
+          group.capturedAt,
+          now - AUTO_INGEST_INTERVAL_MS
+        ).run();
+        if (Number(claim && claim.meta && claim.meta.changes || 0) === 0) {
+          result.skippedScopes.push({
+            seasonId: group.seasonId,
+            scope: group.scope,
+            capturedAt: group.capturedAt,
+            lastCapturedAt: Number(state && state.last_captured_at || 0),
+            reason: 'automatic_cooldown'
+          });
+          continue;
+        }
+        automaticClaims.push({
+          seasonId: group.seasonId,
+          scope: group.scope,
+          previousCapturedAt: Number(state && state.last_captured_at || 0),
+          previousAutomaticAt: Number(state && state.updated_at || 0),
+          claimedAt: now
+        });
+      }
+
+      const seasonGroup = seasonGroups.get(group.seasonId) || {
         seasonId: group.seasonId,
-        scope: group.scope,
-        capturedAt: group.capturedAt,
-        lastCapturedAt: Number(state.last_captured_at)
-      });
-      continue;
+        seasonName: group.seasonName,
+        snapshots: []
+      };
+      seasonGroup.snapshots.push(...group.snapshots);
+      seasonGroup.seasonName = group.seasonName || seasonGroup.seasonName;
+      seasonGroups.set(group.seasonId, seasonGroup);
+      acceptedSourceGroups.push(group);
     }
 
-    const seasonGroup = seasonGroups.get(group.seasonId) || {
-      seasonId: group.seasonId,
-      seasonName: group.seasonName,
-      snapshots: [],
-      sourceGroups: []
-    };
-    seasonGroup.snapshots.push(...group.snapshots);
-    seasonGroup.sourceGroups.push(group);
-    seasonGroup.seasonName = group.seasonName || seasonGroup.seasonName;
-    seasonGroups.set(group.seasonId, seasonGroup);
-  }
+    for (const group of seasonGroups.values()) {
+      const rows = mergeUserObservations(group.snapshots);
+      if (!rows.length) throw new Error('empty_entries');
+      result.users += rows.length;
 
-  for (const group of seasonGroups.values()) {
-    const rows = mergeUserObservations(group.snapshots);
-    if (!rows.length) throw new Error('empty_entries');
-    result.users += rows.length;
+      let groupChangedUsers = 0;
+      for (const chunk of chunks(rows, 50)) {
+        const statements = [];
+        for (const row of chunk) {
+          statements.push(db.prepare(USER_DAY_UPSERT_SQL).bind(...userDayValues(row)));
+        }
+        for (const row of chunk) {
+          statements.push(db.prepare(USER_CURRENT_UPSERT_SQL).bind(...userCurrentValues(row)));
+        }
+        const batchResults = await db.batch(statements);
+        const changes = Array.isArray(batchResults)
+          ? batchResults.map((item) => Number(item && item.meta && item.meta.changes || 0))
+          : [];
+        const dayChanges = changes.slice(0, chunk.length).reduce((sum, value) => sum + value, 0);
+        const currentChanges = changes.slice(chunk.length).reduce((sum, value) => sum + value, 0);
+        result.changedDays += dayChanges;
+        result.changedFields += dayChanges + currentChanges;
+        const changedInChunk = chunk.filter((_, index) => changes[index] || changes[chunk.length + index]).length;
+        groupChangedUsers += changedInChunk;
+        result.changedUsers += changedInChunk;
+      }
 
-    let groupChangedUsers = 0;
-    for (const chunk of chunks(rows, 50)) {
-      const statements = [];
-      for (const row of chunk) {
-        statements.push(db.prepare(USER_DAY_UPSERT_SQL).bind(...userDayValues(row)));
+      if (groupChangedUsers > 0) {
+        const latestDayStartAt = rows.reduce((max, row) => Math.max(max, Number(row.day_start_at)), 0);
+        await db.prepare(SEASON_UPSERT_SQL).bind(
+          group.seasonId,
+          group.seasonName,
+          group.snapshots.reduce((max, snapshot) => Math.max(max, Number(snapshot.capturedAt) || 0), 0),
+          latestDayStartAt,
+          now
+        ).run();
       }
-      for (const row of chunk) {
-        statements.push(db.prepare(USER_CURRENT_UPSERT_SQL).bind(...userCurrentValues(row)));
-      }
-      const batchResults = await db.batch(statements);
-      const changes = Array.isArray(batchResults)
-        ? batchResults.map((item) => Number(item && item.meta && item.meta.changes || 0))
-        : [];
-      const dayChanges = changes.slice(0, chunk.length).reduce((sum, value) => sum + value, 0);
-      const currentChanges = changes.slice(chunk.length).reduce((sum, value) => sum + value, 0);
-      result.changedDays += dayChanges;
-      result.changedFields += dayChanges + currentChanges;
-      const changedInChunk = chunk.filter((_, index) => changes[index] || changes[chunk.length + index]).length;
-      groupChangedUsers += changedInChunk;
-      result.changedUsers += changedInChunk;
     }
 
-    if (groupChangedUsers > 0) {
-      const latestDayStartAt = rows.reduce((max, row) => Math.max(max, Number(row.day_start_at)), 0);
-      await db.prepare(SEASON_UPSERT_SQL).bind(
+    for (const group of acceptedSourceGroups) {
+      await db.prepare(INGEST_STATE_FINALIZE_SQL).bind(
         group.seasonId,
-        group.seasonName,
-        group.snapshots.reduce((max, snapshot) => Math.max(max, Number(snapshot.capturedAt) || 0), 0),
-        latestDayStartAt,
-        now
+        group.scope,
+        group.capturedAt,
+        automatic ? now : 0
       ).run();
     }
-    for (const sourceGroup of group.sourceGroups) {
-      await db.prepare(INGEST_STATE_UPSERT_SQL).bind(
-        sourceGroup.seasonId,
-        sourceGroup.scope,
-        sourceGroup.capturedAt,
-        now
-      ).run();
-    }
+  } catch (error) {
+    await releaseAutomaticClaims(db, automaticClaims);
+    throw error;
   }
 
   return result;
+}
+
+async function releaseAutomaticClaims(db, claims) {
+  for (const claim of claims) {
+    try {
+      await db.prepare(`
+        UPDATE rank_ingest_state
+        SET updated_at = ?
+        WHERE season_id = ?
+          AND scope = ?
+          AND last_captured_at = ?
+          AND updated_at = ?
+      `).bind(
+        claim.previousAutomaticAt,
+        claim.seasonId,
+        claim.scope,
+        claim.previousCapturedAt,
+        claim.claimedAt
+      ).run();
+    } catch (_) {
+      // A failed release leaves only a temporary automatic cooldown. The
+      // completed capture watermark remains unchanged and manual retry works.
+    }
+  }
+}
+
+function sourceCaptureSkipReason(state, capturedAt, automatic, now) {
+  if (shouldSkipSourceCapture(state, capturedAt)) return 'duplicate_capture';
+  const lastAutomaticAt = state && positiveInteger(state.updated_at ?? state.updatedAt);
+  if (automatic && lastAutomaticAt && now - lastAutomaticAt < AUTO_INGEST_INTERVAL_MS) {
+    return 'automatic_cooldown';
+  }
+  return '';
 }
 
 function buildUpsertSql(tableName, columns, currentTable) {

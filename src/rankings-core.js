@@ -52,7 +52,10 @@ export function normalizeLeaderboardSnapshot(payload, now = Date.now()) {
   const scope = String(source.scope || '').trim();
   if (!SNAPSHOT_SCOPES.has(scope)) return rejected('invalid_scope');
 
-  const capturedAt = parseCapturedAt(source.capturedAt);
+  const upstreamCapturedAt = parseCapturedAt(source.capturedAt)
+    ?? parseCapturedAt(source.lastUpdatedAt);
+  const observedAt = parseCapturedAt(source.observedAt);
+  const capturedAt = upstreamCapturedAt ?? observedAt;
   if (capturedAt == null) return rejected('invalid_captured_at');
   if (capturedAt > now + FUTURE_TOLERANCE_MS) return rejected('future_captured_at');
 
@@ -84,6 +87,7 @@ export function normalizeLeaderboardSnapshot(payload, now = Date.now()) {
     seasonName,
     scope,
     capturedAt,
+    capturedAtSource: upstreamCapturedAt == null ? 'observed' : 'upstream',
     capturedBucket: Math.floor(capturedAt / CAPTURE_BUCKET_MS),
     boardKeys,
     entries,

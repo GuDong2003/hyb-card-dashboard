@@ -12,7 +12,7 @@
     const RANKINGS_RETRY_MS = 60 * 60 * 1000;
     const MAX_AUTO_RETRIES = 1;
     const MAX_PINNED_USERS = 20;
-    const REQUIRED_USERSCRIPT_VERSION = '1.3.2';
+    const REQUIRED_USERSCRIPT_VERSION = '1.3.3';
     const USERSCRIPT_URL = '/userscripts/hyb-card-dashboard-rankings.user.js';
     const TREND_CHART_FIXED_AXIS_WIDTH = 86;
     const TREND_CHART_AXIS_PADDING_RATIO = 0.03;
@@ -20,7 +20,7 @@
     const CALCULATOR_STORAGE_KEY = 'legend-card-calculator-snapshot-v1';
     const PINS_STORAGE_KEY = 'hyb-card-rankings-pins-v1';
     const UPLOAD_STATE_STORAGE_KEY = 'hyb-card-rankings-upload-state-v1';
-    const AUTO_UPLOAD_MIN_INTERVAL_MS = 15 * 60 * 1000;
+    const AUTO_UPLOAD_MIN_INTERVAL_MS = 3 * 60 * 60 * 1000;
     const SPEND_VALUE_PER_USD = 500000;
     const VIP_DAILY_SPEND_USD = 6000;
     const VIP_DAILY_PAID_PULLS = 600;
@@ -1243,11 +1243,14 @@
     function normalizeSnapshotForUpload(snapshot) {
         const source = snapshotSource(snapshot);
         if (!source || typeof source !== 'object') return snapshot;
+        const capturedAt = normalizeCapturedAt(source.capturedAt, null)
+            || normalizeCapturedAt(source.lastUpdatedAt, null);
+        const observedAt = normalizeCapturedAt(source.observedAt, null) || Date.now();
         return {
             ...source,
-            capturedAt: normalizeCapturedAt(source.capturedAt, null)
-                || normalizeCapturedAt(source.lastUpdatedAt, null)
-                || Date.now()
+            capturedAt,
+            observedAt,
+            capturedAtSource: capturedAt ? 'upstream' : 'observed'
         };
     }
 
@@ -1274,7 +1277,8 @@
             ? String(source.season.id || '').trim()
             : '';
         const scope = String(source && source.scope || '').trim();
-        const capturedAt = normalizeCapturedAt(source && source.capturedAt, null);
+        const capturedAt = normalizeCapturedAt(source && source.capturedAt, null)
+            || normalizeCapturedAt(source && source.observedAt, null);
         if (!season || !scope || !capturedAt) return null;
         return { season, scope, capturedAt };
     }
@@ -1317,6 +1321,18 @@
         writeUploadState(uploadState);
     }
 
+    function rememberableUploadSnapshots(snapshots, response) {
+        const cooldownScopes = new Set((Array.isArray(response && response.skippedScopes)
+            ? response.skippedScopes
+            : [])
+            .filter((item) => item && item.reason === 'automatic_cooldown')
+            .map((item) => uploadStateKey(item.seasonId, item.scope)));
+        return normalizeSnapshotsForUpload(snapshots).filter((snapshot) => {
+            const current = uploadStateForSnapshot(snapshot);
+            return !current || !cooldownScopes.has(uploadStateKey(current.season, current.scope));
+        });
+    }
+
     function compactSnapshotForUpload(snapshot) {
         const source = snapshotSource(snapshot);
         if (!source || typeof source !== 'object') return null;
@@ -1348,6 +1364,8 @@
             season,
             scope: String(source.scope || '').trim(),
             capturedAt: normalizeCapturedAt(source.capturedAt, null),
+            observedAt: normalizeCapturedAt(source.observedAt, null),
+            capturedAtSource: String(source.capturedAtSource || (source.capturedAt ? 'upstream' : 'observed')),
             leaderboards
         };
     }
@@ -2199,7 +2217,11 @@
 
     async function uploadSnapshot(snapshot, options = {}) {
         const normalizedSnapshots = normalizeSnapshotsForUpload(snapshot);
-        if (!normalizedSnapshots.length || normalizedSnapshots.some((item) => !Number.isInteger(item.capturedAt) || item.capturedAt <= 0)) {
+        if (!normalizedSnapshots.length || normalizedSnapshots.some((item) => {
+            const observedAt = normalizeCapturedAt(item.capturedAt, null)
+                || normalizeCapturedAt(item.observedAt, null);
+            return !Number.isInteger(observedAt) || observedAt <= 0;
+        })) {
             throw new Error('榜单快照缺少有效抓取时间');
         }
         if (shouldSkipUpload(normalizedSnapshots, options)) {
@@ -2212,9 +2234,10 @@
         if (!compactSnapshots.length) throw new Error('榜单观察数据为空');
         const response = await apiPost('/api/rankings/snapshots', {
             snapshots: compactSnapshots,
-            source: 'card-dashboard-userscript'
+            source: 'card-dashboard-userscript',
+            mode: options.manual ? 'manual' : 'automatic'
         });
-        rememberUploadedSnapshots(compactSnapshots);
+        rememberUploadedSnapshots(rememberableUploadSnapshots(compactSnapshots, response));
         invalidateRankingsCache();
         return response;
     }
@@ -2326,6 +2349,7 @@
             syncPinnedSeason(leaderboard.snapshot.seasonId);
         }
         renderLeaderboard(leaderboard);
+        return leaderboard;
     }
 
     function resetLeaderboardPagination() {
@@ -2350,24 +2374,26 @@
                 : '正在读取云端快照…', false, true);
         try {
             let source;
+            let leaderboardLoaded = false;
             if (refresh || autoRefresh) {
                 source = await ensureFreshSnapshot(refresh, retry, manualRefresh);
             } else if (state.localSnapshots.length && !state.settings.autoUpload) {
                 setStatus('已显示本地抓取数据，尚未上传云端');
                 source = { localOnly: true, snapshots: state.localSnapshots };
             } else {
-                const latest = await loadLatestSnapshot();
-                if (!latest.snapshot) {
+                state.remotePage = true;
+                const leaderboard = await loadLeaderboard();
+                leaderboardLoaded = true;
+                if (!leaderboard.snapshot) {
                     state.rows = [];
                     state.partialRows = [];
-                    renderLeaderboard(latest || { rows: [] });
                     setStatus('暂无云端快照，请点击立即刷新');
                     state.loaded = true;
                     return;
                 }
-                source = latest;
-                if (!latest.stale) clearRankingsRetry();
-                setStatus(`已读取云端快照 · ${formatDate(latest.snapshot.capturedAt)}`);
+                source = leaderboard;
+                if (Date.now() - Number(leaderboard.snapshot.capturedAt) < AUTO_REFRESH_INTERVAL_MS) clearRankingsRetry();
+                setStatus(`已读取云端快照 · ${formatDate(leaderboard.snapshot.capturedAt)}`);
             }
             if (source && source.skippedUpload && state.loaded && state.remotePage) {
                 renderLeaderboard(source);
@@ -2382,7 +2408,7 @@
                 renderLeaderboard(payload || { rows: [] });
             } else {
                 state.remotePage = true;
-                await loadLeaderboard({ fresh: refresh || autoRefresh });
+                if (!leaderboardLoaded) await loadLeaderboard({ fresh: refresh || autoRefresh });
             }
             state.loaded = true;
         } catch (error) {

@@ -82,6 +82,30 @@ test('parses numeric and ISO capture timestamps while rejecting invalid values',
   assert.equal(parseCapturedAt('not-a-date'), null);
 });
 
+test('keeps upstream capture time separate from a local observation fallback', () => {
+  const observedAt = 1785922892568;
+  const observed = normalizeLeaderboardSnapshot({
+    season: { id: 'season-observed', name: 'Observed' },
+    scope: 'global',
+    observedAt,
+    leaderboards: { epic_total: [row()] }
+  }, observedAt);
+  assert.equal(observed.ok, true);
+  assert.equal(observed.capturedAt, observedAt);
+  assert.equal(observed.capturedAtSource, 'observed');
+
+  const upstream = normalizeLeaderboardSnapshot({
+    season: { id: 'season-upstream', name: 'Upstream' },
+    scope: 'global',
+    capturedAt: observedAt - 1_000,
+    observedAt,
+    leaderboards: { epic_total: [row()] }
+  }, observedAt);
+  assert.equal(upstream.ok, true);
+  assert.equal(upstream.capturedAt, observedAt - 1_000);
+  assert.equal(upstream.capturedAtSource, 'upstream');
+});
+
 test('signature is stable when object key order changes', async () => {
   const left = { b: 2, a: 1 };
   const right = { a: 1, b: 2 };

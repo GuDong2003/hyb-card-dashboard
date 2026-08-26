@@ -527,17 +527,48 @@ test('rankings GET caching and trend history loading stay lazy', async () => {
 test('rankings client skips already uploaded automatic captures without storing a fingerprint', async () => {
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
   assert.match(source, /hyb-card-rankings-upload-state-v1/);
-  assert.match(source, /AUTO_UPLOAD_MIN_INTERVAL_MS\s*=\s*15\s*\*\s*60\s*\*\s*1000/);
+  assert.match(source, /AUTO_UPLOAD_MIN_INTERVAL_MS\s*=\s*3\s*\*\s*60\s*\*\s*60\s*\*\s*1000/);
   assert.match(source, /function shouldSkipUpload/);
   assert.match(source, /skippedUpload/);
   assert.match(source, /options\.manual/);
   assert.match(source, /rememberUploadedSnapshots/);
   assert.match(source, /function readUploadState/);
   assert.match(source, /return \{\};/);
-  assert.match(source, /rememberUploadedSnapshots\(compactSnapshots\)/);
+  assert.match(source, /rememberUploadedSnapshots\(rememberableUploadSnapshots\(compactSnapshots, response\)\)/);
   assert.match(source, /return \{ \.\.\.latest, skippedUpload: true \}/);
   assert.match(source, /source\.skippedUpload && state\.loaded/);
   assert.doesNotMatch(source, /fingerprint\s*:/);
+});
+
+test('rankings upload preserves timestamp provenance and sends manual or automatic mode', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  const normalize = extractFunction(source, 'normalizeSnapshotForUpload');
+  const compact = extractFunction(source, 'compactSnapshotForUpload');
+  const upload = extractFunction(source, 'uploadSnapshot');
+  assert.match(normalize, /observedAt/);
+  assert.match(normalize, /capturedAtSource/);
+  assert.doesNotMatch(normalize, /capturedAt:[\s\S]*\|\|\s*Date\.now\(\)/);
+  assert.match(compact, /observedAt/);
+  assert.match(compact, /capturedAtSource/);
+  assert.match(upload, /mode:\s*options\.manual\s*\?\s*'manual'\s*:\s*'automatic'/);
+  assert.match(source, /REQUIRED_USERSCRIPT_VERSION\s*=\s*'1\.3\.3'/);
+});
+
+test('automatic cooldown scopes are not remembered as successfully uploaded', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  const upload = extractFunction(source, 'uploadSnapshot');
+  assert.match(source, /function rememberableUploadSnapshots/);
+  assert.match(source, /automatic_cooldown/);
+  assert.match(upload, /rememberableUploadSnapshots\(compactSnapshots, response\)/);
+  assert.doesNotMatch(upload, /rememberUploadedSnapshots\(compactSnapshots\)/);
+});
+
+test('initial rankings view uses leaderboard metadata without a separate latest request', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  const loadView = extractFunction(source, 'loadRankingsView');
+  assert.match(loadView, /let leaderboardLoaded = false/);
+  assert.match(loadView, /await loadLeaderboard\(\)/);
+  assert.match(loadView, /if \(!leaderboardLoaded\)/);
 });
 
 test('fresh rankings GET sends explicit revalidation to the Worker cache layer', async () => {

@@ -134,6 +134,97 @@ test('server ingest watermark skips an already accepted source capture', () => {
   assert.equal(shouldSkipSourceCapture({ last_captured_at: 12_000 }, 13_000), false);
 });
 
+test('automatic ingest uses one shared three-hour source window while manual ingest stays immediate', async () => {
+  const db = new SqliteDb();
+  const automaticAt = 100_000;
+  const first = await storeUserObservations(db, [normalizedSnapshot('global', 10_000, [
+    entry('epic_total', 'u1', 10, 2)
+  ])], { mode: 'automatic' }, automaticAt);
+  assert.equal(first.skippedScopes.length, 0);
+
+  const blocked = await storeUserObservations(db, [normalizedSnapshot('global', 11_000, [
+    entry('epic_total', 'u1', 12, 1)
+  ])], { mode: 'automatic' }, automaticAt + 1_000);
+  assert.equal(blocked.skippedScopes.length, 1);
+  assert.equal(blocked.skippedScopes[0].reason, 'automatic_cooldown');
+  assert.equal(db.db.prepare(`SELECT epic_total_value FROM rank_user_current WHERE user_id = 'u1'`).get().epic_total_value, 10);
+
+  const manual = await storeUserObservations(db, [normalizedSnapshot('global', 11_000, [
+    entry('epic_total', 'u1', 12, 1)
+  ])], { mode: 'manual' }, automaticAt + 2_000);
+  assert.equal(manual.skippedScopes.length, 0);
+  assert.equal(db.db.prepare(`SELECT epic_total_value FROM rank_user_current WHERE user_id = 'u1'`).get().epic_total_value, 12);
+  const stateAfterManual = db.db.prepare(`SELECT last_captured_at, updated_at FROM rank_ingest_state WHERE scope = 'global'`).get();
+  assert.deepEqual({ ...stateAfterManual }, { last_captured_at: 11_000, updated_at: automaticAt });
+
+  const afterWindow = await storeUserObservations(db, [normalizedSnapshot('global', 12_000, [
+    entry('epic_total', 'u1', 13, 1)
+  ])], { mode: 'automatic' }, automaticAt + 3 * 60 * 60 * 1_000);
+  assert.equal(afterWindow.skippedScopes.length, 0);
+  assert.equal(db.db.prepare(`SELECT epic_total_value FROM rank_user_current WHERE user_id = 'u1'`).get().epic_total_value, 13);
+});
+
+test('manual ingest still rejects an already accepted season scope capture', async () => {
+  const db = new SqliteDb();
+  await storeUserObservations(db, [normalizedSnapshot('global', 10_000, [
+    entry('epic_total', 'u1', 10, 2)
+  ])], { mode: 'manual' }, 100_000);
+  const duplicate = await storeUserObservations(db, [normalizedSnapshot('global', 10_000, [
+    entry('epic_total', 'u1', 12, 1)
+  ])], { mode: 'manual' }, 101_000);
+  assert.equal(duplicate.skippedScopes.length, 1);
+  assert.equal(duplicate.skippedScopes[0].reason, 'duplicate_capture');
+  assert.equal(db.db.prepare(`SELECT epic_total_value FROM rank_user_current WHERE user_id = 'u1'`).get().epic_total_value, 10);
+});
+
+test('failed automatic writes do not advance the completed capture watermark', async () => {
+  const db = new SqliteDb();
+  const originalBatch = db.batch.bind(db);
+  let failBatch = true;
+  db.batch = async (statements) => {
+    if (failBatch) throw new Error('simulated_batch_failure');
+    return originalBatch(statements);
+  };
+
+  const snapshots = [normalizedSnapshot('global', 10_000, [
+    entry('epic_total', 'u1', 10, 2)
+  ])];
+  await assert.rejects(
+    storeUserObservations(db, snapshots, { mode: 'automatic' }, 100_000),
+    /simulated_batch_failure/
+  );
+  const failedState = db.db.prepare(`SELECT last_captured_at, updated_at FROM rank_ingest_state WHERE scope = 'global'`).get();
+  assert.equal(Number(failedState && failedState.last_captured_at || 0), 0);
+
+  failBatch = false;
+  const retry = await storeUserObservations(db, snapshots, { mode: 'automatic' }, 101_000);
+  assert.equal(retry.skippedScopes.length, 0);
+  assert.equal(db.db.prepare(`SELECT epic_total_value FROM rank_user_current WHERE user_id = 'u1'`).get().epic_total_value, 10);
+});
+
+test('a later scope acquisition failure releases earlier automatic claims', async () => {
+  const db = new SqliteDb();
+  const originalPrepare = db.prepare.bind(db);
+  db.prepare = (sql) => {
+    const statement = originalPrepare(sql);
+    if (!/SELECT last_captured_at, updated_at\s+FROM rank_ingest_state/i.test(sql)) return statement;
+    const originalBind = statement.bind.bind(statement);
+    statement.bind = (...params) => {
+      if (params[1] === 'friends') throw new Error('simulated_scope_read_failure');
+      return originalBind(...params);
+    };
+    return statement;
+  };
+
+  await assert.rejects(storeUserObservations(db, [
+    normalizedSnapshot('global', 10_000, [entry('epic_total', 'u1', 10, 2)]),
+    normalizedSnapshot('friends', 10_000, [entry('epic_total', 'u2', 8, 3)])
+  ], { mode: 'automatic' }, 100_000), /simulated_scope_read_failure/);
+
+  const globalState = db.db.prepare(`SELECT last_captured_at, updated_at FROM rank_ingest_state WHERE scope = 'global'`).get();
+  assert.deepEqual({ ...globalState }, { last_captured_at: 0, updated_at: 0 });
+});
+
 test('partial source uploads preserve a non-null observation timestamp for newly added metrics', async () => {
   const db = new SqliteDb();
   await storeUserObservations(db, [normalizedSnapshot('global', 10_000, [
