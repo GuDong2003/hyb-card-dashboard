@@ -524,6 +524,29 @@ test('rankings GET caching and trend history loading stay lazy', async () => {
   assert.doesNotMatch(source, /if \(state\.trend\.selectedIds\.length\) await refreshTrendHistories\(\);/);
 });
 
+test('rankings client skips already uploaded automatic captures without storing a fingerprint', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  assert.match(source, /hyb-card-rankings-upload-state-v1/);
+  assert.match(source, /AUTO_UPLOAD_MIN_INTERVAL_MS\s*=\s*15\s*\*\s*60\s*\*\s*1000/);
+  assert.match(source, /function shouldSkipUpload/);
+  assert.match(source, /skippedUpload/);
+  assert.match(source, /options\.manual/);
+  assert.match(source, /rememberUploadedSnapshots/);
+  assert.match(source, /function readUploadState/);
+  assert.match(source, /return \{\};/);
+  assert.match(source, /rememberUploadedSnapshots\(compactSnapshots\)/);
+  assert.match(source, /return \{ \.\.\.latest, skippedUpload: true \}/);
+  assert.match(source, /source\.skippedUpload && state\.loaded/);
+  assert.doesNotMatch(source, /fingerprint\s*:/);
+});
+
+test('fresh rankings GET sends explicit revalidation to the Worker cache layer', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  const apiGet = extractFunction(source, 'apiGet');
+  assert.match(apiGet, /cache-control/);
+  assert.match(apiGet, /no-cache/);
+});
+
 test('rankings client uses refresh and cloud upload labels', async () => {
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
   assert.match(source, /↻ 立即刷新/);

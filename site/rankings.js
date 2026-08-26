@@ -19,6 +19,8 @@
     const SETTINGS_STORAGE_KEY = 'hyb-card-rankings-settings-v1';
     const CALCULATOR_STORAGE_KEY = 'legend-card-calculator-snapshot-v1';
     const PINS_STORAGE_KEY = 'hyb-card-rankings-pins-v1';
+    const UPLOAD_STATE_STORAGE_KEY = 'hyb-card-rankings-upload-state-v1';
+    const AUTO_UPLOAD_MIN_INTERVAL_MS = 15 * 60 * 1000;
     const SPEND_VALUE_PER_USD = 500000;
     const VIP_DAILY_SPEND_USD = 6000;
     const VIP_DAILY_PAID_PULLS = 600;
@@ -94,6 +96,41 @@
                 .filter(Boolean);
             stored[pinSeasonKey(seasonId)] = stored[pinSeasonKey(seasonId)].slice(0, MAX_PINNED_USERS);
             window.localStorage.setItem(PINS_STORAGE_KEY, JSON.stringify(stored));
+        } catch (_) {
+            // Private browsing or storage restrictions must not block rankings viewing.
+        }
+    }
+
+    function uploadStateKey(season, scope) {
+        return `${String(season || '').trim()}\u0000${String(scope || '').trim()}`;
+    }
+
+    function readUploadState() {
+        try {
+            const stored = JSON.parse(window.localStorage.getItem(UPLOAD_STATE_STORAGE_KEY) || '{}') || {};
+            if (typeof stored !== 'object' || Array.isArray(stored)) throw new Error('invalid upload state');
+            const normalized = {};
+            Object.entries(stored).forEach(([key, entry]) => {
+                const separator = key.indexOf('\u0000');
+                const season = separator >= 0 ? key.slice(0, separator).trim() : '';
+                const scope = separator >= 0 ? key.slice(separator + 1).trim() : '';
+                const capturedAt = normalizeCapturedAt(entry && entry.capturedAt, null);
+                const uploadedAt = normalizeCapturedAt(entry && entry.uploadedAt, null);
+                if (!season || !scope || !capturedAt || !uploadedAt || key !== uploadStateKey(season, scope)) {
+                    throw new Error('invalid upload state entry');
+                }
+                normalized[key] = { capturedAt, uploadedAt };
+            });
+            return normalized;
+        } catch (_) {
+            try { window.localStorage.removeItem(UPLOAD_STATE_STORAGE_KEY); } catch (_) { /* ignore storage failures */ }
+            return {};
+        }
+    }
+
+    function writeUploadState(uploadState) {
+        try {
+            window.localStorage.setItem(UPLOAD_STATE_STORAGE_KEY, JSON.stringify(uploadState));
         } catch (_) {
             // Private browsing or storage restrictions must not block rankings viewing.
         }
@@ -176,11 +213,13 @@
         const cached = apiMemoryCache.get(cacheKey);
         if (!fresh && cached && cached.expiresAt > Date.now()) return cached.body;
         if (fresh) apiMemoryCache.delete(cacheKey);
+        const headers = { accept: 'application/json' };
+        if (fresh) headers['cache-control'] = 'no-cache';
         const response = await fetch(apiUrl(path), {
             method: 'GET',
             credentials: 'same-origin',
             cache: options.cache || 'default',
-            headers: { accept: 'application/json' }
+            headers
         });
         const body = await response.json().catch(() => ({}));
         if (!response.ok) {
@@ -1229,6 +1268,55 @@
             });
     }
 
+    function uploadStateForSnapshot(snapshot) {
+        const source = snapshotSource(snapshot);
+        const season = source && source.season && typeof source.season === 'object'
+            ? String(source.season.id || '').trim()
+            : '';
+        const scope = String(source && source.scope || '').trim();
+        const capturedAt = normalizeCapturedAt(source && source.capturedAt, null);
+        if (!season || !scope || !capturedAt) return null;
+        return { season, scope, capturedAt };
+    }
+
+    function pendingUploadSnapshots(snapshots, options = {}) {
+        const normalizedSnapshots = normalizeSnapshotsForUpload(snapshots);
+        if (options.manual) return normalizedSnapshots;
+        const now = normalizeCapturedAt(options.now, Date.now()) || Date.now();
+        const uploaded = readUploadState();
+        return normalizedSnapshots.filter((snapshot) => {
+            const current = uploadStateForSnapshot(snapshot);
+            if (!current) return true;
+            const previous = uploaded[uploadStateKey(current.season, current.scope)];
+            if (!previous) return true;
+            const withinMinimumInterval = now - Number(previous.uploadedAt) < AUTO_UPLOAD_MIN_INTERVAL_MS;
+            return current.capturedAt > Number(previous.capturedAt) && !withinMinimumInterval;
+        });
+    }
+
+    function shouldSkipUpload(snapshots, options = {}) {
+        if (options.manual) return false;
+        const normalizedSnapshots = normalizeSnapshotsForUpload(snapshots);
+        return normalizedSnapshots.length > 0
+            && pendingUploadSnapshots(normalizedSnapshots, options).length === 0;
+    }
+
+    function rememberUploadedSnapshots(snapshots, uploadedAt = Date.now()) {
+        const uploadState = readUploadState();
+        const observedAt = normalizeCapturedAt(uploadedAt, Date.now()) || Date.now();
+        normalizeSnapshotsForUpload(snapshots).forEach((snapshot) => {
+            const current = uploadStateForSnapshot(snapshot);
+            if (!current) return;
+            const key = uploadStateKey(current.season, current.scope);
+            const previous = uploadState[key];
+            uploadState[key] = {
+                capturedAt: Math.max(current.capturedAt, Number(previous && previous.capturedAt) || 0),
+                uploadedAt: observedAt
+            };
+        });
+        writeUploadState(uploadState);
+    }
+
     function compactSnapshotForUpload(snapshot) {
         const source = snapshotSource(snapshot);
         if (!source || typeof source !== 'object') return null;
@@ -2109,17 +2197,24 @@
         return latest;
     }
 
-    async function uploadSnapshot(snapshot) {
+    async function uploadSnapshot(snapshot, options = {}) {
         const normalizedSnapshots = normalizeSnapshotsForUpload(snapshot);
         if (!normalizedSnapshots.length || normalizedSnapshots.some((item) => !Number.isInteger(item.capturedAt) || item.capturedAt <= 0)) {
             throw new Error('榜单快照缺少有效抓取时间');
         }
-        const compactSnapshots = normalizedSnapshots.map(compactSnapshotForUpload).filter((item) => item && item.scope && item.season.id && item.season.name);
+        if (shouldSkipUpload(normalizedSnapshots, options)) {
+            return { ok: true, status: 'unchanged', skippedUpload: true, snapshots: [] };
+        }
+        const snapshotsToUpload = pendingUploadSnapshots(normalizedSnapshots, options);
+        const compactSnapshots = snapshotsToUpload
+            .map(compactSnapshotForUpload)
+            .filter((item) => item && item.scope && item.season.id && item.season.name);
         if (!compactSnapshots.length) throw new Error('榜单观察数据为空');
         const response = await apiPost('/api/rankings/snapshots', {
             snapshots: compactSnapshots,
             source: 'card-dashboard-userscript'
         });
+        rememberUploadedSnapshots(compactSnapshots);
         invalidateRankingsCache();
         return response;
     }
@@ -2165,8 +2260,13 @@
                 return { localOnly: true, snapshots: state.localSnapshots };
             }
             setStatus('正在上传榜单快照…', false, true);
-            await uploadSnapshot(bundle);
+            const uploadResult = await uploadSnapshot(bundle, { manual });
             state.localSnapshots = [];
+            if (uploadResult && uploadResult.skippedUpload) {
+                setStatus(`榜单没有新数据，已跳过上传 · ${formatDate(latest.snapshot && latest.snapshot.capturedAt)}`);
+                renderUploadControls();
+                return { ...latest, skippedUpload: true };
+            }
             const refreshed = await loadLatestSnapshot({ fresh: true });
             setStatus(partial
                 ? `${bundle.blocked
@@ -2269,6 +2369,10 @@
                 if (!latest.stale) clearRankingsRetry();
                 setStatus(`已读取云端快照 · ${formatDate(latest.snapshot.capturedAt)}`);
             }
+            if (source && source.skippedUpload && state.loaded && state.remotePage) {
+                renderLeaderboard(source);
+                return;
+            }
             if (source && source.localOnly) {
                 state.remotePage = false;
                 state.pinnedRows = [];
@@ -2310,7 +2414,7 @@
         setBusy(true);
         setStatus('正在上传本次榜单快照…');
         try {
-            await uploadSnapshot({ snapshots: state.localSnapshots });
+            await uploadSnapshot({ snapshots: state.localSnapshots }, { manual: true });
             state.localSnapshots = [];
             const refreshed = await loadLatestSnapshot({ fresh: true });
             await loadLeaderboard({ fresh: true });
