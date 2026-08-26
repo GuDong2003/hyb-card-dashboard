@@ -548,12 +548,16 @@ test('dashboard requests only the current leaderboard page', async () => {
   assert.doesNotMatch(html, /<option value="all">全部<\/option>/);
 });
 
-test('dashboard uses the remote total user count for the summary card', async () => {
+test('dashboard keeps full-list summary stats independent from search and pagination', async () => {
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
   assert.match(source, /leaderboard\.totalRows\s*=\s*Math\.max\(0, Number\(leaderboard\.totalRows\) \|\| 0\)/);
-  assert.match(source, /renderSummary\(summaryRows,\s*state\.leaderboard\.totalRows\)/);
-  assert.match(source, /function renderSummary\(rows = state\.rows, totalRows = rows\.length\)/);
-  assert.match(source, /\['用户数', formatNumber\(totalRows\)\]/);
+  assert.match(source, /summary:\s*null/);
+  assert.match(source, /leaderboard\.summary/);
+  assert.match(source, /renderSummary\(state\.leaderboard\.summary/);
+  assert.match(source, /totalSpendUsd/);
+  assert.match(source, /averageEstimatedPulls/);
+  assert.match(source, /averageProbability/);
+  assert.doesNotMatch(source, /renderSummary\(summaryRows,\s*state\.leaderboard\.totalRows\)/);
 });
 
 test('trend mode stays daily and each selected user keeps an independent history request', async () => {

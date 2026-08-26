@@ -43,7 +43,8 @@ npx wrangler d1 execute hyb-card-rankings-v2-db --remote --yes \
 - 用户上传仍可按 `global` / `friends` 两个来源发送；相同用户只写一行日数据和一行 current 数据。
 - `*_total` 累计值取已观测最大值，周期值按较新的 `capturedAt`，同一天重复值不会产生无意义更新。
 - 相同 `season_id + scope` 的旧或重复来源由 `rank_ingest_state` 拦截；POST 仍有 `RANKINGS_WRITE_LIMITER` 限流。
-- Dashboard 首屏只读取 `latest` 元数据和当前榜单第一页；榜单不再使用全量窗口排名。第一页只额外读取一次轻量用户计数，计数会随 cursor 复用；搜索、置顶用户和翻页都只读取对应用户/页。
+- Dashboard 首屏只读取 `latest` 元数据和当前榜单第一页；榜单不再使用全量窗口排名。第一页的计数查询同时返回符合条件用户的总消费、平均估算抽数和平均出卡率，浏览器会复用这份全量汇总；搜索、置顶用户和翻页只更新对应用户/页，不改变顶部汇总。
+- 当前榜单只展示最新北京日内、消费金额/估算抽数/兑换次数至少一项有值的用户；历史日表和用户历史接口不受该展示过滤影响。
 - 历史接口只接受按日模式，必须带 `userId`；默认最近 30 天，最多 90 天，可用 `since/until/limit/cursor` 追加页面。
 - 浏览器对 GET 使用内存 TTL 缓存：`latest` 15 秒，榜单/用户/事件 30 秒，历史 60 秒；POST、4xx、5xx 不缓存。
 - 赛季只有 90 天，当前不增加清理任务；旧库、备份和新库都不执行删除或 reset。

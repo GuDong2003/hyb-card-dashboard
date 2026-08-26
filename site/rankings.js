@@ -134,6 +134,7 @@
             previousCursors: [],
             hasMore: false,
             totalRows: 0,
+            summary: null,
             limit: 50
         },
         pinnedRows: [],
@@ -2217,6 +2218,7 @@
             .map(enrichRankingEstimate)
             .filter((row) => row && row.userId);
         state.leaderboard.totalRows = Math.max(0, Number(leaderboard.totalRows) || 0);
+        if (leaderboard.summary) state.leaderboard.summary = leaderboard.summary;
         state.leaderboard.nextCursor = leaderboard.nextCursor || null;
         state.leaderboard.hasMore = Boolean(leaderboard.hasMore);
         if (leaderboard.snapshot) {
@@ -2460,7 +2462,7 @@
             bindRankingsTableEvents(pinnedBody);
             bindRankingsTableEvents(body);
             updatePinButtons();
-            renderSummary(summaryRows, state.leaderboard.totalRows);
+            renderSummary(state.leaderboard.summary, [], state.leaderboard.totalRows);
             return;
         }
 
@@ -2496,7 +2498,8 @@
         bindRankingsTableEvents(pinnedBody);
         bindRankingsTableEvents(body);
         updatePinButtons();
-        renderSummary(rowsForSummary);
+        const localSummaryRows = state.rows.filter((row) => !state.onlyCompleteDays || isCompleteDayRow(row));
+        renderSummary(null, localSummaryRows, localSummaryRows.length);
     }
 
     function renderLeaderboard(payload) {
@@ -2606,19 +2609,28 @@
         return delta > 0 ? `↑ ${delta}` : `↓ ${Math.abs(delta)}`;
     }
 
-    function renderSummary(rows = state.rows, totalRows = rows.length) {
-        const spends = rows.map((row) => row.spendUsd).filter((value) => value != null && Number.isFinite(Number(value))).map(Number);
-        const pulls = rows.map((row) => row.estimatedPulls).filter((value) => value != null && Number.isFinite(Number(value))).map(Number);
-        const probabilities = rows.map((row) => row.estimatedLegendProbability).filter((value) => value != null && Number.isFinite(Number(value))).map(Number);
-        const summary = $('#rankingsSummary');
-        if (!summary) return;
+    function renderSummary(remoteSummary = null, fallbackRows = state.rows, fallbackTotalRows = fallbackRows.length) {
+        const spends = fallbackRows.map((row) => row.spendUsd).filter((value) => value != null && Number.isFinite(Number(value))).map(Number);
+        const pulls = fallbackRows.map((row) => row.estimatedPulls).filter((value) => value != null && Number.isFinite(Number(value))).map(Number);
+        const probabilities = fallbackRows.map((row) => row.estimatedLegendProbability).filter((value) => value != null && Number.isFinite(Number(value))).map(Number);
+        const summaryElement = $('#rankingsSummary');
+        if (!summaryElement) return;
+        const totalRows = remoteSummary && Number.isFinite(Number(remoteSummary.totalRows))
+            ? Number(remoteSummary.totalRows)
+            : fallbackTotalRows;
         const cards = [
             ['用户数', formatNumber(totalRows)],
-            ['总消费 USD', spends.length ? formatUsd(spends.reduce((a, b) => a + b, 0)) : '—'],
-            ['平均估算抽数', pulls.length ? formatNumber(pulls.reduce((a, b) => a + b, 0) / pulls.length) : '—'],
-            ['平均出卡率', probabilities.length ? formatProbability(probabilities.reduce((a, b) => a + b, 0) / probabilities.length) : '—']
+            ['总消费 USD', remoteSummary
+                ? formatOptionalUsd(remoteSummary.totalSpendUsd)
+                : spends.length ? formatUsd(spends.reduce((a, b) => a + b, 0)) : '—'],
+            ['平均估算抽数', remoteSummary
+                ? formatOptionalNumber(remoteSummary.averageEstimatedPulls)
+                : pulls.length ? formatNumber(pulls.reduce((a, b) => a + b, 0) / pulls.length) : '—'],
+            ['平均出卡率', remoteSummary
+                ? formatOptionalProbability(remoteSummary.averageProbability)
+                : probabilities.length ? formatProbability(probabilities.reduce((a, b) => a + b, 0) / probabilities.length) : '—']
         ];
-        summary.innerHTML = cards.map(([label, value]) => `<article class="rankings-summary-card"><span>${label}</span><strong>${value}</strong></article>`).join('');
+        summaryElement.innerHTML = cards.map(([label, value]) => `<article class="rankings-summary-card"><span>${label}</span><strong>${value}</strong></article>`).join('');
     }
 
     function scheduleHourlyRefresh() {

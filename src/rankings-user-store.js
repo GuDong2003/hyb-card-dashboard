@@ -274,10 +274,11 @@ export async function queryCurrentBoard(db, options = {}) {
   const pinnedIds = Array.isArray(options.pinnedIds)
     ? options.pinnedIds.map((id) => String(id || '').trim()).filter(Boolean).slice(0, 20)
     : [];
+  const latestDayStartAt = Number(options.latestDayStartAt);
   const sortColumn = currentSortColumn(board, period, sort);
   const nullRank = `CASE WHEN ${sortColumn} IS NULL THEN 1 ELSE 0 END`;
   const params = [seasonId];
-  const baseWhere = ['r.season_id = ?', currentDataWhere('r')];
+  const baseWhere = ['r.season_id = ?', currentDataWhere('r', latestDayStartAt)];
   const filterWhere = [];
 
   if (Array.isArray(options.ids) && options.ids.length) {
@@ -306,7 +307,8 @@ export async function queryCurrentBoard(db, options = {}) {
       filterParams: params.slice(1),
       cursor: options.cursor || null,
       query: String(options.q || '').trim().slice(0, 128),
-      pinnedIds
+      pinnedIds,
+      latestDayStartAt
     });
   }
 
@@ -342,6 +344,7 @@ export async function queryCurrentBoard(db, options = {}) {
   return {
     rows: rankedPageRows,
     totalRows: null,
+    summary: null,
     hasMore: rows.length > limit,
     nextCursor: rows.length > limit && rankedPageRows.length
       ? encodeCurrentCursor(sort, direction, rankedPageRows[rankedPageRows.length - 1], {
@@ -372,7 +375,8 @@ async function queryCurrentBoardWithTotal(db, options) {
     filterParams,
     cursor,
     query,
-    pinnedIds
+    pinnedIds,
+    latestDayStartAt
   } = options;
   const cursorTotalRows = cursor
     && Number.isFinite(Number(cursor.totalRows))
@@ -380,13 +384,29 @@ async function queryCurrentBoardWithTotal(db, options) {
     ? Math.floor(Number(cursor.totalRows))
     : null;
   let totalRows = cursorTotalRows;
+  let summary = null;
   if (totalRows == null) {
+    const summaryColumns = currentSummaryColumns(period);
+    const aggregateSelect = query
+      ? 'COUNT(*) AS total_rows'
+      : `COUNT(*) AS total_rows,
+          SUM(${summaryColumns.spendColumn}) / 500000.0 AS total_spend_usd,
+          AVG(${summaryColumns.pullsColumn}) AS average_estimated_pulls,
+          AVG(${summaryColumns.probabilityColumn}) AS average_probability`;
     const totalResult = await db.prepare(`
-      SELECT COUNT(*) AS total_rows
+      SELECT ${aggregateSelect}
       FROM rank_user_current r
       WHERE ${[...baseWhere, ...filterWhere].join(' AND ')}
     `).bind(...baseParams, ...filterParams).first();
     totalRows = Number(totalResult && totalResult.total_rows || 0);
+    if (!query) {
+      summary = {
+        totalRows,
+        totalSpendUsd: nullableNumber(totalResult && totalResult.total_spend_usd),
+        averageEstimatedPulls: nullableNumber(totalResult && totalResult.average_estimated_pulls),
+        averageProbability: nullableNumber(totalResult && totalResult.average_probability)
+      };
+    }
   }
   const page = await queryCurrentBoard(db, {
     seasonId,
@@ -398,7 +418,8 @@ async function queryCurrentBoardWithTotal(db, options) {
     q: query,
     cursor,
     includeTotal: false,
-    totalRows
+    totalRows,
+    latestDayStartAt
   });
   const rankedPageRows = query && page.rows.length
     ? await queryPinnedWithRanks(db, {
@@ -408,7 +429,8 @@ async function queryCurrentBoardWithTotal(db, options) {
       sort,
       direction,
       ids: page.rows.map((row) => row.user_id),
-      maxIds: page.rows.length
+      maxIds: page.rows.length,
+      latestDayStartAt
     })
     : page.rows;
   const rankedPageById = new Map(rankedPageRows.map((row) => [String(row.user_id), row]));
@@ -419,7 +441,8 @@ async function queryCurrentBoardWithTotal(db, options) {
       period,
       sort,
       direction,
-      ids: pinnedIds
+      ids: pinnedIds,
+      latestDayStartAt
     })
     : [];
   return {
@@ -428,7 +451,8 @@ async function queryCurrentBoardWithTotal(db, options) {
       ? page.rows.map((row) => rankedPageById.get(String(row.user_id)) || row)
       : page.rows,
     pinnedRows: rankedPinnedRows,
-    totalRows
+    totalRows,
+    summary
   };
 }
 
@@ -438,6 +462,7 @@ async function queryPinnedWithRanks(db, options = {}) {
   const period = String(options.period || 'total');
   const sort = String(options.sort || 'legend');
   const direction = options.direction === 'asc' ? 'asc' : 'desc';
+  const latestDayStartAt = Number(options.latestDayStartAt);
   const maxIds = Math.max(1, Math.min(100, Math.floor(Number(options.maxIds) || 20)));
   const ids = Array.isArray(options.ids)
     ? options.ids.map((id) => String(id || '').trim()).filter(Boolean).slice(0, maxIds)
@@ -465,12 +490,12 @@ async function queryPinnedWithRanks(db, options = {}) {
         SELECT COUNT(*)
         FROM rank_user_current p
         WHERE p.season_id = r.season_id
-          AND ${currentDataWhere('p')}
+          AND ${currentDataWhere('p', latestDayStartAt)}
           AND ${before}
       ) AS current_rank
     FROM rank_user_current r
     WHERE r.season_id = ?
-      AND ${currentDataWhere('r')}
+      AND ${currentDataWhere('r', latestDayStartAt)}
       AND r.user_id IN (${ids.map(() => '?').join(', ')})
   `).bind(seasonId, ...ids).all();
   const rowsById = new Map((result.results || []).map((row) => [String(row.user_id), row]));
@@ -509,8 +534,37 @@ function currentSortColumn(board, period, sort) {
   return `r.${board}_${period}_value`;
 }
 
-function currentDataWhere(alias = 'r') {
-  return `(${COMPACT_VALUE_COLUMNS.map((column) => `${alias}.${column} IS NOT NULL`).join(' OR ')})`;
+function currentDataWhere(alias = 'r', latestDayStartAt = null) {
+  const dayStartAt = Number(latestDayStartAt);
+  const latestDayClause = Number.isFinite(dayStartAt) && dayStartAt > 0
+    ? `${alias}.last_observed_at >= ${Math.floor(dayStartAt)}`
+    : '1 = 1';
+  const requiredColumns = [
+    `${alias}.spend_total_value`,
+    `${alias}.sort_estimated_pulls`,
+    `${alias}.sets_total_value`
+  ];
+  return `(${latestDayClause} AND (${requiredColumns.map((column) => `${column} IS NOT NULL`).join(' OR ')}))`;
+}
+
+function currentSummaryColumns(period) {
+  const normalizedPeriod = ['today', 'week', 'month', 'total'].includes(String(period))
+    ? String(period)
+    : 'total';
+  return {
+    spendColumn: `r.spend_${normalizedPeriod}_value`,
+    pullsColumn: normalizedPeriod === 'total'
+      ? 'r.sort_estimated_pulls'
+      : `r.sort_${normalizedPeriod}_estimated_pulls`,
+    probabilityColumn: normalizedPeriod === 'total'
+      ? 'r.sort_probability'
+      : `r.sort_${normalizedPeriod}_probability`
+  };
+}
+
+function nullableNumber(value) {
+  const number = Number(value);
+  return value == null || !Number.isFinite(number) ? null : number;
 }
 
 function currentSortValue(row, board, period, sort) {

@@ -126,6 +126,14 @@ function seedEmptyUser(environment, userId, userName = userId) {
   );
 }
 
+function updateCurrentUser(environment, userId, updates) {
+  const entries = Object.entries(updates);
+  environment.RANKINGS_DB.run(
+    `UPDATE rank_user_current SET ${entries.map(([column]) => `${column} = ?`).join(', ')} WHERE season_id = ? AND user_id = ?`,
+    [...entries.map(([, value]) => value), 's1', userId]
+  );
+}
+
 test('returns 503 when the compact D1 binding is missing', async () => {
   const response = await handleRankingsRequest(new Request('https://card.test/api/rankings/latest'), {});
   assert.equal(response.status, 503);
@@ -190,6 +198,119 @@ test('current users without any metric data stay out of leaderboard, search, tot
     'https://card.test/api/rankings/users?q=empty&limit=20'
   ), environment);
   assert.deepEqual((await search.json()).users, []);
+});
+
+test('latest leaderboard keeps users with any required metric and excludes stale or unrelated rows', async () => {
+  const environment = env();
+  seedSeason(environment);
+  seedUser(environment, 'current-spend', 'Current Spend');
+  seedUser(environment, 'current-sets', 'Current Sets');
+  seedUser(environment, 'current-epic', 'Current Epic');
+  seedUser(environment, 'old-spend', 'Old Spend');
+
+  updateCurrentUser(environment, 'current-spend', {
+    spend_total_value: 2_000_000_000,
+    sort_spend_usd: 4000,
+    sort_estimated_pulls: 400,
+    sort_probability: 0.25,
+    sets_total_value: null,
+    sets_total_rank: null,
+    sets_total_observed_at: null,
+    sort_exchange_count: null
+  });
+  updateCurrentUser(environment, 'current-sets', {
+    spend_total_value: null,
+    spend_total_rank: null,
+    spend_total_observed_at: null,
+    sort_spend_usd: null,
+    sort_estimated_pulls: null,
+    sort_probability: null,
+    sets_total_value: 2
+  });
+  updateCurrentUser(environment, 'current-epic', {
+    spend_total_value: null,
+    spend_total_rank: null,
+    spend_total_observed_at: null,
+    sort_spend_usd: null,
+    sort_estimated_pulls: null,
+    sort_probability: null,
+    sets_total_value: null,
+    sets_total_rank: null,
+    sets_total_observed_at: null,
+    sort_exchange_count: null
+  });
+  updateCurrentUser(environment, 'old-spend', {
+    last_observed_at: 98_000,
+    spend_total_value: 2_000_000_000,
+    sort_spend_usd: 4000,
+    sort_estimated_pulls: 400,
+    sort_probability: 0.25,
+    sets_total_value: null,
+    sets_total_rank: null,
+    sets_total_observed_at: null,
+    sort_exchange_count: null
+  });
+
+  const response = await handleRankingsRequest(new Request(
+    'https://card.test/api/rankings/leaderboard?sort=user&direction=asc&limit=1&pinned=old-spend'
+  ), environment);
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload.rows.map((row) => row.userId), ['current-sets']);
+  assert.equal(payload.totalRows, 2);
+  assert.equal(payload.hasMore, true);
+  assert.deepEqual(payload.pinnedRows, []);
+});
+
+test('leaderboard summary covers all eligible users and stays separate from search and cursor pages', async () => {
+  const environment = env();
+  seedSeason(environment);
+  seedUser(environment, 'current-spend', 'Current Spend');
+  seedUser(environment, 'current-sets', 'Current Sets');
+  updateCurrentUser(environment, 'current-spend', {
+    spend_total_value: 2_000_000_000,
+    sort_spend_usd: 4000,
+    sort_estimated_pulls: 400,
+    sort_probability: 0.25,
+    sets_total_value: null,
+    sets_total_rank: null,
+    sets_total_observed_at: null,
+    sort_exchange_count: null
+  });
+  updateCurrentUser(environment, 'current-sets', {
+    spend_total_value: null,
+    spend_total_rank: null,
+    spend_total_observed_at: null,
+    sort_spend_usd: null,
+    sort_estimated_pulls: null,
+    sort_probability: null
+  });
+
+  const first = await handleRankingsRequest(new Request(
+    'https://card.test/api/rankings/leaderboard?sort=user&direction=asc&limit=1'
+  ), environment);
+  const firstPayload = await first.json();
+  assert.deepEqual(firstPayload.summary, {
+    totalRows: 2,
+    totalSpendUsd: 4000,
+    averageEstimatedPulls: 400,
+    averageProbability: 0.25
+  });
+  assert.ok(firstPayload.nextCursor);
+
+  const second = await handleRankingsRequest(new Request(
+    `https://card.test/api/rankings/leaderboard?sort=user&direction=asc&limit=1&cursor=${encodeURIComponent(firstPayload.nextCursor)}`
+  ), environment);
+  const secondPayload = await second.json();
+  assert.equal(secondPayload.totalRows, 2);
+  assert.equal(secondPayload.summary, null);
+
+  const search = await handleRankingsRequest(new Request(
+    'https://card.test/api/rankings/leaderboard?sort=user&direction=asc&limit=20&q=current-spend'
+  ), environment);
+  const searchPayload = await search.json();
+  assert.equal(searchPayload.totalRows, 1);
+  assert.equal(searchPayload.summary, null);
 });
 
 test('leaderboard search filters the requested page before pagination', async () => {
