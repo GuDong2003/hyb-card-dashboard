@@ -206,3 +206,23 @@ test('invalid cursor is rejected before current page query', async () => {
   assert.equal(response.status, 400);
   assert.equal((await response.json()).error, 'invalid_cursor');
 });
+
+test('invalid cursor rejects a null-rank value mismatch', async () => {
+  const environment = env();
+  seedSeason(environment);
+  const cursor = Buffer.from(JSON.stringify({
+    seasonId: 's1',
+    board: 'users',
+    period: 'total',
+    sort: 'legend',
+    direction: 'desc',
+    query: '',
+    rank: 1,
+    nullRank: 0,
+    value: null,
+    userId: 'alice-1'
+  })).toString('base64url');
+  const response = await handleRankingsRequest(new Request(`https://card.test/api/rankings/leaderboard?cursor=${cursor}`), environment);
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error, 'invalid_cursor');
+});

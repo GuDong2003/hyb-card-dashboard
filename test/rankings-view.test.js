@@ -633,6 +633,22 @@ test('renders pinned users directly below the sticky table header', async () => 
   assert.match(css, /\.rankings-pin-button/);
 });
 
+test('loads pinned rows with the paginated leaderboard response', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+
+  assert.match(source, /pinned:\s*Array\.from\(state\.pinnedUserIds\)\.join\('\,'\)/);
+  assert.match(source, /leaderboard\.pinnedRows/);
+  assert.doesNotMatch(source, /async function loadPinnedRows/);
+});
+
+test('caps pinned users at the same twenty-user limit as the API', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+
+  assert.match(source, /MAX_PINNED_USERS\s*=\s*20/);
+  assert.match(source, /slice\(0,\s*MAX_PINNED_USERS\)/);
+  assert.match(source, /pinnedUserIds\.size\s*>=\s*MAX_PINNED_USERS/);
+});
+
 test('shows the pin button when hovering anywhere on a ranking row', async () => {
   const css = await readFile(new URL('../site/rankings.css', import.meta.url), 'utf8');
 

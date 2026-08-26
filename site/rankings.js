@@ -11,6 +11,7 @@
     const CAPTURE_BUCKET_MS = 60 * 60 * 1000;
     const RANKINGS_RETRY_MS = 60 * 60 * 1000;
     const MAX_AUTO_RETRIES = 1;
+    const MAX_PINNED_USERS = 20;
     const REQUIRED_USERSCRIPT_VERSION = '1.3.2';
     const USERSCRIPT_URL = '/userscripts/hyb-card-dashboard-rankings.user.js';
     const TREND_CHART_FIXED_AXIS_WIDTH = 86;
@@ -78,7 +79,7 @@
             const stored = JSON.parse(window.localStorage.getItem(PINS_STORAGE_KEY) || '{}') || {};
             const values = stored[pinSeasonKey(seasonId)];
             return new Set(Array.isArray(values)
-                ? values.map((value) => String(value || '').trim()).filter(Boolean)
+                ? values.map((value) => String(value || '').trim()).filter(Boolean).slice(0, MAX_PINNED_USERS)
                 : []);
         } catch (_) {
             return new Set();
@@ -91,6 +92,7 @@
             stored[pinSeasonKey(seasonId)] = Array.from(userIds || [])
                 .map((value) => String(value || '').trim())
                 .filter(Boolean);
+            stored[pinSeasonKey(seasonId)] = stored[pinSeasonKey(seasonId)].slice(0, MAX_PINNED_USERS);
             window.localStorage.setItem(PINS_STORAGE_KEY, JSON.stringify(stored));
         } catch (_) {
             // Private browsing or storage restrictions must not block rankings viewing.
@@ -1929,11 +1931,18 @@
         const normalized = String(userId || '').trim();
         if (!normalized) return;
         const seasonId = state.pinnedSeasonId || state.seasonId || 'default';
-        if (state.pinnedUserIds.has(normalized)) state.pinnedUserIds.delete(normalized);
-        else state.pinnedUserIds.add(normalized);
+        if (state.pinnedUserIds.has(normalized)) {
+            state.pinnedUserIds.delete(normalized);
+        } else {
+            if (state.pinnedUserIds.size >= MAX_PINNED_USERS) {
+                setStatus(`最多置顶 ${MAX_PINNED_USERS} 位用户`);
+                return;
+            }
+            state.pinnedUserIds.add(normalized);
+        }
         savePinnedUsers(seasonId, state.pinnedUserIds);
         if (state.remotePage) {
-            loadPinnedRows().then(() => renderRankingsTableRows()).catch(() => renderRankingsTableRows());
+            loadLeaderboard().catch((error) => setStatus(`置顶用户刷新失败：${String(error && error.message || error)}`, true));
         } else {
             renderRankingsTableRows();
         }
@@ -2193,7 +2202,8 @@
             period: state.period,
             sort: state.sort,
             direction: state.sortDirection,
-            limit: String(state.leaderboard.limit)
+            limit: String(state.leaderboard.limit),
+            pinned: Array.from(state.pinnedUserIds).join(',')
         });
         if (state.leaderboard.cursor) params.set('cursor', state.leaderboard.cursor);
         if (state.userQuery.trim()) params.set('q', state.userQuery.trim());
@@ -2203,6 +2213,9 @@
         state.remotePage = true;
         state.rows = (Array.isArray(leaderboard.rows) ? leaderboard.rows : []).map(enrichRankingEstimate);
         state.partialRows = (Array.isArray(leaderboard.partialRows) ? leaderboard.partialRows : []).map(enrichRankingEstimate);
+        state.pinnedRows = (Array.isArray(leaderboard.pinnedRows) ? leaderboard.pinnedRows : [])
+            .map(enrichRankingEstimate)
+            .filter((row) => row && row.userId);
         state.leaderboard.totalRows = Math.max(0, Number(leaderboard.totalRows) || 0);
         state.leaderboard.nextCursor = leaderboard.nextCursor || null;
         state.leaderboard.hasMore = Boolean(leaderboard.hasMore);
@@ -2210,7 +2223,6 @@
             state.latest = { ...(state.latest || {}), snapshot: leaderboard.snapshot };
             syncPinnedSeason(leaderboard.snapshot.seasonId);
         }
-        await loadPinnedRows();
         renderLeaderboard(leaderboard);
     }
 
@@ -2220,23 +2232,6 @@
         state.leaderboard.nextCursor = null;
         state.leaderboard.previousCursors = [];
         state.leaderboard.hasMore = false;
-    }
-
-    async function loadPinnedRows() {
-        if (!state.remotePage || !state.pinnedUserIds.size) {
-            state.pinnedRows = [];
-            return;
-        }
-        const params = new URLSearchParams({
-            ids: Array.from(state.pinnedUserIds).join(','),
-            limit: '20',
-            board: 'users',
-            period: state.period
-        });
-        const payload = await apiGet(`/api/rankings/users?${params.toString()}`);
-        state.pinnedRows = (Array.isArray(payload.users) ? payload.users : [])
-            .map((row) => row && row.boardKey ? enrichRankingEstimate(row) : row)
-            .filter((row) => row && row.userId);
     }
 
     async function loadRankingsView(options = {}) {

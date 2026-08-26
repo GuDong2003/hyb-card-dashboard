@@ -225,6 +225,16 @@ export function decodeCurrentCursor(value, sort, direction, context = {}) {
   if (value == null || value === '') return { cursor: null };
   try {
     const cursor = decodeBase64Url(value);
+    const nullRank = Number(cursor && cursor.nullRank);
+    const isUserNameSort = String(sort || 'legend') === 'user';
+    const valueMatchesNullRank = Boolean(cursor) && (
+      nullRank === 1
+        ? cursor.value === null
+        : cursor.value != null
+          && (isUserNameSort
+            ? typeof cursor.value === 'string'
+            : typeof cursor.value === 'number' && Number.isFinite(cursor.value))
+    );
     if (!cursor
       || cursor.seasonId !== String(context.seasonId || '')
       || cursor.board !== String(context.board || 'users')
@@ -235,7 +245,8 @@ export function decodeCurrentCursor(value, sort, direction, context = {}) {
       || !Number.isFinite(Number(cursor.rank))
       || Number(cursor.rank) < 0
       || !String(cursor.userId || '')
-      || ![0, 1].includes(Number(cursor.nullRank))) {
+      || ![0, 1].includes(nullRank)
+      || !valueMatchesNullRank) {
       return { error: 'invalid_cursor' };
     }
     return { cursor };
@@ -252,6 +263,9 @@ export async function queryCurrentBoard(db, options = {}) {
   const direction = options.direction === 'asc' ? 'asc' : 'desc';
   const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 50)));
   const includeTotal = options.includeTotal === true;
+  const pinnedIds = Array.isArray(options.pinnedIds)
+    ? options.pinnedIds.map((id) => String(id || '').trim()).filter(Boolean).slice(0, 20)
+    : [];
   const sortColumn = currentSortColumn(board, period, sort);
   const nullRank = `CASE WHEN ${sortColumn} IS NULL THEN 1 ELSE 0 END`;
   const params = [seasonId];
@@ -267,13 +281,23 @@ export async function queryCurrentBoard(db, options = {}) {
     params.push(pattern, pattern);
   }
 
-  const countResult = includeTotal
-    ? await db.prepare(`
-      SELECT COUNT(*) AS total_rows
-      FROM rank_user_current r
-      WHERE ${baseWhere.join(' AND ')}
-    `).bind(...params).first()
-    : null;
+  if (includeTotal) {
+    return queryCurrentBoardWithTotal(db, {
+      seasonId,
+      board,
+      period,
+      sort,
+      direction,
+      limit,
+      sortColumn,
+      nullRank,
+      baseWhere: baseWhere.slice(),
+      baseParams: params.slice(),
+      cursor: options.cursor || null,
+      query: String(options.q || '').trim().slice(0, 128),
+      pinnedIds
+    });
+  }
 
   const where = [...baseWhere];
   if (options.cursor) {
@@ -306,11 +330,133 @@ export async function queryCurrentBoard(db, options = {}) {
   const rankedPageRows = pageRows.map((row, index) => ({ ...row, current_rank: rankOffset + index + 1 }));
   return {
     rows: rankedPageRows,
-    totalRows: includeTotal ? Number(countResult && countResult.total_rows || 0) : null,
+    totalRows: null,
     hasMore: rows.length > limit,
     nextCursor: rows.length > limit && rankedPageRows.length
       ? encodeCurrentCursor(sort, direction, rankedPageRows[rankedPageRows.length - 1], { seasonId, board, period, query: String(options.q || '').trim().slice(0, 128), rank: rankOffset + rankedPageRows.length })
       : null
+  };
+}
+
+async function queryCurrentBoardWithTotal(db, options) {
+  const {
+    seasonId,
+    board,
+    period,
+    sort,
+    direction,
+    limit,
+    sortColumn,
+    nullRank,
+    baseWhere,
+    baseParams,
+    cursor,
+    query,
+    pinnedIds
+  } = options;
+  const selectedColumns = USER_CURRENT_COLUMNS.map((column) => `r.${column} AS ${column}`).join(', ');
+  const outputColumns = USER_CURRENT_COLUMNS.join(', ');
+  const pageWhere = [];
+  const pageParams = [];
+
+  if (cursor) {
+    const cursorNullRank = Number(cursor.nullRank);
+    pageWhere.push(`(
+      __null_rank > ?
+      OR (__null_rank = ? AND (
+        ${cursorNullRank === 1
+          ? 'user_id > ?'
+          : `(__sort_value ${direction === 'asc' ? '>' : '<'} ?
+              OR (__sort_value = ? AND user_id > ?))`}
+      ))
+    )`);
+    pageParams.push(cursorNullRank, cursorNullRank);
+    if (cursorNullRank === 1) pageParams.push(String(cursor.userId));
+    else pageParams.push(cursor.value, cursor.value, String(cursor.userId));
+  } else {
+    pageWhere.push('1 = 1');
+  }
+
+  const pinnedClause = pinnedIds.length
+    ? `
+    UNION ALL
+    SELECT ${outputColumns}, __current_rank, __total_rows, 1 AS __row_kind
+    FROM ranked
+    WHERE user_id IN (${pinnedIds.map(() => '?').join(', ')})
+      AND user_id NOT IN (SELECT user_id FROM display_page)`
+    : '';
+  const nullColumns = USER_CURRENT_COLUMNS.map((column) => `NULL AS ${column}`).join(', ');
+  const result = await db.prepare(`
+    WITH ranked AS (
+      SELECT ${selectedColumns},
+        ${nullRank} AS __null_rank,
+        ${sortColumn} AS __sort_value,
+        ROW_NUMBER() OVER (
+          ORDER BY ${nullRank} ASC, ${sortColumn} ${direction.toUpperCase()}, r.user_id ASC
+        ) AS __current_rank,
+        COUNT(*) OVER () AS __total_rows
+      FROM rank_user_current r
+      WHERE ${baseWhere.join(' AND ')}
+    ), page_candidates AS (
+      SELECT ${outputColumns}, __current_rank, __total_rows, 0 AS __row_kind
+      FROM ranked
+      WHERE ${pageWhere.join(' AND ')}
+      ORDER BY __null_rank ASC, __sort_value ${direction.toUpperCase()}, user_id ASC
+      LIMIT ?
+    ), display_page AS (
+      SELECT * FROM page_candidates
+      LIMIT ?
+    )
+    SELECT * FROM page_candidates
+    ${pinnedClause}
+    UNION ALL
+    SELECT ${nullColumns}, NULL AS __current_rank,
+      COALESCE(MAX(__total_rows), 0) AS __total_rows, 2 AS __row_kind
+    FROM ranked
+  `).bind(...baseParams, ...pageParams, limit + 1, limit, ...pinnedIds).all();
+  const resultRows = result.results || [];
+  const totalRow = resultRows.find((row) => Number(row.__row_kind) === 2);
+  const pageResultRows = resultRows
+    .filter((row) => Number(row.__row_kind) === 0);
+  const pageRows = pageResultRows.slice(0, limit)
+    .map((row) => stripRankedRow(row));
+  const pinnedRowsById = new Map([
+    ...pageRows.map((row) => [String(row.user_id), row]),
+    ...resultRows
+      .filter((row) => Number(row.__row_kind) === 1)
+      .map((row) => [String(row.user_id), stripRankedRow(row)])
+  ]);
+  const rankedPinnedRows = pinnedIds
+    .map((userId) => pinnedRowsById.get(userId))
+    .filter(Boolean);
+  const hasMore = pageResultRows.length > limit;
+  return {
+    rows: pageRows,
+    pinnedRows: rankedPinnedRows,
+    totalRows: Number(totalRow && totalRow.__total_rows || 0),
+    hasMore,
+    nextCursor: hasMore && pageRows.length
+      ? encodeCurrentCursor(sort, direction, pageRows[pageRows.length - 1], {
+        seasonId,
+        board,
+        period,
+        query,
+        rank: Number(pageRows[pageRows.length - 1].current_rank) || 0
+      })
+      : null
+  };
+}
+
+function stripRankedRow(row) {
+  const {
+    __current_rank: currentRank,
+    __total_rows: _totalRows,
+    __row_kind: _rowKind,
+    ...userRow
+  } = row;
+  return {
+    ...userRow,
+    current_rank: Number(currentRank) || null
   };
 }
 

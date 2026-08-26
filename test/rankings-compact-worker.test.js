@@ -244,6 +244,7 @@ test('empty leaderboard exposes a zero total user count', async () => {
   const body = await response.json();
   assert.equal(response.status, 200);
   assert.equal(body.rows.length, 0);
+  assert.deepEqual(body.pinnedRows, []);
   assert.equal(body.totalRows, 0);
   assert.equal(body.hasMore, false);
 });
@@ -266,6 +267,24 @@ test('leaderboard returns one page and an opaque cursor', async () => {
   const secondBody = await second.json();
   assert.equal(secondBody.rows[0].userId, 'u-50');
   assert.equal(secondBody.totalRows, 120);
+});
+
+test('leaderboard returns pinned rows with their global ranks in the same response', async () => {
+  const environment = compactEnv();
+  seedSeason(environment);
+  for (let index = 0; index < 120; index += 1) seedCurrentUser(environment, `u-${index}`, index);
+
+  const response = await handleRankingsRequest(new Request('https://card.test/api/rankings/leaderboard?board=users&period=total&sort=legend&direction=desc&limit=50&pinned=u-100,u-110,u-69'), environment);
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.rows.length, 50);
+  assert.deepEqual(body.pinnedRows.map((row) => ({ userId: row.userId, rank: row.rank })), [
+    { userId: 'u-100', rank: 20 },
+    { userId: 'u-110', rank: 10 },
+    { userId: 'u-69', rank: 51 }
+  ]);
+  assert.equal(body.totalRows, 120);
+  assert.equal(environment.RANKINGS_DB.queries.filter(({ sql }) => /WITH ranked/i.test(sql)).length, 1);
 });
 
 test('history reads only one user day row per requested day', async () => {

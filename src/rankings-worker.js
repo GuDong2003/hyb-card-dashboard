@@ -169,6 +169,7 @@ async function getLeaderboard(url, env) {
       snapshot: null,
       rows: [],
       partialRows: [],
+      pinnedRows: [],
       board,
       period,
       totalRows: 0,
@@ -181,6 +182,13 @@ async function getLeaderboard(url, env) {
   const sort = board === 'users' ? normalizeUserSort(url.searchParams.get('sort')) : board === 'luck' ? 'probability' : 'legend';
   const direction = normalizeDirection(url.searchParams.get('direction'), sort === 'user' ? 'asc' : 'desc');
   const query = String(url.searchParams.get('q') || '').trim().slice(0, 128);
+  const pinnedIds = board === 'users'
+    ? String(url.searchParams.get('pinned') || '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean)
+      .slice(0, 20)
+    : [];
   const cursorResult = decodeCurrentCursor(url.searchParams.get('cursor'), sort, direction, {
     seasonId: season.season_id,
     board,
@@ -198,10 +206,13 @@ async function getLeaderboard(url, env) {
     limit,
     q: query,
     includeTotal: true,
+    pinnedIds,
     cursor: cursorResult.cursor
   });
   const capturedAt = Number(season.last_observed_at);
   const rows = page.rows.map((row, index) => buildLeaderboardRow(row, board, period, Number(row.current_rank) || index + 1, capturedAt));
+  const pinnedRows = (page.pinnedRows || [])
+    .map((row, index) => buildLeaderboardRow(row, board, period, Number(row.current_rank) || index + 1, capturedAt));
   return jsonResponse({
     ok: true,
     board,
@@ -213,6 +224,7 @@ async function getLeaderboard(url, env) {
     estimated: true,
     rows,
     partialRows: rows.filter((row) => row.isPartial),
+    pinnedRows,
     totalRows: page.totalRows,
     hasMore: page.hasMore,
     nextCursor: page.nextCursor
