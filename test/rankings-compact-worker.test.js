@@ -226,6 +226,17 @@ test('updates only changed fields and preserves a single row on a new capture', 
   assert.equal(environment.RANKINGS_DB.userDays[0].spend_total_observed_at, 10_000);
 });
 
+test('does not update season metadata when a newer capture changes no user fields', async () => {
+  const environment = compactEnv();
+  await postSnapshot(environment, snapshotAt(10_000, { epic: 10, spend: 500_000 }));
+  const before = environment.RANKINGS_DB.queries.length;
+  await postSnapshot(environment, snapshotAt(11_000, { epic: 10, spend: 500_000 }));
+  const queries = environment.RANKINGS_DB.queries.slice(before).map(({ sql }) => sql);
+  assert.equal(queries.some((sql) => /insert into rank_seasons/i.test(sql)), false);
+  assert.equal(environment.RANKINGS_DB.userDays.length, 1);
+  assert.equal(environment.RANKINGS_DB.currentUsers.length, 1);
+});
+
 test('creates a second daily row only after the Beijing 04:00 boundary', async () => {
   const environment = compactEnv();
   await postSnapshot(environment, snapshotAt(Date.parse('2026-08-25T03:59:00+08:00')));

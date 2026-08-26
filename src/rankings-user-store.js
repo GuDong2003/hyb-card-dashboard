@@ -613,6 +613,9 @@ export const SEASON_UPSERT_SQL = `
     last_observed_at = MAX(rank_seasons.last_observed_at, excluded.last_observed_at),
     last_day_start_at = MAX(rank_seasons.last_day_start_at, excluded.last_day_start_at),
     updated_at = MAX(rank_seasons.updated_at, excluded.updated_at)
+  WHERE excluded.season_name <> rank_seasons.season_name
+     OR excluded.last_observed_at > rank_seasons.last_observed_at
+     OR excluded.last_day_start_at > rank_seasons.last_day_start_at
 `;
 
 export const INGEST_STATE_UPSERT_SQL = `
@@ -686,6 +689,7 @@ export async function storeUserObservations(db, normalizedSnapshots = [], source
     if (!rows.length) throw new Error('empty_entries');
     result.users += rows.length;
 
+    let groupChangedUsers = 0;
     for (const chunk of chunks(rows, 50)) {
       const statements = [];
       for (const row of chunk) {
@@ -702,17 +706,21 @@ export async function storeUserObservations(db, normalizedSnapshots = [], source
       const currentChanges = changes.slice(chunk.length).reduce((sum, value) => sum + value, 0);
       result.changedDays += dayChanges;
       result.changedFields += dayChanges + currentChanges;
-      result.changedUsers += chunk.filter((_, index) => changes[index] || changes[chunk.length + index]).length;
+      const changedInChunk = chunk.filter((_, index) => changes[index] || changes[chunk.length + index]).length;
+      groupChangedUsers += changedInChunk;
+      result.changedUsers += changedInChunk;
     }
 
-    const latestDayStartAt = rows.reduce((max, row) => Math.max(max, Number(row.day_start_at)), 0);
-    await db.prepare(SEASON_UPSERT_SQL).bind(
-      group.seasonId,
-      group.seasonName,
-      group.snapshots.reduce((max, snapshot) => Math.max(max, Number(snapshot.capturedAt) || 0), 0),
-      latestDayStartAt,
-      now
-    ).run();
+    if (groupChangedUsers > 0) {
+      const latestDayStartAt = rows.reduce((max, row) => Math.max(max, Number(row.day_start_at)), 0);
+      await db.prepare(SEASON_UPSERT_SQL).bind(
+        group.seasonId,
+        group.seasonName,
+        group.snapshots.reduce((max, snapshot) => Math.max(max, Number(snapshot.capturedAt) || 0), 0),
+        latestDayStartAt,
+        now
+      ).run();
+    }
     for (const sourceGroup of group.sourceGroups) {
       await db.prepare(INGEST_STATE_UPSERT_SQL).bind(
         sourceGroup.seasonId,
