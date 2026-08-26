@@ -1,5 +1,6 @@
 import { handleRankingsRequest } from './rankings-worker.js';
 import { refreshCompactRankings } from './rankings-maintenance.js';
+import { fetchWithRankingsCache } from './rankings-cache.js';
 
 export async function scheduled(controller, env) {
     const scheduledAt = Number(controller && controller.scheduledTime);
@@ -21,10 +22,10 @@ export async function scheduled(controller, env) {
 }
 
 const worker = {
-    async fetch(request, env) {
+    async fetch(request, env, ctx) {
         const url = new URL(request.url);
         if (url.pathname.startsWith('/api/rankings/')) {
-            return handleRankingsRequest(request, env);
+            return fetchWithRankingsCache(request, env, ctx, handleRankingsRequest);
         }
         return env.ASSETS.fetch(request);
     },
