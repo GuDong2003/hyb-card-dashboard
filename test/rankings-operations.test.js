@@ -20,7 +20,8 @@ import {
 } from '../scripts/migrate-card-rankings-compact.mjs';
 import {
   parseCompactVerifyArgs,
-  verifyWranglerArgs
+  verifyWranglerArgs,
+  sameUserSamples
 } from '../scripts/verify-card-rankings-compact.mjs';
 import { readFile } from 'node:fs/promises';
 
@@ -116,6 +117,17 @@ test('compact verification is bounded and read-only', () => {
   assert.equal(args.targetDatabase, 'new');
   assert.equal(args.userId, 'u-1');
   const command = verifyWranglerArgs('new', 'remote', 'SELECT 1');
-  assert.deepEqual(command.slice(0, 6), ['wrangler', 'd1', 'execute', 'new', '--remote', '--json']);
+  assert.deepEqual(command.slice(0, 7), ['wrangler', 'd1', 'execute', 'new', '--remote', '--yes', '--json']);
   assert.doesNotMatch(command.join(' '), /delete|drop|reset/i);
+});
+
+test('compact verification includes user sample mismatches in the result', () => {
+  assert.equal(sameUserSamples(
+    [{ day_start_at: 1, epic_total_value: 10 }],
+    [{ day_start_at: 1, epic_total_value: 11 }]
+  ), false);
+  assert.equal(sameUserSamples(
+    [{ day_start_at: 1, epic_total_value: 10 }],
+    [{ day_start_at: 1, epic_total_value: 10 }]
+  ), true);
 });

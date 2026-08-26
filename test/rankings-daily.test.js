@@ -151,7 +151,9 @@ class CompactMaintenanceDb {
     const normalized = sql.replace(/\s+/g, ' ').trim().toLowerCase();
     this.queries.push({ sql: normalized, params: [...params] });
     if (normalized.startsWith('update rank_user_current')) {
-      const [legend, spend, pulls, sets, probability, seasonId, userId] = params;
+      const [legend, spend, pulls, sets, probability,
+        todayPulls, todayProbability, weekPulls, weekProbability, monthPulls, monthProbability,
+        seasonId, userId] = params;
       const row = this.current.find((item) => item.season_id === seasonId && item.user_id === userId);
       if (!row) return { success: true, meta: { changes: 0 } };
       Object.assign(row, {
@@ -159,7 +161,13 @@ class CompactMaintenanceDb {
         sort_spend_usd: spend,
         sort_estimated_pulls: pulls,
         sort_exchange_count: sets,
-        sort_probability: probability
+        sort_probability: probability,
+        sort_today_estimated_pulls: todayPulls,
+        sort_today_probability: todayProbability,
+        sort_week_estimated_pulls: weekPulls,
+        sort_week_probability: weekProbability,
+        sort_month_estimated_pulls: monthPulls,
+        sort_month_probability: monthProbability
       });
       return { success: true, meta: { changes: 1 } };
     }
@@ -217,7 +225,7 @@ test('scheduled maintenance never queries legacy ranking tables', async () => {
   const row = {
     season_id: 's1',
     user_id: 'u1',
-    spend_total_value: 500_000,
+    spend_total_value: 500_000_000_000,
     epic_total_value: 10,
     sets_total_value: 3,
     is_vip: 0,
@@ -229,13 +237,17 @@ test('scheduled maintenance never queries legacy ranking tables', async () => {
     sort_probability: null
   };
   const db = new CompactMaintenanceDb([row]);
-  const result = await scheduled({ scheduledTime: Date.parse('2026-08-25T04:05:00+08:00') }, { RANKINGS_DB: db });
+  const maintenanceAt = Date.parse('2026-08-25T04:05:00+08:00');
+  const result = await scheduled({ scheduledTime: maintenanceAt }, { RANKINGS_DB: db });
   assert.equal(result.usersScanned, 1);
   assert.ok(db.queries.some(({ sql }) => /from rank_user_current/i.test(sql)));
   assert.equal(db.queries.some(({ sql }) => /rank_snapshots|rank_entries|rank_daily_metrics|raw_json/i.test(sql)), false);
   assert.deepEqual(
     [db.current[0].sort_legend_value, db.current[0].sort_spend_usd, db.current[0].sort_estimated_pulls, db.current[0].sort_exchange_count, db.current[0].sort_probability],
-    Object.values(currentSortValues(db.current[0], db.current[0].last_observed_at))
+    (() => {
+      const values = currentSortValues(db.current[0], maintenanceAt);
+      return [values.sort_legend_value, values.sort_spend_usd, values.sort_estimated_pulls, values.sort_exchange_count, values.sort_probability];
+    })()
   );
 });
 

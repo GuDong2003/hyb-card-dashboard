@@ -179,10 +179,12 @@ async function getLeaderboard(url, env) {
   const limit = parsePageLimit(url.searchParams.get('limit'));
   const sort = board === 'users' ? normalizeUserSort(url.searchParams.get('sort')) : board === 'luck' ? 'probability' : 'legend';
   const direction = normalizeDirection(url.searchParams.get('direction'), sort === 'user' ? 'asc' : 'desc');
+  const query = String(url.searchParams.get('q') || '').trim().slice(0, 128);
   const cursorResult = decodeCurrentCursor(url.searchParams.get('cursor'), sort, direction, {
     seasonId: season.season_id,
     board,
-    period
+    period,
+    query
   });
   if (cursorResult.error) return jsonResponse({ ok: false, error: cursorResult.error }, 400);
 
@@ -193,10 +195,11 @@ async function getLeaderboard(url, env) {
     sort,
     direction,
     limit,
+    q: query,
     cursor: cursorResult.cursor
   });
   const capturedAt = Number(season.last_observed_at);
-  const rows = page.rows.map((row, index) => buildLeaderboardRow(row, board, period, index + 1, capturedAt));
+  const rows = page.rows.map((row, index) => buildLeaderboardRow(row, board, period, Number(row.current_rank) || index + 1, capturedAt));
   return jsonResponse({
     ok: true,
     board,
@@ -333,6 +336,7 @@ async function getUsers(url, env) {
 async function getEvents(url, env) {
   const board = String(url.searchParams.get('board') || 'epic').trim();
   if (!BOARD_GROUPS.has(board)) return jsonResponse({ ok: false, error: 'invalid_board' }, 400);
+  if (board === 'users') return jsonResponse({ ok: false, error: 'invalid_event_board' }, 400);
   const season = await latestSeason(env);
   if (!season) return jsonResponse({ ok: true, board, mode: 'daily', since: 0, until: 0, events: [] }, 200, CACHE_HEADERS.events);
   const range = parseBoundedRange(url, Number(season.last_observed_at), EVENTS_DEFAULT_WINDOW_MS);
@@ -579,10 +583,19 @@ function parseBoundedRange(url, latestCapturedAt, defaultWindowMs) {
   if (parsedSince.error) return parsedSince;
   if (parsedUntil.error) return parsedUntil;
   const latest = Number(latestCapturedAt);
-  const until = Math.min(parsedUntil.value == null ? latest : parsedUntil.value, latest);
-  let since = parsedSince.value == null ? Math.max(0, until - defaultWindowMs) : parsedSince.value;
+  const latestDayStartAt = dayStartAtForCapturedAt(latest);
+  if (latestDayStartAt == null) return { error: 'invalid_history_range' };
+  const rawUntil = Math.min(parsedUntil.value == null ? latestDayStartAt : parsedUntil.value, latest);
+  const until = dayStartAtForCapturedAt(rawUntil);
+  if (until == null) return { error: 'invalid_history_range' };
+  const defaultDays = Math.max(1, Math.round(defaultWindowMs / DAY_MS));
+  let since = parsedSince.value == null
+    ? until - (defaultDays - 1) * DAY_MS
+    : dayStartAtForCapturedAt(parsedSince.value);
+  if (since == null) return { error: 'invalid_history_range' };
   if (since > until) return { error: 'invalid_history_range' };
-  if (until - since > HISTORY_MAX_WINDOW_MS) since = until - HISTORY_MAX_WINDOW_MS;
+  const maxDays = Math.max(1, Math.round(HISTORY_MAX_WINDOW_MS / DAY_MS));
+  if (until - since > (maxDays - 1) * DAY_MS) since = until - (maxDays - 1) * DAY_MS;
   return { since, until };
 }
 

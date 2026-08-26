@@ -40,6 +40,17 @@ test('accepts friends scope while preserving the source scope', () => {
   assert.equal(result.scope, 'friends');
 });
 
+test('rejects a leaderboard payload over the per-board row limit', () => {
+  const result = normalizeLeaderboardSnapshot({
+    season: { id: 'season-large', name: 'Large' },
+    scope: 'global',
+    leaderboards: { epic_total: Array.from({ length: 1001 }, (_, index) => row({ userId: `u-${index}`, rank: index + 1 })) },
+    capturedAt: 1785922892568
+  }, 1785922892568);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'too_many_rows');
+});
+
 test('normalizes a legacy snapshot and a multi-source snapshot bundle', () => {
   const global = {
     season: { id: 'season-bundle', name: 'Bundle 测试' },

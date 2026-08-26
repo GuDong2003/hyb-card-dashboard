@@ -15,6 +15,14 @@ const CUMULATIVE_BOARD_KEYS = new Set(
 );
 const SOURCE_ORDER = Object.freeze(['global', 'friends']);
 const SOURCE_ORDER_SET = new Set(SOURCE_ORDER);
+const DERIVED_PERIODS = Object.freeze(['today', 'week', 'month']);
+const DERIVED_SORT_COLUMNS = Object.freeze([
+  'sort_legend_value', 'sort_spend_usd', 'sort_estimated_pulls',
+  'sort_exchange_count', 'sort_probability',
+  ...DERIVED_PERIODS.flatMap((period) => [
+    `sort_${period}_estimated_pulls`, `sort_${period}_probability`
+  ])
+]);
 
 export const USER_DAY_COLUMNS = Object.freeze([
   'season_id', 'day_start_at', 'user_id', 'user_name', 'avatar_url', 'is_vip',
@@ -31,8 +39,7 @@ export const USER_CURRENT_COLUMNS = Object.freeze([
   ...COMPACT_BOARD_KEYS.flatMap((boardKey) => [
     `${boardKey}_value`, `${boardKey}_rank`, `${boardKey}_observed_at`
   ]),
-  'sort_legend_value', 'sort_spend_usd', 'sort_estimated_pulls',
-  'sort_exchange_count', 'sort_probability'
+  ...DERIVED_SORT_COLUMNS
 ]);
 
 export function mergeMetricField(existing, incoming, cumulative = false) {
@@ -174,13 +181,27 @@ export function currentSortValues(row = {}, capturedAt = Date.now()) {
     capturedAt,
     period: 'total'
   });
-  return {
+  const result = {
     sort_legend_value: epicTotal,
     sort_spend_usd: estimate.spendUsd,
     sort_estimated_pulls: estimate.estimatedPulls,
     sort_exchange_count: exchangeCount,
     sort_probability: probability
   };
+  for (const period of DERIVED_PERIODS) {
+    const periodEpic = numericOrNull(row[`epic_${period}_value`]);
+    const periodSpend = numericOrNull(row[`spend_${period}_value`]);
+    const periodEstimate = estimatePullsFromSpend(periodSpend, isVip, { capturedAt, period });
+    result[`sort_${period}_estimated_pulls`] = periodEstimate.estimatedPulls;
+    result[`sort_${period}_probability`] = estimateLegendProbability({
+      epicTotal: periodEpic,
+      spendValue: periodSpend,
+      isVip,
+      capturedAt,
+      period
+    });
+  }
+  return result;
 }
 
 export function encodeCurrentCursor(sort, direction, row, context = {}) {
@@ -191,6 +212,8 @@ export function encodeCurrentCursor(sort, direction, row, context = {}) {
     period: String(context.period || 'total'),
     sort: String(sort || 'legend'),
     direction: direction === 'asc' ? 'asc' : 'desc',
+    query: String(context.query || ''),
+    rank: Math.max(0, Math.floor(Number(context.rank) || 0)),
     nullRank: rawValue == null ? 1 : 0,
     value: rawValue == null ? null : rawValue,
     userId: String(row.user_id || '')
@@ -208,6 +231,9 @@ export function decodeCurrentCursor(value, sort, direction, context = {}) {
       || cursor.period !== String(context.period || 'total')
       || cursor.sort !== String(sort || 'legend')
       || cursor.direction !== (direction === 'asc' ? 'asc' : 'desc')
+      || cursor.query !== String(context.query || '')
+      || !Number.isFinite(Number(cursor.rank))
+      || Number(cursor.rank) < 0
       || !String(cursor.userId || '')
       || ![0, 1].includes(Number(cursor.nullRank))) {
       return { error: 'invalid_cursor' };
@@ -228,18 +254,19 @@ export async function queryCurrentBoard(db, options = {}) {
   const sortColumn = currentSortColumn(board, period, sort);
   const nullRank = `CASE WHEN ${sortColumn} IS NULL THEN 1 ELSE 0 END`;
   const params = [seasonId];
-  const where = ['r.season_id = ?'];
+  const baseWhere = ['r.season_id = ?'];
 
   if (Array.isArray(options.ids) && options.ids.length) {
     const ids = options.ids.map((id) => String(id || '').trim()).filter(Boolean).slice(0, 20);
-    where.push(`r.user_id IN (${ids.map(() => '?').join(', ')})`);
+    baseWhere.push(`r.user_id IN (${ids.map(() => '?').join(', ')})`);
     params.push(...ids);
   } else if (String(options.q || '').trim()) {
-    const pattern = `%${escapeLikePattern(String(options.q).trim())}%`;
-    where.push(`(r.user_id COLLATE NOCASE LIKE ? ESCAPE '\\' OR r.user_name COLLATE NOCASE LIKE ? ESCAPE '\\')`);
+    const pattern = `%${escapeLikePattern(String(options.q).trim().slice(0, 128))}%`;
+    baseWhere.push(`(r.user_id COLLATE NOCASE LIKE ? ESCAPE '\\' OR r.user_name COLLATE NOCASE LIKE ? ESCAPE '\\')`);
     params.push(pattern, pattern);
   }
 
+  const where = [...baseWhere];
   if (options.cursor) {
     const cursor = options.cursor;
     const cursorNullRank = Number(cursor.nullRank);
@@ -266,11 +293,13 @@ export async function queryCurrentBoard(db, options = {}) {
   `).bind(...params, limit + 1).all();
   const rows = result.results || [];
   const pageRows = rows.slice(0, limit);
+  const rankOffset = options.cursor ? Math.floor(Number(options.cursor.rank) || 0) : 0;
+  const rankedPageRows = pageRows.map((row, index) => ({ ...row, current_rank: rankOffset + index + 1 }));
   return {
-    rows: pageRows,
+    rows: rankedPageRows,
     hasMore: rows.length > limit,
-    nextCursor: rows.length > limit && pageRows.length
-      ? encodeCurrentCursor(sort, direction, pageRows[pageRows.length - 1], { seasonId, board, period })
+    nextCursor: rows.length > limit && rankedPageRows.length
+      ? encodeCurrentCursor(sort, direction, rankedPageRows[rankedPageRows.length - 1], { seasonId, board, period, query: String(options.q || '').trim().slice(0, 128), rank: rankOffset + rankedPageRows.length })
       : null
   };
 }
@@ -289,14 +318,14 @@ function currentSortColumn(board, period, sort) {
     return sort === 'user'
       ? 'r.user_name COLLATE NOCASE'
       : sort === 'spend'
-        ? 'r.sort_spend_usd'
+        ? `r.spend_${period}_value`
         : sort === 'pulls'
-          ? 'r.sort_estimated_pulls'
+          ? period === 'total' ? 'r.sort_estimated_pulls' : `r.sort_${period}_estimated_pulls`
           : sort === 'sets'
-            ? 'r.sort_exchange_count'
+            ? `r.sets_${period}_value`
             : sort === 'probability'
-              ? 'r.sort_probability'
-              : 'r.sort_legend_value';
+              ? period === 'total' ? 'r.sort_probability' : `r.sort_${period}_probability`
+              : `r.epic_${period}_value`;
   }
   if (board === 'luck') return 'r.sort_probability';
   if (!['epic', 'spend', 'sets'].includes(board) || !['today', 'week', 'month', 'total'].includes(period)) {
@@ -308,11 +337,11 @@ function currentSortColumn(board, period, sort) {
 function currentSortValue(row, board, period, sort) {
   if (board === 'users') {
     if (sort === 'user') return String(row.user_name || '');
-    if (sort === 'spend') return row.sort_spend_usd;
-    if (sort === 'pulls') return row.sort_estimated_pulls;
-    if (sort === 'sets') return row.sort_exchange_count;
-    if (sort === 'probability') return row.sort_probability;
-    return row.sort_legend_value;
+    if (sort === 'spend') return row[`spend_${period}_value`];
+    if (sort === 'pulls') return period === 'total' ? row.sort_estimated_pulls : row[`sort_${period}_estimated_pulls`];
+    if (sort === 'sets') return row[`sets_${period}_value`];
+    if (sort === 'probability') return period === 'total' ? row.sort_probability : row[`sort_${period}_probability`];
+    return row[`epic_${period}_value`];
   }
   if (board === 'luck') return row.sort_probability;
   return row[`${board}_${period}_value`];
@@ -452,11 +481,13 @@ function buildUpsertSql(tableName, columns, currentTable) {
   const insertColumns = columns.join(', ');
   const placeholders = columns.map(() => '?').join(', ');
   const updates = [];
-  updates.push('user_name = CASE WHEN excluded.user_name <> \'\' THEN excluded.user_name ELSE ' + tableName + '.user_name END');
-  updates.push('avatar_url = CASE WHEN excluded.avatar_url <> \'\' THEN excluded.avatar_url ELSE ' + tableName + '.avatar_url END');
+  const profileObservedColumn = currentTable ? 'last_observed_at' : 'observed_at';
+  const profileIsNewer = `excluded.${profileObservedColumn} >= ${tableName}.${profileObservedColumn}`;
+  updates.push(`user_name = CASE WHEN excluded.user_name <> '' AND ${profileIsNewer} THEN excluded.user_name ELSE ${tableName}.user_name END`);
+  updates.push(`avatar_url = CASE WHEN excluded.avatar_url <> '' AND ${profileIsNewer} THEN excluded.avatar_url ELSE ${tableName}.avatar_url END`);
   updates.push('is_vip = MAX(' + tableName + '.is_vip, excluded.is_vip)');
-  updates.push('active_name_decoration = COALESCE(excluded.active_name_decoration, ' + tableName + '.active_name_decoration)');
-  updates.push('name_display_preference = COALESCE(excluded.name_display_preference, ' + tableName + '.name_display_preference)');
+  updates.push(`active_name_decoration = CASE WHEN excluded.active_name_decoration IS NOT NULL AND ${profileIsNewer} THEN excluded.active_name_decoration ELSE ${tableName}.active_name_decoration END`);
+  updates.push(`name_display_preference = CASE WHEN excluded.name_display_preference IS NOT NULL AND ${profileIsNewer} THEN excluded.name_display_preference ELSE ${tableName}.name_display_preference END`);
   updates.push('source_scopes = ' + mergedScopesSql(tableName));
 
   if (currentTable) {
@@ -481,7 +512,7 @@ function buildUpsertSql(tableName, columns, currentTable) {
     if (cumulative) {
       updates.push(`${valueColumn} = CASE WHEN ${cumulativeValueChanged} THEN excluded.${valueColumn} ELSE ${tableName}.${valueColumn} END`);
       updates.push(`${rankColumn} = CASE WHEN ${newer} THEN excluded.${rankColumn} ELSE ${tableName}.${rankColumn} END`);
-      updates.push(`${observedColumn} = CASE WHEN ${metricChanged} THEN MAX(${tableName}.${observedColumn}, excluded.${observedColumn}) ELSE ${tableName}.${observedColumn} END`);
+      updates.push(`${observedColumn} = CASE WHEN ${metricChanged} THEN CASE WHEN ${tableName}.${observedColumn} IS NULL THEN excluded.${observedColumn} WHEN excluded.${observedColumn} IS NULL THEN ${tableName}.${observedColumn} ELSE MAX(${tableName}.${observedColumn}, excluded.${observedColumn}) END ELSE ${tableName}.${observedColumn} END`);
     } else {
       updates.push(`${valueColumn} = CASE WHEN ${newer} THEN excluded.${valueColumn} ELSE ${tableName}.${valueColumn} END`);
       updates.push(`${rankColumn} = CASE WHEN ${newer} THEN excluded.${rankColumn} ELSE ${tableName}.${rankColumn} END`);
@@ -490,7 +521,7 @@ function buildUpsertSql(tableName, columns, currentTable) {
   }
 
   if (currentTable) {
-    for (const column of ['sort_legend_value', 'sort_spend_usd', 'sort_estimated_pulls', 'sort_exchange_count', 'sort_probability']) {
+    for (const column of DERIVED_SORT_COLUMNS) {
       updates.push(`${column} = COALESCE(excluded.${column}, ${tableName}.${column})`);
     }
   }
@@ -503,11 +534,11 @@ WHERE ${meaningfulChangeSql(tableName, columns, currentTable)}`;
 
 function meaningfulChangeSql(tableName, columns, currentTable) {
   const checks = [
-    `(excluded.user_name <> '' AND excluded.user_name <> ${tableName}.user_name)`,
-    `(excluded.avatar_url <> '' AND excluded.avatar_url <> ${tableName}.avatar_url)`,
+    `(excluded.user_name <> '' AND excluded.user_name <> ${tableName}.user_name AND excluded.${currentTable ? 'last_observed_at' : 'observed_at'} >= ${tableName}.${currentTable ? 'last_observed_at' : 'observed_at'})`,
+    `(excluded.avatar_url <> '' AND excluded.avatar_url <> ${tableName}.avatar_url AND excluded.${currentTable ? 'last_observed_at' : 'observed_at'} >= ${tableName}.${currentTable ? 'last_observed_at' : 'observed_at'})`,
     `(excluded.is_vip > ${tableName}.is_vip)`,
-    `(excluded.active_name_decoration IS NOT NULL AND excluded.active_name_decoration IS NOT ${tableName}.active_name_decoration)`,
-    `(excluded.name_display_preference IS NOT NULL AND excluded.name_display_preference IS NOT ${tableName}.name_display_preference)`,
+    `(excluded.active_name_decoration IS NOT NULL AND excluded.active_name_decoration IS NOT ${tableName}.active_name_decoration AND excluded.${currentTable ? 'last_observed_at' : 'observed_at'} >= ${tableName}.${currentTable ? 'last_observed_at' : 'observed_at'})`,
+    `(excluded.name_display_preference IS NOT NULL AND excluded.name_display_preference IS NOT ${tableName}.name_display_preference AND excluded.${currentTable ? 'last_observed_at' : 'observed_at'} >= ${tableName}.${currentTable ? 'last_observed_at' : 'observed_at'})`,
     `(excluded.source_scopes <> ${tableName}.source_scopes)`
   ];
   for (const boardKey of COMPACT_BOARD_KEYS) {
@@ -520,7 +551,7 @@ function meaningfulChangeSql(tableName, columns, currentTable) {
     checks.push(`(excluded.${rankColumn} IS NOT NULL AND excluded.${rankColumn} <> ${tableName}.${rankColumn} AND excluded.${observedColumn} IS NOT NULL AND (${existingObserved} IS NULL OR excluded.${observedColumn} >= ${existingObserved}))`);
   }
   if (currentTable) {
-    for (const column of ['sort_legend_value', 'sort_spend_usd', 'sort_estimated_pulls', 'sort_exchange_count', 'sort_probability']) {
+    for (const column of DERIVED_SORT_COLUMNS) {
       checks.push(`(excluded.${column} IS NOT NULL AND (${tableName}.${column} IS NULL OR excluded.${column} <> ${tableName}.${column}))`);
     }
   }

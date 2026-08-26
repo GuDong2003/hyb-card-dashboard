@@ -121,6 +121,12 @@ CREATE TABLE IF NOT EXISTS rank_user_current (
   sort_estimated_pulls REAL,
   sort_exchange_count REAL,
   sort_probability REAL,
+  sort_today_estimated_pulls REAL,
+  sort_today_probability REAL,
+  sort_week_estimated_pulls REAL,
+  sort_week_probability REAL,
+  sort_month_estimated_pulls REAL,
+  sort_month_probability REAL,
   PRIMARY KEY (season_id, user_id)
 );
 
@@ -136,5 +142,17 @@ CREATE INDEX IF NOT EXISTS idx_rank_user_current_sets
   ON rank_user_current (season_id, sort_exchange_count DESC, user_id);
 CREATE INDEX IF NOT EXISTS idx_rank_user_current_probability
   ON rank_user_current (season_id, sort_probability DESC, user_id);
+CREATE INDEX IF NOT EXISTS idx_rank_user_current_today_pulls
+  ON rank_user_current (season_id, sort_today_estimated_pulls DESC, user_id);
+CREATE INDEX IF NOT EXISTS idx_rank_user_current_today_probability
+  ON rank_user_current (season_id, sort_today_probability DESC, user_id);
+CREATE INDEX IF NOT EXISTS idx_rank_user_current_week_pulls
+  ON rank_user_current (season_id, sort_week_estimated_pulls DESC, user_id);
+CREATE INDEX IF NOT EXISTS idx_rank_user_current_week_probability
+  ON rank_user_current (season_id, sort_week_probability DESC, user_id);
+CREATE INDEX IF NOT EXISTS idx_rank_user_current_month_pulls
+  ON rank_user_current (season_id, sort_month_estimated_pulls DESC, user_id);
+CREATE INDEX IF NOT EXISTS idx_rank_user_current_month_probability
+  ON rank_user_current (season_id, sort_month_probability DESC, user_id);
 CREATE INDEX IF NOT EXISTS idx_rank_user_current_name
   ON rank_user_current (season_id, user_name COLLATE NOCASE, user_id);

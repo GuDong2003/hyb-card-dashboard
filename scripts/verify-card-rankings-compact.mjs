@@ -47,7 +47,7 @@ export function parseCompactVerifyArgs(argv = []) {
 
 export function verifyWranglerArgs(database, target, command) {
   const targetFlag = target === 'remote' ? '--remote' : '--local';
-  return ['wrangler', 'd1', 'execute', String(database), targetFlag, '--json', `--command=${command}`];
+  return ['wrangler', 'd1', 'execute', String(database), targetFlag, '--yes', '--json', `--command=${command}`];
 }
 
 export async function runCompactVerification(options, run = runCommand) {
@@ -73,9 +73,15 @@ export async function runCompactVerification(options, run = runCommand) {
       legacyObjects: schema.filter((row) => /rank_snapshots|rank_entries|rank_user_metrics|rank_daily_metrics|raw_json|fingerprint/i.test(`${row.name || ''} ${row.sql || ''}`)),
       matches: !schema.some((row) => /rank_snapshots|rank_entries|rank_user_metrics|rank_daily_metrics|raw_json|fingerprint/i.test(`${row.name || ''} ${row.sql || ''}`))
     },
-    userSample
+    userSample: userSample
+      ? { ...userSample, matches: sameUserSamples(userSample.old, userSample.new) }
+      : null
   };
-  report.matches = report.seasons.matches && report.dailyUserCounts.matches && report.currentUsers.matches && report.schema.matches;
+  report.matches = report.seasons.matches
+    && report.dailyUserCounts.matches
+    && report.currentUsers.matches
+    && report.schema.matches
+    && (!report.userSample || report.userSample.matches);
   return report;
 }
 
@@ -114,13 +120,33 @@ export function buildCompactDailyCountQuery(fromDay, untilDay) {
 
 function buildUserSampleQuery(fromDay, untilDay, userId) {
   return `
+    WITH candidates AS (
+      SELECT day_start_at, board_key, value, rank, snapshot_id, captured_at
+      FROM rank_daily_metrics
+      WHERE user_id = '${sqlString(userId)}'
+        AND day_start_at >= ${fromDay} AND day_start_at < ${untilDay}
+      UNION ALL
+      SELECT
+        CAST((s.captured_at - ${DAY_BOUNDARY_OFFSET_MS}) / ${DAY_MS} AS INTEGER) * ${DAY_MS} + ${DAY_BOUNDARY_OFFSET_MS} AS day_start_at,
+        e.board_key, e.value, e.rank, s.id AS snapshot_id, s.captured_at
+      FROM rank_entries e
+      JOIN rank_snapshots s ON s.id = e.snapshot_id
+      WHERE s.accepted = 1 AND e.user_id = '${sqlString(userId)}'
+        AND s.captured_at >= ${fromDay} AND s.captured_at < ${untilDay}
+    ), ranked AS (
+      SELECT candidates.*,
+        ROW_NUMBER() OVER (
+          PARTITION BY day_start_at, board_key
+          ORDER BY captured_at DESC, value DESC, rank ASC, snapshot_id DESC
+        ) AS day_order
+      FROM candidates
+    )
     SELECT day_start_at,
       MAX(CASE WHEN board_key = 'epic_total' THEN value END) AS epic_total_value,
       MAX(CASE WHEN board_key = 'spend_total' THEN value END) AS spend_total_value,
       MAX(CASE WHEN board_key = 'sets_total' THEN value END) AS sets_total_value
-    FROM rank_daily_metrics
-    WHERE user_id = '${sqlString(userId)}'
-      AND day_start_at >= ${fromDay} AND day_start_at < ${untilDay}
+    FROM ranked
+    WHERE day_order = 1
     GROUP BY day_start_at
     ORDER BY day_start_at
   `;
@@ -158,6 +184,16 @@ function sameCounts(oldRows, newRows, valueColumn = 'user_count') {
   if (left.size !== right.size) return false;
   for (const [key, value] of left) if (right.get(key) !== value) return false;
   return true;
+}
+
+export function sameUserSamples(oldRows = [], newRows = []) {
+  const normalize = (rows) => rows.map((row) => ({
+    day_start_at: Number(row.day_start_at || 0),
+    epic_total_value: row.epic_total_value == null ? null : Number(row.epic_total_value),
+    spend_total_value: row.spend_total_value == null ? null : Number(row.spend_total_value),
+    sets_total_value: row.sets_total_value == null ? null : Number(row.sets_total_value)
+  })).sort((left, right) => left.day_start_at - right.day_start_at);
+  return JSON.stringify(normalize(oldRows)) === JSON.stringify(normalize(newRows));
 }
 
 function rowsFrom(value) {

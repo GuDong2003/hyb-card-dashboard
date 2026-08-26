@@ -15,6 +15,8 @@ import {
   dayStartAtForCapturedAt
 } from '../src/rankings-daily.js';
 
+const MIGRATION_WRITE_BATCH_SIZE = 50;
+
 const LEGACY_SEASONS_QUERY = `
   SELECT season_id, MAX(season_name) AS season_name,
     MAX(captured_at) AS last_observed_at,
@@ -266,7 +268,7 @@ function emptyCurrentRow(seasonId, userId) {
 }
 
 async function writeRows(database, target, tableName, rows, keyColumns, updateColumns, run) {
-  for (const chunk of chunks(rows, 25)) {
+  for (const chunk of chunks(rows, MIGRATION_WRITE_BATCH_SIZE)) {
     if (!chunk.length) continue;
     const sql = buildInsertSql(tableName, keyColumns, updateColumns, chunk);
     const result = await runD1Command(database, target, sql, run);
@@ -289,7 +291,7 @@ async function runD1Query(database, target, sql, run) {
 
 async function runD1Command(database, target, sql, run, json = false) {
   const targetFlag = target === 'remote' ? '--remote' : '--local';
-  const args = ['wrangler', 'd1', 'execute', String(database), targetFlag];
+  const args = ['wrangler', 'd1', 'execute', String(database), targetFlag, '--yes'];
   if (json) args.push('--json');
   args.push(`--command=${sql}`);
   return run('npx', args, { stdio: ['inherit', 'pipe', 'pipe'] });

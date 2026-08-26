@@ -269,10 +269,33 @@ test('history reads only one user day row per requested day', async () => {
   assert.doesNotMatch(environment.RANKINGS_DB.queries.at(-1).sql, /rank_snapshots|rank_entries|raw_json/i);
 });
 
+test('history default range aligns to Beijing day boundaries', async () => {
+  const environment = compactEnv();
+  seedHistory(environment, 1);
+  const latest = Date.parse('2026-08-25T03:30:00+08:00');
+  environment.RANKINGS_DB.run(
+    `UPDATE rank_seasons SET last_observed_at = ?, updated_at = ? WHERE season_id = 'season-1'`,
+    [latest, latest]
+  );
+  const response = await handleRankingsRequest(new Request('https://card.test/api/rankings/history?userId=u-1&limit=1'), environment);
+  assert.equal(response.status, 200);
+  const query = environment.RANKINGS_DB.queries.find(({ sql }) => /from rank_user_days/i.test(sql));
+  assert.equal(query.params[2], Date.parse('2026-07-26T04:00:00+08:00'));
+  assert.equal(query.params[3], Date.parse('2026-08-24T04:00:00+08:00'));
+});
+
 test('history rejects the removed snapshot mode', async () => {
   const environment = compactEnv();
   seedHistory(environment, 1);
   const response = await handleRankingsRequest(new Request('https://card.test/api/rankings/history?userId=u-1&mode=snapshot'), environment);
   assert.equal(response.status, 400);
   assert.equal((await response.json()).error, 'invalid_history_mode');
+});
+
+test('events reject the users overview board instead of querying a missing column', async () => {
+  const environment = compactEnv();
+  seedHistory(environment, 1);
+  const response = await handleRankingsRequest(new Request('https://card.test/api/rankings/events?board=users'), environment);
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error, 'invalid_event_board');
 });

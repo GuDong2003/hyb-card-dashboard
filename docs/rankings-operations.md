@@ -28,9 +28,11 @@ Card Dashboard 页面
 
 ```bash
 npx wrangler d1 create hyb-card-rankings-v2-db
-npx wrangler d1 execute hyb-card-rankings-v2-db --remote \
+npx wrangler d1 execute hyb-card-rankings-v2-db --remote --yes \
   --file=migrations-v2/0001_compact_rankings.sql
-npx wrangler d1 execute hyb-card-rankings-v2-db --remote \
+npx wrangler d1 execute hyb-card-rankings-v2-db --remote --yes \
+  --file=migrations-v2/0002_period_sort_fields.sql
+npx wrangler d1 execute hyb-card-rankings-v2-db --remote --yes \
   --command="SELECT type, name FROM sqlite_master ORDER BY type, name"
 ```
 
@@ -106,7 +108,7 @@ git diff --check
 远程切换顺序：
 
 1. 备份旧库并确认 manifest 可复算；
-2. 创建新 D1、应用 `migrations-v2/0001_compact_rankings.sql`；
+2. 创建新 D1、应用 `migrations-v2/0001_compact_rankings.sql` 和 `0002_period_sort_fields.sql`；
 3. 按日迁移并运行只读校验；
 4. 仅在校验通过后修改 `wrangler.jsonc` 的 `RANKINGS_DB.database_id`；
 5. 重新跑测试/构建，push 并部署；

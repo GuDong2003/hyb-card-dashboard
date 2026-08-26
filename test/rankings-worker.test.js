@@ -153,6 +153,49 @@ test('user search and targeted ids read only current rows', async () => {
   assert.equal(environment.RANKINGS_DB.queries.some(({ sql }) => /rank_snapshots|rank_entries|rank_user_metrics|rank_daily_metrics|raw_json|fingerprint/.test(sql)), false);
 });
 
+test('leaderboard search filters the requested page before pagination', async () => {
+  const environment = env();
+  seedSeason(environment);
+  seedUser(environment, 'alice-1', 'Alice');
+  seedUser(environment, 'bob-1', 'Bob');
+  const response = await handleRankingsRequest(new Request('https://card.test/api/rankings/leaderboard?sort=user&direction=asc&q=alice&limit=20'), environment);
+  assert.deepEqual((await response.json()).rows.map((row) => row.userId), ['alice-1']);
+});
+
+test('leaderboard page ranks continue across a keyset cursor', async () => {
+  const environment = env();
+  seedSeason(environment);
+  seedUser(environment, 'alice-1', 'Alice');
+  seedUser(environment, 'bob-1', 'Bob');
+  seedUser(environment, 'charlie-1', 'Charlie');
+
+  let response = await handleRankingsRequest(new Request('https://card.test/api/rankings/leaderboard?sort=user&direction=asc&limit=1'), environment);
+  let payload = await response.json();
+  assert.equal(payload.rows[0].rank, 1);
+  assert.ok(payload.nextCursor);
+
+  response = await handleRankingsRequest(new Request(`https://card.test/api/rankings/leaderboard?sort=user&direction=asc&limit=1&cursor=${encodeURIComponent(payload.nextCursor)}`), environment);
+  payload = await response.json();
+  assert.equal(payload.rows[0].userId, 'bob-1');
+  assert.equal(payload.rows[0].rank, 2);
+});
+
+test('user leaderboard sorts by the selected period metrics', async () => {
+  const environment = env();
+  seedSeason(environment);
+  seedUser(environment, 'alice-1', 'Alice');
+  seedUser(environment, 'bob-1', 'Bob');
+  environment.RANKINGS_DB.run(`
+    UPDATE rank_user_current
+    SET epic_today_value = CASE user_id WHEN 'alice-1' THEN 1 ELSE 20 END,
+        epic_today_rank = CASE user_id WHEN 'alice-1' THEN 2 ELSE 1 END
+    WHERE season_id = 's1'
+  `, []);
+
+  const response = await handleRankingsRequest(new Request('https://card.test/api/rankings/leaderboard?period=today&sort=legend&limit=20'), environment);
+  assert.deepEqual((await response.json()).rows.map((row) => row.userId), ['bob-1', 'alice-1']);
+});
+
 test('invalid cursor is rejected before current page query', async () => {
   const environment = env();
   seedSeason(environment);

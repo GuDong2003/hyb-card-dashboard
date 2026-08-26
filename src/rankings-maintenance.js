@@ -8,8 +8,14 @@ import {
 export const COMPACT_CURRENT_SELECT_SQL = `
   SELECT season_id, user_id, is_vip, last_observed_at,
     epic_total_value, spend_total_value, sets_total_value,
+    epic_today_value, spend_today_value,
+    epic_week_value, spend_week_value,
+    epic_month_value, spend_month_value,
     sort_legend_value, sort_spend_usd, sort_estimated_pulls,
-    sort_exchange_count, sort_probability
+    sort_exchange_count, sort_probability,
+    sort_today_estimated_pulls, sort_today_probability,
+    sort_week_estimated_pulls, sort_week_probability,
+    sort_month_estimated_pulls, sort_month_probability
   FROM rank_user_current
   ORDER BY season_id ASC, user_id ASC
 `;
@@ -20,7 +26,13 @@ export const COMPACT_SORT_UPDATE_SQL = `
       sort_spend_usd = ?,
       sort_estimated_pulls = ?,
       sort_exchange_count = ?,
-      sort_probability = ?
+      sort_probability = ?,
+      sort_today_estimated_pulls = ?,
+      sort_today_probability = ?,
+      sort_week_estimated_pulls = ?,
+      sort_week_probability = ?,
+      sort_month_estimated_pulls = ?,
+      sort_month_probability = ?
   WHERE season_id = ? AND user_id = ?
 `;
 
@@ -48,7 +60,7 @@ export async function refreshCompactRankings(db, now = Date.now()) {
     const userId = String(row.user_id || '').trim();
     if (!seasonId || !userId) continue;
     seasons.add(seasonId);
-    const sortValues = currentSortValues(row, Number(row.last_observed_at) || capturedAt);
+    const sortValues = currentSortValues(row, capturedAt);
     if (sameSortValues(row, sortValues)) continue;
     updates.push(db.prepare(COMPACT_SORT_UPDATE_SQL).bind(
       sortValues.sort_legend_value,
@@ -56,6 +68,12 @@ export async function refreshCompactRankings(db, now = Date.now()) {
       sortValues.sort_estimated_pulls,
       sortValues.sort_exchange_count,
       sortValues.sort_probability,
+      sortValues.sort_today_estimated_pulls,
+      sortValues.sort_today_probability,
+      sortValues.sort_week_estimated_pulls,
+      sortValues.sort_week_probability,
+      sortValues.sort_month_estimated_pulls,
+      sortValues.sort_month_probability,
       seasonId,
       userId
     ));
@@ -92,7 +110,13 @@ function sameSortValues(row, next) {
     'sort_spend_usd',
     'sort_estimated_pulls',
     'sort_exchange_count',
-    'sort_probability'
+    'sort_probability',
+    'sort_today_estimated_pulls',
+    'sort_today_probability',
+    'sort_week_estimated_pulls',
+    'sort_week_probability',
+    'sort_month_estimated_pulls',
+    'sort_month_probability'
   ].every((column) => sameNullableNumber(row[column], next[column]));
 }
 

@@ -45,7 +45,7 @@ export function backupWranglerArgs(database, outputPath, target = 'remote') {
 
 export function metadataWranglerArgs(database, target, command) {
   const targetFlag = target === 'remote' ? '--remote' : '--local';
-  return ['wrangler', 'd1', 'execute', String(database), targetFlag, '--json', `--command=${command}`];
+  return ['wrangler', 'd1', 'execute', String(database), targetFlag, '--yes', '--json', `--command=${command}`];
 }
 
 export async function createBackup(options, run = runCommand) {

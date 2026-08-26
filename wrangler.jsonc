@@ -11,8 +11,8 @@
   "d1_databases": [
     {
       "binding": "RANKINGS_DB",
-      "database_name": "hyb-card-rankings-db",
-      "database_id": "671fa86c-407b-472f-9bdc-6cf8e2a9a00a"
+      "database_name": "hyb-card-rankings-v2-db",
+      "database_id": "457cdbe7-aac9-411f-9543-1ffb834365b4"
     }
   ],
   "routes": [

@@ -70,6 +70,7 @@ export function normalizeLeaderboardSnapshot(payload, now = Date.now()) {
   const entries = [];
   for (const boardKey of boardKeys) {
     const rows = Array.isArray(leaderboards[boardKey]) ? leaderboards[boardKey] : [];
+    if (rows.length > MAX_ROWS_PER_BOARD) return rejected('too_many_rows');
     for (const rawRow of rows) {
       const normalized = normalizeRow(rawRow);
       if (!normalized) continue;
