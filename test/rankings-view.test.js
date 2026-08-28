@@ -474,6 +474,37 @@ test('trend user search keeps the add-user label on one line', async () => {
   assert.match(css.slice(labelStart, labelEnd), /white-space\s*:\s*nowrap/);
 });
 
+test('trend user name resolves a pinned user outside the current page', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  const helper = extractFunction(source, 'trendUserName');
+  const context = {
+    state: {
+      rows: [{ userId: 'current-user', userName: 'Current User' }],
+      pinnedRows: [{ userId: 'pinned-user', userName: 'Pinned User' }]
+    }
+  };
+
+  vm.runInNewContext(`${helper}\nthis.result = trendUserName('pinned-user');`, context);
+
+  assert.equal(context.result, 'Pinned User');
+});
+
+test('trend user name uses a history row before falling back to the user id', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  const helper = extractFunction(source, 'trendUserName');
+  const context = {
+    state: { rows: [], pinnedRows: [] },
+    payload: {
+      rows: [{ userId: 'history-user', userName: 'History User' }]
+    },
+    record: { userId: 'history-user', userName: 'history-user' }
+  };
+
+  vm.runInNewContext(`${helper}\nthis.result = trendUserName('history-user', payload, record);`, context);
+
+  assert.equal(context.result, 'History User');
+});
+
 test('rankings client accepts a multi-source local bundle before upload', async () => {
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
   assert.match(source, /localSnapshots/);

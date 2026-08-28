@@ -883,12 +883,27 @@
         list.innerHTML = rows.map((row) => `<option value="${escapeHtml(row.userName || row.userId)}">${escapeHtml(row.userId)}</option>`).join('');
     }
 
+    function trendUserName(userId, payload = null, record = null) {
+        const normalizedId = String(userId || '').trim();
+        const loadedRow = [...state.rows, ...state.pinnedRows]
+            .find((row) => row && row.userId === normalizedId && row.userName);
+        const recordName = String(record && record.userName || '').trim();
+        const historyRow = Array.isArray(payload && payload.rows)
+            ? payload.rows.find((row) => row && row.userName)
+            : null;
+        return String(loadedRow && loadedRow.userName
+            || payload && payload.userName
+            || recordName && recordName !== normalizedId && recordName
+            || historyRow && historyRow.userName
+            || normalizedId);
+    }
+
     function trendUserRecord(userId) {
         const row = state.rows.find((item) => item.userId === userId);
         const history = state.trend.histories.get(userId);
         return history || {
             userId,
-            userName: row && row.userName || userId,
+            userName: row && row.userName || trendUserName(userId),
             rows: []
         };
     }
@@ -1078,8 +1093,7 @@
 
     function openTrendModal(userId) {
         state.trend.modalOpen = true;
-        const row = state.rows.find((item) => item.userId === userId);
-        selectTrendUser(userId, row?.userName || userId);
+        selectTrendUser(userId, trendUserName(userId));
         const backdrop = $('#rankingsTrendBackdrop');
         if (backdrop) backdrop.classList.remove('is-hidden');
         document.body.classList.add('modal-open');
@@ -1123,7 +1137,7 @@
         const existingRows = append && Array.isArray(record.rows) ? record.rows : [];
         return {
             userId,
-            userName: state.rows.find((row) => row.userId === userId)?.userName || payload.userName || record.userName || userId,
+            userName: trendUserName(userId, payload, record),
             rows: [...existingRows, ...rows],
             nextCursor: payload.nextCursor || null,
             hasMore: Boolean(payload.hasMore),
