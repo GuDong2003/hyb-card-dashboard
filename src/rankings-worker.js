@@ -5,7 +5,8 @@ import {
 } from './rankings-core.js';
 import {
   DAY_MS,
-  dayStartAtForCapturedAt
+  dayStartAtForCapturedAt,
+  metricPairObservation
 } from './rankings-daily.js';
 import {
   COMPACT_BOARD_KEYS,
@@ -440,11 +441,18 @@ function buildLeaderboardRow(row, board, period, rank, capturedAt) {
   const epicValue = numericOrNull(row[`${epicKey}_value`]);
   const spendValue = numericOrNull(row[`${spendKey}_value`]);
   const setsValue = numericOrNull(row[`${setsKey}_value`]);
+  const pair = metricPairObservation(
+    epicValue,
+    row[`${epicKey}_observed_at`],
+    spendValue,
+    row[`${spendKey}_observed_at`]
+  );
   const estimate = estimatePullsFromSpend(spendValue, Boolean(row.is_vip), { capturedAt, period });
-  const complete = epicValue != null && spendValue != null && estimate.estimateStatus === 'complete_days';
+  const complete = pair.paired && estimate.estimateStatus === 'complete_days';
   const probability = complete
     ? estimateLegendProbability({ epicTotal: epicValue, spendValue, isVip: Boolean(row.is_vip), capturedAt, period })
     : null;
+  const estimateStatus = pair.paired ? estimate.estimateStatus : pair.status;
   const value = numericOrNull(row[`${metricKey}_value`]);
   return {
     snapshotId: null,
@@ -459,12 +467,14 @@ function buildLeaderboardRow(row, board, period, rank, capturedAt) {
     spendValue,
     spendTotal: spendValue,
     spendUsd: estimate.spendUsd,
-    estimatedDays: estimate.estimatedDays,
-    paidPulls: estimate.paidPulls,
-    freePulls: estimate.freePulls,
-    estimatedPulls: estimate.estimatedPulls,
+    estimatedDays: pair.paired ? estimate.estimatedDays : null,
+    paidPulls: pair.paired ? estimate.paidPulls : null,
+    freePulls: pair.paired ? estimate.freePulls : null,
+    estimatedPulls: pair.paired ? estimate.estimatedPulls : null,
     exchangeCount: setsValue,
-    estimateStatus: complete ? estimate.estimateStatus : !spendValue ? 'missing_spend' : !epicValue ? 'missing_epic' : estimate.estimateStatus,
+    estimateStatus,
+    estimateDayStartAt: pair.staleDayStartAt,
+    estimateUsesHistoricalData: pair.staleDayStartAt != null,
     isPartial: !complete || probability == null,
     estimatedLegendProbability: probability,
     previousRank: null,
@@ -483,18 +493,18 @@ function buildUserRow(row, period, rank, capturedAt) {
   const spendValue = numericOrNull(row[`${spendKey}_value`]);
   const exchangeCount = numericOrNull(row[`${setsKey}_value`]);
   const isVip = Boolean(row.is_vip);
+  const pair = metricPairObservation(
+    epicTotal,
+    row[`${epicKey}_observed_at`],
+    spendValue,
+    row[`${spendKey}_observed_at`]
+  );
   const estimate = estimatePullsFromSpend(spendValue, isVip, { capturedAt, period });
-  const hasEpic = epicTotal != null;
-  const hasSpend = spendValue != null;
-  const complete = hasEpic && hasSpend && estimate.estimateStatus === 'complete_days';
+  const complete = pair.paired && estimate.estimateStatus === 'complete_days';
   const probability = complete
     ? estimateLegendProbability({ epicTotal, spendValue, isVip, capturedAt, period })
     : null;
-  const estimateStatus = complete
-    ? estimate.estimateStatus
-    : !hasEpic && !hasSpend
-      ? 'missing_pair'
-      : !hasSpend ? 'missing_spend' : !hasEpic ? 'missing_epic' : estimate.estimateStatus;
+  const estimateStatus = pair.paired ? estimate.estimateStatus : pair.status;
   const spendObservedAt = Number(row[`${spendKey}_observed_at`] || row.last_observed_at || capturedAt);
   return {
     snapshotId: null,
@@ -509,14 +519,14 @@ function buildUserRow(row, period, rank, capturedAt) {
     spendValue,
     spendTotal: spendValue,
     spendUsd: estimate.spendUsd,
-    estimatedDays: estimate.estimatedDays,
-    paidPulls: estimate.paidPulls,
-    freePulls: estimate.freePulls,
-    estimatedPulls: estimate.estimatedPulls,
+    estimatedDays: pair.paired ? estimate.estimatedDays : null,
+    paidPulls: pair.paired ? estimate.paidPulls : null,
+    freePulls: pair.paired ? estimate.freePulls : null,
+    estimatedPulls: pair.paired ? estimate.estimatedPulls : null,
     exchangeCount,
     estimateStatus,
-    estimateDayStartAt: dayStartAtForCapturedAt(spendObservedAt),
-    estimateUsesHistoricalData: false,
+    estimateDayStartAt: pair.staleDayStartAt ?? dayStartAtForCapturedAt(spendObservedAt),
+    estimateUsesHistoricalData: pair.staleDayStartAt != null,
     isPartial: estimateStatus !== 'complete_days' || probability == null,
     estimatedLegendProbability: probability,
     previousRank: null,
@@ -680,6 +690,7 @@ function elapsedSeasonDays(now, capturedAt) {
 }
 
 function numericOrNull(value) {
+  if (value == null || value === '') return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }

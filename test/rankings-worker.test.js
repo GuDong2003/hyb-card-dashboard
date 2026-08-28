@@ -313,6 +313,78 @@ test('leaderboard summary covers all eligible users and stays separate from sear
   assert.equal(searchPayload.summary, null);
 });
 
+test('leaderboard does not combine a current epic total with spend observed on an older day', async () => {
+  const environment = env();
+  const epicObservedAt = Date.parse('2026-08-28T10:00:00+08:00');
+  const spendObservedAt = Date.parse('2026-08-13T10:00:00+08:00');
+  seedSeason(environment, epicObservedAt);
+  seedUser(environment, 'stale-spend', 'Stale Spend');
+  updateCurrentUser(environment, 'stale-spend', {
+    last_observed_at: epicObservedAt,
+    epic_total_value: 227,
+    epic_total_observed_at: epicObservedAt,
+    spend_total_value: 33_000_000_000,
+    spend_total_observed_at: spendObservedAt,
+    sort_spend_usd: 66_000,
+    sort_estimated_pulls: 7_150,
+    sort_probability: 227 / 7_150
+  });
+  const queriesBeforeRead = environment.RANKINGS_DB.queries.length;
+
+  const response = await handleRankingsRequest(new Request(
+    'https://card.test/api/rankings/leaderboard?sort=user&direction=asc&limit=20'
+  ), environment);
+  const payload = await response.json();
+  const row = payload.rows[0];
+
+  assert.equal(response.status, 200);
+  assert.equal(row.epicTotal, 227);
+  assert.equal(row.spendUsd, 66_000);
+  assert.equal(row.estimateStatus, 'missing_current_spend');
+  assert.equal(row.estimateDayStartAt, Date.parse('2026-08-13T04:00:00+08:00'));
+  assert.equal(row.estimateUsesHistoricalData, true);
+  assert.equal(row.paidPulls, null);
+  assert.equal(row.freePulls, null);
+  assert.equal(row.estimatedPulls, null);
+  assert.equal(row.estimatedLegendProbability, null);
+  assert.equal(row.isPartial, true);
+  assert.equal(payload.summary.averageEstimatedPulls, null);
+  assert.equal(payload.summary.averageProbability, null);
+  assert.equal(environment.RANKINGS_DB.queries.length - queriesBeforeRead, 3);
+});
+
+test('leaderboard preserves a missing metric as null instead of converting it to zero', async () => {
+  const environment = env();
+  const observedAt = Date.parse('2026-08-28T10:00:00+08:00');
+  seedSeason(environment, observedAt);
+  seedUser(environment, 'missing-spend', 'Missing Spend');
+  updateCurrentUser(environment, 'missing-spend', {
+    last_observed_at: observedAt,
+    epic_total_value: 12,
+    epic_total_observed_at: observedAt,
+    spend_total_value: null,
+    spend_total_rank: null,
+    spend_total_observed_at: null,
+    sort_spend_usd: null,
+    sort_estimated_pulls: null,
+    sort_probability: null,
+    sets_total_value: 1,
+    sets_total_observed_at: observedAt
+  });
+
+  const response = await handleRankingsRequest(new Request(
+    'https://card.test/api/rankings/leaderboard?sort=user&direction=asc&limit=20'
+  ), environment);
+  const row = (await response.json()).rows[0];
+
+  assert.equal(row.epicTotal, 12);
+  assert.equal(row.spendValue, null);
+  assert.equal(row.spendUsd, null);
+  assert.equal(row.estimateStatus, 'missing_spend');
+  assert.equal(row.estimatedPulls, null);
+  assert.equal(row.estimatedLegendProbability, null);
+});
+
 test('leaderboard search filters the requested page before pagination', async () => {
   const environment = env();
   seedSeason(environment);

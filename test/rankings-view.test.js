@@ -730,6 +730,48 @@ test('loads pinned rows with the paginated leaderboard response', async () => {
   assert.doesNotMatch(source, /async function loadPinnedRows/);
 });
 
+test('pinning a loaded remote row updates the table without reloading the leaderboard', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  const helper = extractFunction(source, 'togglePinnedUser');
+  const loadedRow = { userId: 'alice-1', userName: 'Alice' };
+  const calls = { load: 0, render: 0, save: 0 };
+  const context = {
+    state: {
+      seasonId: 's1',
+      pinnedSeasonId: 's1',
+      pinnedUserIds: new Set(),
+      rows: [loadedRow],
+      partialRows: [],
+      pinnedRows: [],
+      remotePage: true
+    },
+    MAX_PINNED_USERS: 20,
+    savePinnedUsers() { calls.save += 1; },
+    renderRankingsTableRows() { calls.render += 1; },
+    loadLeaderboard() { calls.load += 1; return Promise.resolve(); },
+    setStatus() {}
+  };
+
+  vm.runInNewContext(`${helper}\ntogglePinnedUser('alice-1');`, context);
+
+  assert.equal(context.state.pinnedUserIds.has('alice-1'), true);
+  assert.equal(context.state.pinnedRows.length, 1);
+  assert.equal(context.state.pinnedRows[0], loadedRow);
+  assert.deepEqual(calls, { load: 0, render: 1, save: 1 });
+});
+
+test('stale paired metrics explain which observation is out of date', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  const helper = extractFunction(source, 'formatEstimateStatus');
+  const context = {
+    formatEstimateDay() { return '8/13'; }
+  };
+
+  vm.runInNewContext(`${helper}\nthis.result = formatEstimateStatus('missing_current_spend', true, { estimateUsesHistoricalData: true, estimateDayStartAt: 1 });`, context);
+
+  assert.equal(context.result, '消费数据停留在 8/13 · 暂不计算');
+});
+
 test('caps pinned users at the same twenty-user limit as the API', async () => {
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
 

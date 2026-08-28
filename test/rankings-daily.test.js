@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   aggregateRankingsDay,
   dayStartAtForCapturedAt,
+  metricPairObservation,
   previousBeijingDayStart
 } from '../src/rankings-daily.js';
 import { scheduled } from '../src/index.js';
@@ -221,7 +222,25 @@ test('previous Beijing day closes at 04:00', () => {
   );
 });
 
+test('metric pairing uses the Beijing 04:00 boundary instead of the calendar date', () => {
+  const beforeBoundary = Date.parse('2026-08-28T03:59:59+08:00');
+  const atBoundary = Date.parse('2026-08-28T04:00:00+08:00');
+  assert.deepEqual(
+    metricPairObservation(227, beforeBoundary, 33_000_000_000, beforeBoundary),
+    { status: 'paired', paired: true, staleDayStartAt: null }
+  );
+  assert.deepEqual(
+    metricPairObservation(227, atBoundary, 33_000_000_000, beforeBoundary),
+    {
+      status: 'missing_current_spend',
+      paired: false,
+      staleDayStartAt: Date.parse('2026-08-27T04:00:00+08:00')
+    }
+  );
+});
+
 test('scheduled maintenance never queries legacy ranking tables', async () => {
+  const observedAt = Date.parse('2026-08-25T05:00:00+08:00');
   const row = {
     season_id: 's1',
     user_id: 'u1',
@@ -229,7 +248,9 @@ test('scheduled maintenance never queries legacy ranking tables', async () => {
     epic_total_value: 10,
     sets_total_value: 3,
     is_vip: 0,
-    last_observed_at: 10_000,
+    last_observed_at: observedAt,
+    epic_total_observed_at: observedAt,
+    spend_total_observed_at: observedAt,
     sort_legend_value: null,
     sort_spend_usd: null,
     sort_estimated_pulls: null,
@@ -249,6 +270,32 @@ test('scheduled maintenance never queries legacy ranking tables', async () => {
       return [values.sort_legend_value, values.sort_spend_usd, values.sort_estimated_pulls, values.sort_exchange_count, values.sort_probability];
     })()
   );
+});
+
+test('scheduled maintenance clears derived sorts when epic and spend are from different days', async () => {
+  const row = {
+    season_id: 's1',
+    user_id: 'u1',
+    spend_total_value: 33_000_000_000,
+    spend_total_observed_at: Date.parse('2026-08-13T10:00:00+08:00'),
+    epic_total_value: 227,
+    epic_total_observed_at: Date.parse('2026-08-28T10:00:00+08:00'),
+    sets_total_value: 35,
+    is_vip: 0,
+    last_observed_at: Date.parse('2026-08-28T10:00:00+08:00'),
+    sort_legend_value: 227,
+    sort_spend_usd: 66_000,
+    sort_estimated_pulls: 7_150,
+    sort_exchange_count: 35,
+    sort_probability: 227 / 7_150
+  };
+  const db = new CompactMaintenanceDb([row]);
+
+  await scheduled({ scheduledTime: Date.parse('2026-08-29T04:05:00+08:00') }, { RANKINGS_DB: db });
+
+  assert.equal(db.current[0].sort_spend_usd, 66_000);
+  assert.equal(db.current[0].sort_estimated_pulls, null);
+  assert.equal(db.current[0].sort_probability, null);
 });
 
 test('aggregateRankingsDay writes one representative per season/day/user/board and can repeat', async () => {

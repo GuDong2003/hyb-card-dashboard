@@ -246,6 +246,70 @@ test('partial source uploads preserve a non-null observation timestamp for newly
   });
 });
 
+test('a newer unpaired epic observation clears stale pull and probability sort values', async () => {
+  const db = new SqliteDb();
+  const firstDay = Date.parse('2026-08-13T10:00:00+08:00');
+  const laterDay = Date.parse('2026-08-28T10:00:00+08:00');
+  await storeUserObservations(db, [normalizedSnapshot('global', firstDay, [
+    entry('epic_total', 'u1', 91, 1),
+    entry('spend_total', 'u1', 33_000_000_000, 1)
+  ])], { mode: 'manual' }, firstDay);
+
+  const complete = db.db.prepare(`
+    SELECT sort_estimated_pulls, sort_probability
+    FROM rank_user_current
+    WHERE season_id = 'season-1' AND user_id = 'u1'
+  `).get();
+  assert.notEqual(complete.sort_estimated_pulls, null);
+  assert.notEqual(complete.sort_probability, null);
+
+  await storeUserObservations(db, [normalizedSnapshot('global', laterDay, [
+    entry('epic_total', 'u1', 227, 1)
+  ])], { mode: 'manual' }, laterDay);
+
+  const incomplete = db.db.prepare(`
+    SELECT epic_total_value, spend_total_value,
+      epic_total_observed_at, spend_total_observed_at,
+      sort_spend_usd, sort_estimated_pulls, sort_probability
+    FROM rank_user_current
+    WHERE season_id = 'season-1' AND user_id = 'u1'
+  `).get();
+  assert.equal(incomplete.epic_total_value, 227);
+  assert.equal(incomplete.spend_total_value, 33_000_000_000);
+  assert.equal(incomplete.epic_total_observed_at, laterDay);
+  assert.equal(incomplete.spend_total_observed_at, firstDay);
+  assert.equal(incomplete.sort_spend_usd, 66_000);
+  assert.equal(incomplete.sort_estimated_pulls, null);
+  assert.equal(incomplete.sort_probability, null);
+});
+
+test('a complete newer pair advances an unchanged epic observation without another write', async () => {
+  const db = new SqliteDb();
+  const firstDay = Date.parse('2026-08-27T10:00:00+08:00');
+  const laterDay = Date.parse('2026-08-28T10:00:00+08:00');
+  await storeUserObservations(db, [normalizedSnapshot('global', firstDay, [
+    entry('epic_total', 'u1', 227, 1),
+    entry('spend_total', 'u1', 33_000_000_000, 1)
+  ])], { mode: 'manual' }, firstDay);
+
+  const result = await storeUserObservations(db, [normalizedSnapshot('global', laterDay, [
+    entry('epic_total', 'u1', 227, 1),
+    entry('spend_total', 'u1', 34_000_000_000, 1)
+  ])], { mode: 'manual' }, laterDay);
+
+  const row = db.db.prepare(`
+    SELECT epic_total_observed_at, spend_total_observed_at,
+      sort_estimated_pulls, sort_probability
+    FROM rank_user_current
+    WHERE season_id = 'season-1' AND user_id = 'u1'
+  `).get();
+  assert.equal(result.changedUsers, 1);
+  assert.equal(row.epic_total_observed_at, laterDay);
+  assert.equal(row.spend_total_observed_at, laterDay);
+  assert.notEqual(row.sort_estimated_pulls, null);
+  assert.notEqual(row.sort_probability, null);
+});
+
 test('a late older source does not overwrite the latest user profile', async () => {
   const db = new SqliteDb();
   await storeUserObservations(db, [normalizedSnapshot('global', 20_000, [

@@ -103,6 +103,32 @@ export function dayStartAtForCapturedAt(capturedAt) {
   return Math.floor((value - DAY_BOUNDARY_OFFSET_MS) / DAY_MS) * DAY_MS + DAY_BOUNDARY_OFFSET_MS;
 }
 
+export function metricPairObservation(epicValue, epicObservedAt, spendValue, spendObservedAt) {
+  const hasEpic = epicValue != null && epicValue !== '' && Number.isFinite(Number(epicValue));
+  const hasSpend = spendValue != null && spendValue !== '' && Number.isFinite(Number(spendValue));
+  if (!hasEpic && !hasSpend) return { status: 'missing_pair', paired: false, staleDayStartAt: null };
+  if (!hasEpic) return { status: 'missing_epic', paired: false, staleDayStartAt: null };
+  if (!hasSpend) return { status: 'missing_spend', paired: false, staleDayStartAt: null };
+
+  const epicDayStartAt = dayStartAtForCapturedAt(epicObservedAt);
+  const spendDayStartAt = dayStartAtForCapturedAt(spendObservedAt);
+  if (epicDayStartAt == null && spendDayStartAt == null) {
+    return { status: 'missing_current_pair', paired: false, staleDayStartAt: null };
+  }
+  if (epicDayStartAt == null) {
+    return { status: 'missing_current_epic', paired: false, staleDayStartAt: null };
+  }
+  if (spendDayStartAt == null) {
+    return { status: 'missing_current_spend', paired: false, staleDayStartAt: null };
+  }
+  if (epicDayStartAt === spendDayStartAt) {
+    return { status: 'paired', paired: true, staleDayStartAt: null };
+  }
+  return epicDayStartAt > spendDayStartAt
+    ? { status: 'missing_current_spend', paired: false, staleDayStartAt: spendDayStartAt }
+    : { status: 'missing_current_epic', paired: false, staleDayStartAt: epicDayStartAt };
+}
+
 export function previousBeijingDayStart(now = Date.now()) {
   const currentDayStartAt = dayStartAtForCapturedAt(now);
   return currentDayStartAt == null ? null : currentDayStartAt - DAY_MS;

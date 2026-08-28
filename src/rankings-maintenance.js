@@ -7,10 +7,14 @@ import {
 
 export const COMPACT_CURRENT_SELECT_SQL = `
   SELECT season_id, user_id, is_vip, last_observed_at,
-    epic_total_value, spend_total_value, sets_total_value,
-    epic_today_value, spend_today_value,
-    epic_week_value, spend_week_value,
-    epic_month_value, spend_month_value,
+    epic_total_value, epic_total_observed_at,
+    spend_total_value, spend_total_observed_at, sets_total_value,
+    epic_today_value, epic_today_observed_at,
+    spend_today_value, spend_today_observed_at,
+    epic_week_value, epic_week_observed_at,
+    spend_week_value, spend_week_observed_at,
+    epic_month_value, epic_month_observed_at,
+    spend_month_value, spend_month_observed_at,
     sort_legend_value, sort_spend_usd, sort_estimated_pulls,
     sort_exchange_count, sort_probability,
     sort_today_estimated_pulls, sort_today_probability,

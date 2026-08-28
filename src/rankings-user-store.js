@@ -2,7 +2,12 @@ import {
   estimateLegendProbability,
   estimatePullsFromSpend
 } from './rankings-core.js';
-import { dayStartAtForCapturedAt } from './rankings-daily.js';
+import {
+  DAY_BOUNDARY_OFFSET_MS,
+  DAY_MS,
+  dayStartAtForCapturedAt,
+  metricPairObservation
+} from './rankings-daily.js';
 
 export const COMPACT_BOARD_KEYS = Object.freeze([
   'sets_total', 'sets_month', 'sets_week', 'sets_today',
@@ -175,36 +180,40 @@ export function currentSortValues(row = {}, capturedAt = Date.now()) {
   const spendValue = numericOrNull(row.spend_total_value);
   const exchangeCount = numericOrNull(row.sets_total_value);
   const isVip = Boolean(Number(row.is_vip || 0));
+  const totalPair = metricPairObservation(
+    epicTotal,
+    row.epic_total_observed_at,
+    spendValue,
+    row.spend_total_observed_at
+  );
   const estimate = estimatePullsFromSpend(spendValue, isVip, {
     capturedAt,
     period: 'total'
   });
-  const probability = estimateLegendProbability({
-    epicTotal,
-    spendValue,
-    isVip,
-    capturedAt,
-    period: 'total'
-  });
+  const probability = totalPair.paired
+    ? estimateLegendProbability({ epicTotal, spendValue, isVip, capturedAt, period: 'total' })
+    : null;
   const result = {
     sort_legend_value: epicTotal,
     sort_spend_usd: estimate.spendUsd,
-    sort_estimated_pulls: estimate.estimatedPulls,
+    sort_estimated_pulls: totalPair.paired ? estimate.estimatedPulls : null,
     sort_exchange_count: exchangeCount,
     sort_probability: probability
   };
   for (const period of DERIVED_PERIODS) {
     const periodEpic = numericOrNull(row[`epic_${period}_value`]);
     const periodSpend = numericOrNull(row[`spend_${period}_value`]);
+    const periodPair = metricPairObservation(
+      periodEpic,
+      row[`epic_${period}_observed_at`],
+      periodSpend,
+      row[`spend_${period}_observed_at`]
+    );
     const periodEstimate = estimatePullsFromSpend(periodSpend, isVip, { capturedAt, period });
-    result[`sort_${period}_estimated_pulls`] = periodEstimate.estimatedPulls;
-    result[`sort_${period}_probability`] = estimateLegendProbability({
-      epicTotal: periodEpic,
-      spendValue: periodSpend,
-      isVip,
-      capturedAt,
-      period
-    });
+    result[`sort_${period}_estimated_pulls`] = periodPair.paired ? periodEstimate.estimatedPulls : null;
+    result[`sort_${period}_probability`] = periodPair.paired
+      ? estimateLegendProbability({ epicTotal: periodEpic, spendValue: periodSpend, isVip, capturedAt, period })
+      : null;
   }
   return result;
 }
@@ -538,15 +547,32 @@ function currentSummaryColumns(period) {
   const normalizedPeriod = ['today', 'week', 'month', 'total'].includes(String(period))
     ? String(period)
     : 'total';
+  const pairCondition = currentPairSql('r', normalizedPeriod);
+  const pullsColumn = normalizedPeriod === 'total'
+    ? 'r.sort_estimated_pulls'
+    : `r.sort_${normalizedPeriod}_estimated_pulls`;
+  const probabilityColumn = normalizedPeriod === 'total'
+    ? 'r.sort_probability'
+    : `r.sort_${normalizedPeriod}_probability`;
   return {
     spendColumn: `r.spend_${normalizedPeriod}_value`,
-    pullsColumn: normalizedPeriod === 'total'
-      ? 'r.sort_estimated_pulls'
-      : `r.sort_${normalizedPeriod}_estimated_pulls`,
-    probabilityColumn: normalizedPeriod === 'total'
-      ? 'r.sort_probability'
-      : `r.sort_${normalizedPeriod}_probability`
+    pullsColumn: `CASE WHEN ${pairCondition} THEN ${pullsColumn} ELSE NULL END`,
+    probabilityColumn: `CASE WHEN ${pairCondition} THEN ${probabilityColumn} ELSE NULL END`
   };
+}
+
+function currentPairSql(alias, period) {
+  const epicValue = `${alias}.epic_${period}_value`;
+  const spendValue = `${alias}.spend_${period}_value`;
+  const epicObservedAt = `${alias}.epic_${period}_observed_at`;
+  const spendObservedAt = `${alias}.spend_${period}_observed_at`;
+  const boundaryShift = -DAY_BOUNDARY_OFFSET_MS;
+  return `(${epicValue} IS NOT NULL
+    AND ${spendValue} IS NOT NULL
+    AND ${epicObservedAt} IS NOT NULL
+    AND ${spendObservedAt} IS NOT NULL
+    AND CAST((${epicObservedAt} + ${boundaryShift}) / ${DAY_MS} AS INTEGER)
+      = CAST((${spendObservedAt} + ${boundaryShift}) / ${DAY_MS} AS INTEGER))`;
 }
 
 function nullableNumber(value) {
@@ -833,20 +859,38 @@ function buildUpsertSql(tableName, columns, currentTable) {
     const metricChanged = cumulative
       ? `(${cumulativeValueChanged} OR (${newer} AND excluded.${rankColumn} IS NOT ${tableName}.${rankColumn}))`
       : `(${newer} AND ${dataDiff})`;
+    const pairMatch = /^(?:epic|spend)_(today|week|month|total)$/.exec(boardKey);
+    const pairObservedTogether = currentTable && pairMatch
+      ? currentPairSql('excluded', pairMatch[1])
+      : '';
+    const observationChanged = pairObservedTogether
+      ? `(${metricChanged} OR ${pairObservedTogether})`
+      : metricChanged;
+    const mergedObservedAt = `CASE
+      WHEN ${tableName}.${observedColumn} IS NULL THEN excluded.${observedColumn}
+      WHEN excluded.${observedColumn} IS NULL THEN ${tableName}.${observedColumn}
+      ELSE MAX(${tableName}.${observedColumn}, excluded.${observedColumn})
+    END`;
     if (cumulative) {
       updates.push(`${valueColumn} = CASE WHEN ${cumulativeValueChanged} THEN excluded.${valueColumn} ELSE ${tableName}.${valueColumn} END`);
       updates.push(`${rankColumn} = CASE WHEN ${newer} THEN excluded.${rankColumn} ELSE ${tableName}.${rankColumn} END`);
-      updates.push(`${observedColumn} = CASE WHEN ${metricChanged} THEN CASE WHEN ${tableName}.${observedColumn} IS NULL THEN excluded.${observedColumn} WHEN excluded.${observedColumn} IS NULL THEN ${tableName}.${observedColumn} ELSE MAX(${tableName}.${observedColumn}, excluded.${observedColumn}) END ELSE ${tableName}.${observedColumn} END`);
+      updates.push(`${observedColumn} = CASE WHEN ${observationChanged} THEN ${mergedObservedAt} ELSE ${tableName}.${observedColumn} END`);
     } else {
       updates.push(`${valueColumn} = CASE WHEN ${newer} THEN excluded.${valueColumn} ELSE ${tableName}.${valueColumn} END`);
       updates.push(`${rankColumn} = CASE WHEN ${newer} THEN excluded.${rankColumn} ELSE ${tableName}.${rankColumn} END`);
-      updates.push(`${observedColumn} = CASE WHEN ${metricChanged} THEN excluded.${observedColumn} ELSE ${tableName}.${observedColumn} END`);
+      updates.push(`${observedColumn} = CASE WHEN ${observationChanged} THEN ${mergedObservedAt} ELSE ${tableName}.${observedColumn} END`);
     }
   }
 
   if (currentTable) {
     for (const column of DERIVED_SORT_COLUMNS) {
-      updates.push(`${column} = COALESCE(excluded.${column}, ${tableName}.${column})`);
+      const period = derivedPairPeriod(column);
+      if (!period) {
+        updates.push(`${column} = COALESCE(excluded.${column}, ${tableName}.${column})`);
+        continue;
+      }
+      const pairObserved = `(excluded.epic_${period}_observed_at IS NOT NULL OR excluded.spend_${period}_observed_at IS NOT NULL)`;
+      updates.push(`${column} = CASE WHEN ${pairObserved} THEN excluded.${column} ELSE ${tableName}.${column} END`);
     }
   }
 
@@ -854,6 +898,12 @@ function buildUpsertSql(tableName, columns, currentTable) {
 ON CONFLICT DO UPDATE SET
   ${updates.join(',\n  ')}
 WHERE ${meaningfulChangeSql(tableName, columns, currentTable)}`;
+}
+
+function derivedPairPeriod(column) {
+  if (column === 'sort_estimated_pulls' || column === 'sort_probability') return 'total';
+  const match = /^sort_(today|week|month)_(?:estimated_pulls|probability)$/.exec(column);
+  return match ? match[1] : '';
 }
 
 function meaningfulChangeSql(tableName, columns, currentTable) {
@@ -986,6 +1036,7 @@ function integerOrNull(value) {
 }
 
 function numericOrNull(value) {
+  if (value == null || value === '') return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }

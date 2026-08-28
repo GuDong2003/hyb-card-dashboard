@@ -2062,11 +2062,12 @@
             state.pinnedUserIds.add(normalized);
         }
         savePinnedUsers(seasonId, state.pinnedUserIds);
-        if (state.remotePage) {
-            loadLeaderboard().catch((error) => setStatus(`置顶用户刷新失败：${String(error && error.message || error)}`, true));
-        } else {
-            renderRankingsTableRows();
-        }
+        const loadedRows = [...state.pinnedRows, ...state.rows, ...state.partialRows];
+        const loadedById = new Map(loadedRows.map((row) => [String(row && row.userId || ''), row]));
+        state.pinnedRows = Array.from(state.pinnedUserIds)
+            .map((pinnedId) => loadedById.get(String(pinnedId)))
+            .filter(Boolean);
+        renderRankingsTableRows();
     }
 
     function localLeaderboardPayload(snapshotOrBundle) {
@@ -2722,9 +2723,9 @@
         if (status === 'missing_pair') return '缺少欧皇榜与消费榜';
         if (status === 'missing_current_pair') return '当前批次缺少双榜';
         if (status === 'missing_spend') return '缺少消费榜';
-        if (status === 'missing_current_spend') return '当前批次缺少消费榜';
+        if (status === 'missing_current_spend') return day ? `消费数据停留在 ${day} · 暂不计算` : '当前批次缺少消费榜';
         if (status === 'missing_epic') return '缺少欧皇榜';
-        if (status === 'missing_current_epic') return '当前批次缺少欧皇榜';
+        if (status === 'missing_current_epic') return day ? `传说卡数据停留在 ${day} · 暂不计算` : '当前批次缺少欧皇榜';
         if (status === 'missing_common_day') return '暂无完整共同日期 · 暂不计算';
         if (status === 'low_sample') return `${prefix}低样本 / 数据不足`;
         if (status === 'partial_day') return `${prefix}非完整天数 · 暂不计算`;
