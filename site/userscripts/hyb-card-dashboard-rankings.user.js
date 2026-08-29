@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HYB Card Dashboard 榜单同步
 // @namespace    https://card.gudong226.com/
-// @version      1.3.3
+// @version      1.4.0
 // @description  在 Card Dashboard 页面按需读取 CDK 卡牌榜单并回传给榜单统计视图。
 // @updateURL    https://card.gudong226.com/userscripts/hyb-card-dashboard-rankings.user.js
 // @downloadURL  https://card.gudong226.com/userscripts/hyb-card-dashboard-rankings.user.js
@@ -18,7 +18,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.3.3';
+  const SCRIPT_VERSION = '1.4.0';
   const CARD_ORIGIN = 'https://card.gudong226.com';
   const CDK_ORIGIN = 'https://cdk.hybgzs.com';
   const SOURCE_APIS = Object.freeze({
@@ -37,6 +37,8 @@
   const REQUEST_TIMEOUT_MS = 20000;
   const RELAY_TIMEOUT_MS = 15000;
   const RELAY_READY_TTL_MS = 30000;
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000;
   const SOURCE_STATE_KEY = 'hyb-card-rankings-source-state-v1';
   const REQUEST_COOLDOWN_MS = 3 * 60 * 60 * 1000;
   const RETRY_COOLDOWN_MS = 60 * 60 * 1000;
@@ -49,6 +51,12 @@
 
   function randomId(prefix) {
     return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  function beijingDateKey(timestamp = Date.now()) {
+    const value = Number(timestamp);
+    if (!Number.isFinite(value)) return '';
+    return new Date(Math.floor((value + BEIJING_OFFSET_MS) / DAY_MS) * DAY_MS).toISOString().slice(0, 10);
   }
 
   function makeError(message, details = {}) {
@@ -216,17 +224,32 @@
   function claimSourceRequest(options = {}) {
     if (!sharedStorageAvailable()) return;
     const manual = Boolean(options.manual);
+    const finalSets = Boolean(options.finalSets);
+    const setsFinalRetry = Boolean(options.setsFinalRetry);
+    const finalRefresh = finalSets || setsFinalRetry;
     const now = Date.now();
     const state = readSourceState();
+    const finalDay = beijingDateKey(now);
     if (Number(state.lockUntil) > now && state.ownerId !== RELAY_OWNER_ID) throw sourceCooldownError(state, now);
     if (Number(state.blockedUntil) > now) throw sourceCooldownError(state, now);
-    if (!manual && Number(state.nextAllowedAt) > now) throw sourceCooldownError(state, now);
+    if (finalRefresh && !manual && state.finalAttemptDay === finalDay
+      && (!setsFinalRetry || Number(state.finalRetryCount) >= 1)) {
+      throw sourceCooldownError(state, now);
+    }
+    const bypassOrdinaryCooldown = finalSets && !setsFinalRetry;
+    if (!manual && !bypassOrdinaryCooldown && Number(state.nextAllowedAt) > now) {
+      throw sourceCooldownError(state, now);
+    }
     const candidate = {
       ...state,
       ownerId: RELAY_OWNER_ID,
       lockUntil: now + REQUEST_LOCK_MS,
       lastAttemptAt: now
     };
+    if (finalRefresh && !manual) {
+      candidate.finalAttemptDay = finalDay;
+      candidate.finalRetryCount = setsFinalRetry ? 1 : 0;
+    }
     writeSourceState(candidate);
     const confirmed = readSourceState();
     if (confirmed.ownerId !== RELAY_OWNER_ID) throw sourceCooldownError(confirmed, now);
@@ -259,6 +282,8 @@
   function recordSourceFailure(error, options = {}) {
     if (!sharedStorageAvailable() || (error && (error.name === 'SourceCooldown' || error.name === 'ScriptUpdateRequired'))) return;
     const manual = Boolean(options.manual);
+    const finalSets = Boolean(options.finalSets);
+    const setsFinalRetry = Boolean(options.setsFinalRetry);
     const now = Date.now();
     const state = readSourceState();
     const protectedFailure = Boolean(error && (error.blocked || error.kind === 'protected' || Number(error.status) === 403 || Number(error.status) === 429));
@@ -271,6 +296,24 @@
     }
     if (manual) {
       releaseSourceRequest({ mode: 'manual-failed' });
+      return;
+    }
+    if (finalSets || setsFinalRetry) {
+      if (retryable && !setsFinalRetry) {
+        releaseSourceRequest({
+          nextAllowedAt: now + RETRY_COOLDOWN_MS,
+          retryCount: 1,
+          blockedUntil: 0,
+          mode: 'final-retry-wait'
+        });
+        return;
+      }
+      releaseSourceRequest({
+        nextAllowedAt: now + REQUEST_COOLDOWN_MS,
+        retryCount: 0,
+        blockedUntil: 0,
+        mode: retryable ? 'final-retry-exhausted' : 'paused'
+      });
       return;
     }
     if (retryable && Number(state.retryCount) < 1) {
@@ -450,8 +493,10 @@
   async function loadSnapshot(options = {}) {
     if (inFlight) return inFlight;
     const manual = Boolean(options.manual);
+    const finalSets = Boolean(options.finalSets);
+    const setsFinalRetry = Boolean(options.setsFinalRetry);
     inFlight = (async () => {
-      claimSourceRequest({ manual });
+      claimSourceRequest({ manual, finalSets, setsFinalRetry });
       try {
         const relay = requestWithCdkRelay();
         const bundle = relay
@@ -461,10 +506,10 @@
                 ? requestWithGm(url, scope)
                 : requestWithFetch(url, scope)
             ));
-        recordSourceOutcome(bundle, { manual });
+        recordSourceOutcome(bundle, { manual, finalSets, setsFinalRetry });
         return bundle;
       } catch (error) {
-        recordSourceFailure(error, { manual });
+        recordSourceFailure(error, { manual, finalSets, setsFinalRetry });
         throw error;
       }
     })().finally(() => {
@@ -480,7 +525,11 @@
       const data = event.data;
       if (!data || data.type !== BRIDGE_REQUEST || !data.requestId) return;
       try {
-        const bundle = await loadSnapshot({ manual: Boolean(data.manual) });
+        const bundle = await loadSnapshot({
+          manual: Boolean(data.manual),
+          finalSets: Boolean(data.finalSets),
+          setsFinalRetry: Boolean(data.setsFinalRetry)
+        });
         window.postMessage({
           type: BRIDGE_RESPONSE,
           requestId: data.requestId,

@@ -9,7 +9,9 @@ import {
   USER_DAY_COLUMNS
 } from '../src/rankings-user-store.js';
 
-const SCHEMA = await readFile(new URL('../migrations-v2/0001_compact_rankings.sql', import.meta.url), 'utf8');
+const SCHEMA = `${await readFile(new URL('../migrations-v2/0001_compact_rankings.sql', import.meta.url), 'utf8')}
+ALTER TABLE rank_metric_ingest_state ADD COLUMN final_window_start_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE rank_metric_ingest_state ADD COLUMN final_retry_count INTEGER NOT NULL DEFAULT 0;`;
 
 class CompactStatement {
   constructor(db, sql) {
@@ -199,7 +201,12 @@ async function postSnapshots(environment, snapshots, options = {}) {
   return handleRankingsRequest(new Request('https://card.test/api/rankings/snapshots', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ snapshots, mode: options.mode || 'manual' })
+    body: JSON.stringify({
+      snapshots,
+      mode: options.mode || 'manual',
+      finalSets: options.finalSets === true,
+      setsFinalRetry: options.setsFinalRetry === true
+    })
   }), environment);
 }
 
@@ -233,6 +240,31 @@ test('automatic uploads share one server-side three-hour gate and manual refresh
   const manual = await postSnapshots(environment, [snapshotAt(capturedAt + 1_000, { epic: 12 })], { mode: 'manual' });
   assert.equal((await manual.json()).status, 'accepted');
   assert.equal(environment.RANKINGS_DB.currentUsers[0].epic_total_value, 12);
+});
+
+test('reports a skipped sets-only automatic upload without claiming it was stored', async () => {
+  const environment = compactEnv();
+  const capturedAt = Date.now() - 2_000;
+  const snapshot = snapshotAt(capturedAt);
+  snapshot.leaderboards = {
+    sets_total: [{ userId: 'u-1', userName: 'Alice', value: 3, rank: 2, isVip: false }]
+  };
+  environment.RANKINGS_DB.run(
+    `INSERT INTO rank_metric_ingest_state
+      (season_id, scope, metric, window_start_at, last_captured_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    ['season-1', 'global', 'sets', 9_999_999_999_999, 0, 0]
+  );
+
+  const response = await postSnapshots(environment, [snapshot], { mode: 'automatic' });
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.status, 'unchanged');
+  assert.equal(body.storedSnapshots, 0);
+  assert.equal(body.storedEntries, 0);
+  assert.equal(body.skippedMetrics.length, 1);
+  assert.equal(body.skippedMetrics[0].metric, 'sets');
+  assert.equal(environment.RANKINGS_DB.currentUsers.length, 0);
 });
 
 test('updates only changed fields and preserves a single row on a new capture', async () => {

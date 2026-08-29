@@ -110,7 +110,12 @@ async function postSnapshot(request, env) {
   const mode = body && body.mode === 'manual' ? 'manual' : 'automatic';
   let stored;
   try {
-    stored = await storeUserObservations(env.RANKINGS_DB, bundle.snapshots, { source, mode }, now);
+    stored = await storeUserObservations(env.RANKINGS_DB, bundle.snapshots, {
+      source,
+      mode,
+      finalSets: body && body.finalSets === true,
+      setsFinalRetry: body && body.setsFinalRetry === true
+    }, now);
   } catch (error) {
     return jsonResponse({
       ok: false,
@@ -122,16 +127,21 @@ async function postSnapshot(request, env) {
 
   const errors = bundle.errors.slice();
   const skippedScopes = stored.skippedScopes || [];
-  const storedSnapshots = Math.max(0, bundle.snapshots.length - skippedScopes.length);
-  const storedEntries = bundle.snapshots
-    .filter((normalized) => !skippedScopes.some((item) => item.seasonId === normalized.seasonId && item.scope === normalized.scope))
-    .reduce((sum, normalized) => sum + normalized.entries.length, 0);
+  const skippedMetrics = stored.skippedMetrics || [];
+  const storedSnapshots = Number.isFinite(Number(stored.storedSnapshots))
+    ? Math.max(0, Number(stored.storedSnapshots))
+    : Math.max(0, bundle.snapshots.length - skippedScopes.length);
+  const storedEntries = Number.isFinite(Number(stored.storedEntries))
+    ? Math.max(0, Number(stored.storedEntries))
+    : bundle.snapshots
+      .filter((normalized) => !skippedScopes.some((item) => item.seasonId === normalized.seasonId && item.scope === normalized.scope))
+      .reduce((sum, normalized) => sum + normalized.entries.length, 0);
   const unchangedUsers = Math.max(0, stored.users - stored.changedUsers);
   const latest = bundle.snapshots[bundle.snapshots.length - 1];
   const snapshot = latest ? serializeObservedSnapshot(latest, now) : null;
   return jsonResponse({
     ok: true,
-    status: errors.length || skippedScopes.length
+    status: errors.length || skippedScopes.length || skippedMetrics.length
       ? (storedSnapshots ? 'partial' : 'unchanged')
       : 'accepted',
     snapshot,
@@ -144,7 +154,8 @@ async function postSnapshot(request, env) {
     changedFields: stored.changedFields,
     unchangedUsers,
     skippedScopes,
-    partial: errors.length > 0 || skippedScopes.length > 0,
+    skippedMetrics,
+    partial: errors.length > 0 || skippedScopes.length > 0 || skippedMetrics.length > 0,
     errors
   });
 }

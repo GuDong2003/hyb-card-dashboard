@@ -6,13 +6,15 @@
     const BRIDGE_RESPONSE = 'HYB_CARD_RANKINGS_RESPONSE';
     const BRIDGE_TIMEOUT_MS = 22000;
     const DAY_MS = 24 * 60 * 60 * 1000;
+    const BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000;
     const RESET_HOUR_MS = 4 * 60 * 60 * 1000;
     const AUTO_REFRESH_INTERVAL_MS = 3 * 60 * 60 * 1000;
+    const SETS_FINAL_REFRESH_HOUR_MS = 8 * 60 * 60 * 1000;
     const CAPTURE_BUCKET_MS = 60 * 60 * 1000;
     const RANKINGS_RETRY_MS = 60 * 60 * 1000;
     const MAX_AUTO_RETRIES = 1;
     const MAX_PINNED_USERS = 20;
-    const REQUIRED_USERSCRIPT_VERSION = '1.3.3';
+    const REQUIRED_USERSCRIPT_VERSION = '1.4.0';
     const USERSCRIPT_URL = '/userscripts/hyb-card-dashboard-rankings.user.js';
     const TREND_CHART_FIXED_AXIS_WIDTH = 86;
     const TREND_CHART_AXIS_PADDING_RATIO = 0.03;
@@ -116,10 +118,20 @@
                 const scope = separator >= 0 ? key.slice(separator + 1).trim() : '';
                 const capturedAt = normalizeCapturedAt(entry && entry.capturedAt, null);
                 const uploadedAt = normalizeCapturedAt(entry && entry.uploadedAt, null);
-                if (!season || !scope || !capturedAt || !uploadedAt || key !== uploadStateKey(season, scope)) {
+                const setsCapturedAt = normalizeCapturedAt(entry && entry.setsCapturedAt, null);
+                const setsUploadedAt = normalizeCapturedAt(entry && entry.setsUploadedAt, null);
+                const hasOrdinaryWatermark = Boolean(capturedAt && uploadedAt);
+                const hasSetsWatermark = Boolean(setsCapturedAt && setsUploadedAt);
+                if (!season || !scope || (!hasOrdinaryWatermark && !hasSetsWatermark)
+                    || key !== uploadStateKey(season, scope)) {
                     throw new Error('invalid upload state entry');
                 }
-                normalized[key] = { capturedAt, uploadedAt };
+                normalized[key] = {
+                    capturedAt: hasOrdinaryWatermark ? capturedAt : null,
+                    uploadedAt: hasOrdinaryWatermark ? uploadedAt : null,
+                    setsCapturedAt: hasSetsWatermark ? setsCapturedAt : null,
+                    setsUploadedAt: hasSetsWatermark ? setsUploadedAt : null
+                };
             });
             return normalized;
         } catch (_) {
@@ -155,10 +167,13 @@
         scriptUpdateRequired: false,
         bridgeRequest: null,
         hourlyRefreshTimer: null,
+        setsFinalRefreshTimer: null,
+        setsFinalRefreshDay: '',
         rankingsRetryTimer: null,
         rankingsRetryPending: false,
         rankingsRetryCount: 0,
         rankingsRetryAt: 0,
+        rankingsRetryFinalSets: false,
         rows: [],
         partialRows: [],
         userQuery: '',
@@ -349,7 +364,8 @@
         return '';
     }
 
-    function clearRankingsRetry() {
+    function clearRankingsRetry(options = {}) {
+        if (options.preserveFinal === true && state.rankingsRetryFinalSets) return;
         if (state.rankingsRetryTimer) {
             window.clearTimeout(state.rankingsRetryTimer);
             state.rankingsRetryTimer = null;
@@ -357,17 +373,23 @@
         state.rankingsRetryPending = false;
         state.rankingsRetryAt = 0;
         state.rankingsRetryCount = 0;
+        state.rankingsRetryFinalSets = false;
     }
 
-    function scheduleRankingsRetry() {
+    function scheduleRankingsRetry(options = {}) {
+        const finalSets = Boolean(options.finalSets || options.setsFinalRetry);
         if (state.scriptUpdateRequired || state.rankingsRetryCount >= MAX_AUTO_RETRIES) {
             state.rankingsRetryPending = false;
             state.rankingsRetryAt = 0;
+            state.rankingsRetryFinalSets = false;
             return false;
         }
         if (!state.rankingsRetryPending) {
             state.rankingsRetryPending = true;
             state.rankingsRetryAt = Date.now() + RANKINGS_RETRY_MS;
+            state.rankingsRetryFinalSets = finalSets;
+        } else if (finalSets) {
+            state.rankingsRetryFinalSets = true;
         }
         if (state.rankingsRetryTimer || state.view !== 'rankings') return true;
         const tick = () => {
@@ -381,7 +403,14 @@
             state.rankingsRetryPending = false;
             state.rankingsRetryAt = 0;
             state.rankingsRetryCount += 1;
-            loadRankingsView({ autoRefresh: true, retry: true });
+            const retryFinalSets = state.rankingsRetryFinalSets;
+            loadRankingsView({
+                refresh: retryFinalSets,
+                autoRefresh: true,
+                retry: true,
+                finalSets: retryFinalSets,
+                setsFinalRetry: retryFinalSets
+            });
         };
         state.rankingsRetryTimer = window.setTimeout(tick, Math.max(0, state.rankingsRetryAt - Date.now()));
         return true;
@@ -397,7 +426,14 @@
         state.rankingsRetryPending = false;
         state.rankingsRetryAt = 0;
         state.rankingsRetryCount += 1;
-        loadRankingsView({ autoRefresh: true, retry: true });
+        const retryFinalSets = state.rankingsRetryFinalSets;
+        loadRankingsView({
+            refresh: retryFinalSets,
+            autoRefresh: true,
+            retry: true,
+            finalSets: retryFinalSets,
+            setsFinalRetry: retryFinalSets
+        });
         return true;
     }
 
@@ -1301,14 +1337,17 @@
         const normalizedSnapshots = normalizeSnapshotsForUpload(snapshots);
         if (options.manual) return normalizedSnapshots;
         const now = normalizeCapturedAt(options.now, Date.now()) || Date.now();
+        const setsOnly = options.finalSets === true || options.setsFinalRetry === true;
         const uploaded = readUploadState();
         return normalizedSnapshots.filter((snapshot) => {
             const current = uploadStateForSnapshot(snapshot);
             if (!current) return true;
             const previous = uploaded[uploadStateKey(current.season, current.scope)];
             if (!previous) return true;
-            const withinMinimumInterval = now - Number(previous.uploadedAt) < AUTO_UPLOAD_MIN_INTERVAL_MS;
-            return current.capturedAt > Number(previous.capturedAt) && !withinMinimumInterval;
+            const previousCapturedAt = setsOnly ? Number(previous.setsCapturedAt) : Number(previous.capturedAt);
+            const previousUploadedAt = setsOnly ? Number(previous.setsUploadedAt) : Number(previous.uploadedAt);
+            const withinMinimumInterval = now - previousUploadedAt < AUTO_UPLOAD_MIN_INTERVAL_MS;
+            return current.capturedAt > previousCapturedAt && (!withinMinimumInterval || setsOnly);
         });
     }
 
@@ -1319,18 +1358,28 @@
             && pendingUploadSnapshots(normalizedSnapshots, options).length === 0;
     }
 
-    function rememberUploadedSnapshots(snapshots, uploadedAt = Date.now()) {
+    function rememberUploadedSnapshots(snapshots, uploadedAt = Date.now(), options = {}) {
         const uploadState = readUploadState();
         const observedAt = normalizeCapturedAt(uploadedAt, Date.now()) || Date.now();
+        const setsOnly = options.finalSets === true || options.setsFinalRetry === true;
         normalizeSnapshotsForUpload(snapshots).forEach((snapshot) => {
             const current = uploadStateForSnapshot(snapshot);
             if (!current) return;
             const key = uploadStateKey(current.season, current.scope);
-            const previous = uploadState[key];
-            uploadState[key] = {
-                capturedAt: Math.max(current.capturedAt, Number(previous && previous.capturedAt) || 0),
-                uploadedAt: observedAt
-            };
+            const previous = uploadState[key] || {};
+            uploadState[key] = setsOnly
+                ? {
+                    capturedAt: Number(previous.capturedAt) || 0,
+                    uploadedAt: Number(previous.uploadedAt) || observedAt,
+                    setsCapturedAt: Math.max(current.capturedAt, Number(previous.setsCapturedAt) || 0),
+                    setsUploadedAt: observedAt
+                }
+                : {
+                    capturedAt: Math.max(current.capturedAt, Number(previous.capturedAt) || 0),
+                    uploadedAt: observedAt,
+                    setsCapturedAt: Number(previous.setsCapturedAt) || null,
+                    setsUploadedAt: Number(previous.setsUploadedAt) || null
+                };
         });
         writeUploadState(uploadState);
     }
@@ -1347,9 +1396,10 @@
         });
     }
 
-    function compactSnapshotForUpload(snapshot) {
+    function compactSnapshotForUpload(snapshot, options = {}) {
         const source = snapshotSource(snapshot);
         if (!source || typeof source !== 'object') return null;
+        const setsOnly = options.setsOnly === true;
         const season = source.season && typeof source.season === 'object'
             ? {
                 id: String(source.season.id || '').trim(),
@@ -1358,6 +1408,7 @@
             : { id: '', name: '' };
         const leaderboards = {};
         Object.entries(source.leaderboards || {}).forEach(([boardKey, rows]) => {
+            if (setsOnly && !String(boardKey).startsWith('sets_')) return;
             if (!Array.isArray(rows)) return;
             leaderboards[boardKey] = rows.map((row) => ({
                 userId: rowUserId(row),
@@ -2164,6 +2215,8 @@
     function requestBridgeSnapshot(options = {}) {
         if (state.bridgeRequest) return state.bridgeRequest;
         const manual = Boolean(options.manual);
+        const finalSets = Boolean(options.finalSets);
+        const setsFinalRetry = Boolean(options.setsFinalRetry);
         const requestId = `rankings-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         state.bridgeRequest = new Promise((resolve, reject) => {
             let settled = false;
@@ -2210,7 +2263,13 @@
                 finish(reject, error);
             }, BRIDGE_TIMEOUT_MS);
             window.addEventListener('message', onMessage);
-            window.postMessage({ type: BRIDGE_REQUEST, requestId, manual }, window.location.origin);
+            window.postMessage({
+                type: BRIDGE_REQUEST,
+                requestId,
+                manual,
+                finalSets,
+                setsFinalRetry
+            }, window.location.origin);
         }).finally(() => {
             state.bridgeRequest = null;
         });
@@ -2232,6 +2291,9 @@
 
     async function uploadSnapshot(snapshot, options = {}) {
         const normalizedSnapshots = normalizeSnapshotsForUpload(snapshot);
+        const finalSets = options.finalSets === true;
+        const setsFinalRetry = options.setsFinalRetry === true;
+        const setsOnly = finalSets || setsFinalRetry;
         if (!normalizedSnapshots.length || normalizedSnapshots.some((item) => {
             const observedAt = normalizeCapturedAt(item.capturedAt, null)
                 || normalizeCapturedAt(item.observedAt, null);
@@ -2244,20 +2306,28 @@
         }
         const snapshotsToUpload = pendingUploadSnapshots(normalizedSnapshots, options);
         const compactSnapshots = snapshotsToUpload
-            .map(compactSnapshotForUpload)
+            .map((item) => compactSnapshotForUpload(item, { setsOnly }))
             .filter((item) => item && item.scope && item.season.id && item.season.name);
         if (!compactSnapshots.length) throw new Error('榜单观察数据为空');
         const response = await apiPost('/api/rankings/snapshots', {
             snapshots: compactSnapshots,
             source: 'card-dashboard-userscript',
-            mode: options.manual ? 'manual' : 'automatic'
+            mode: options.manual ? 'manual' : 'automatic',
+            finalSets,
+            setsFinalRetry
         });
-        rememberUploadedSnapshots(rememberableUploadSnapshots(compactSnapshots, response));
+        rememberUploadedSnapshots(
+            rememberableUploadSnapshots(compactSnapshots, response),
+            Date.now(),
+            { finalSets, setsFinalRetry }
+        );
         invalidateRankingsCache();
         return response;
     }
 
-    async function ensureFreshSnapshot(force = false, retry = false, manual = false) {
+    async function ensureFreshSnapshot(force = false, retry = false, manual = false, options = {}) {
+        const finalSets = options.finalSets === true;
+        const setsFinalRetry = options.setsFinalRetry === true;
         if (!force && !retry && state.localSnapshots.length && !state.settings.autoUpload) {
             setStatus('已显示本地抓取数据，尚未上传云端');
             return { localOnly: true, snapshots: state.localSnapshots };
@@ -2274,15 +2344,15 @@
             : (latest.snapshot ? '榜单超过 3 小时，正在检查更新…' : '暂无快照，正在请求榜单…'), false, true);
         try {
             setStatus(state.bridgeReady ? '正在请求最新榜单…' : '正在等待用户脚本连接…', false, true);
-            const bundle = await requestBridgeSnapshot({ manual });
+            const bundle = await requestBridgeSnapshot({ manual, finalSets, setsFinalRetry });
             state.bridgeReady = true;
             setStatus('已收到榜单数据，正在整理…', false, true);
             state.localSnapshots = normalizeSnapshotsForUpload(bundle);
             if (!state.localSnapshots.length) throw new Error('同步脚本返回的榜单为空');
             const partial = Boolean(bundle.partial);
             const retryablePartial = !manual && partial && bundle.retryable !== false && !bundle.blocked;
-            if (manual) clearRankingsRetry();
-            else if (retryablePartial) scheduleRankingsRetry();
+            if (manual) clearRankingsRetry({ preserveFinal: true });
+            else if (retryablePartial) scheduleRankingsRetry({ finalSets, setsFinalRetry });
             else clearRankingsRetry();
             if (!state.settings.autoUpload) {
                 setStatus(partial
@@ -2298,7 +2368,7 @@
                 return { localOnly: true, snapshots: state.localSnapshots };
             }
             setStatus('正在上传榜单快照…', false, true);
-            const uploadResult = await uploadSnapshot(bundle, { manual });
+            const uploadResult = await uploadSnapshot(bundle, { manual, finalSets, setsFinalRetry });
             state.localSnapshots = [];
             if (uploadResult && uploadResult.skippedUpload) {
                 setStatus(`榜单没有新数据，已跳过上传 · ${formatDate(latest.snapshot && latest.snapshot.capturedAt)}`);
@@ -2319,7 +2389,7 @@
             return refreshed;
         } catch (error) {
             const canScheduleRetry = !manual && errorCanAutoRetry(error);
-            const scheduled = canScheduleRetry && scheduleRankingsRetry();
+            const scheduled = canScheduleRetry && scheduleRankingsRetry({ finalSets, setsFinalRetry });
             const suffix = error && error.scriptUpdateRequired
                 ? '；请点击“更新脚本”安装新版本。'
                 : error && error.code === 'userscript_missing'
@@ -2379,6 +2449,8 @@
         const refresh = options === true || Boolean(options && options.refresh);
         const autoRefresh = Boolean(options && options.autoRefresh);
         const retry = Boolean(options && options.retry);
+        const finalSets = Boolean(options && options.finalSets);
+        const setsFinalRetry = Boolean(options && options.setsFinalRetry);
         const manualRefresh = refresh && !autoRefresh;
         if (state.busy) return;
         setBusy(true);
@@ -2391,7 +2463,7 @@
             let source;
             let leaderboardLoaded = false;
             if (refresh || autoRefresh) {
-                source = await ensureFreshSnapshot(refresh, retry, manualRefresh);
+                source = await ensureFreshSnapshot(refresh, retry, manualRefresh, { finalSets, setsFinalRetry });
             } else if (state.localSnapshots.length && !state.settings.autoUpload) {
                 setStatus('已显示本地抓取数据，尚未上传云端');
                 source = { localOnly: true, snapshots: state.localSnapshots };
@@ -2428,7 +2500,7 @@
             state.loaded = true;
         } catch (error) {
             const canScheduleRetry = !manualRefresh && errorCanAutoRetry(error);
-            const scheduled = canScheduleRetry && scheduleRankingsRetry();
+            const scheduled = canScheduleRetry && scheduleRankingsRetry({ finalSets, setsFinalRetry });
             const suffix = error && error.scriptUpdateRequired
                 ? '；请点击“更新脚本”安装新版本。'
                 : error && error.code === 'userscript_missing'
@@ -2778,6 +2850,63 @@
         summaryElement.innerHTML = cards.map(([label, value]) => `<article class="rankings-summary-card"><span>${label}</span><strong>${value}</strong></article>`).join('');
     }
 
+    function beijingDayStartAt(timestamp = Date.now()) {
+        const value = Number(timestamp);
+        if (!Number.isFinite(value)) return null;
+        return Math.floor((value + BEIJING_OFFSET_MS) / DAY_MS) * DAY_MS - BEIJING_OFFSET_MS;
+    }
+
+    function beijingDateKey(timestamp = Date.now()) {
+        const dayStartAt = beijingDayStartAt(timestamp);
+        return dayStartAt == null ? '' : new Date(dayStartAt + BEIJING_OFFSET_MS).toISOString().slice(0, 10);
+    }
+
+    function nextSetsFinalRefreshAt(timestamp = Date.now()) {
+        const dayStartAt = beijingDayStartAt(timestamp);
+        if (dayStartAt == null) return Date.now() + DAY_MS;
+        const todayFinalAt = dayStartAt + SETS_FINAL_REFRESH_HOUR_MS;
+        return Number(timestamp) < todayFinalAt ? todayFinalAt : todayFinalAt + DAY_MS;
+    }
+
+    function scheduleSetsFinalRefresh(options = {}) {
+        if (state.setsFinalRefreshTimer) {
+            window.clearTimeout(state.setsFinalRefreshTimer);
+            state.setsFinalRefreshTimer = null;
+        }
+        if (!state.settings.hourlyRefresh) return;
+        const now = Date.now();
+        const today = beijingDateKey(now);
+        const todayFinalAt = (beijingDayStartAt(now) || now) + SETS_FINAL_REFRESH_HOUR_MS;
+        const targetAt = Number.isFinite(Number(options.delayMs))
+            ? now + Math.max(0, Number(options.delayMs))
+            : state.setsFinalRefreshDay !== today && now >= todayFinalAt
+                ? now + 1000
+                : nextSetsFinalRefreshAt(now);
+        state.setsFinalRefreshTimer = window.setTimeout(() => {
+            state.setsFinalRefreshTimer = null;
+            runSetsFinalRefresh();
+        }, Math.max(0, targetAt - now));
+    }
+
+    async function runSetsFinalRefresh() {
+        if (!state.settings.hourlyRefresh) return;
+        if (state.busy) {
+            scheduleSetsFinalRefresh({ delayMs: 1000 });
+            return;
+        }
+        const currentDay = beijingDateKey();
+        if (!currentDay || state.setsFinalRefreshDay === currentDay) {
+            scheduleSetsFinalRefresh();
+            return;
+        }
+        state.setsFinalRefreshDay = currentDay;
+        try {
+            await loadRankingsView({ refresh: true, autoRefresh: true, finalSets: true });
+        } finally {
+            scheduleSetsFinalRefresh();
+        }
+    }
+
     function scheduleHourlyRefresh() {
         if (state.hourlyRefreshTimer) {
             window.clearTimeout(state.hourlyRefreshTimer);
@@ -2808,7 +2937,12 @@
             window.clearTimeout(state.hourlyRefreshTimer);
             state.hourlyRefreshTimer = null;
         }
+        if (state.setsFinalRefreshTimer) {
+            window.clearTimeout(state.setsFinalRefreshTimer);
+            state.setsFinalRefreshTimer = null;
+        }
         if (!state.settings.hourlyRefresh) return;
+        scheduleSetsFinalRefresh();
         if (options.runNow) {
             window.setTimeout(() => runHourlyRefresh(), Number(options.delayMs) || 0);
             return;

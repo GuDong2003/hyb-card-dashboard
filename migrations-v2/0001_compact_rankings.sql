@@ -14,6 +14,16 @@ CREATE TABLE IF NOT EXISTS rank_ingest_state (
   PRIMARY KEY (season_id, scope)
 );
 
+CREATE TABLE IF NOT EXISTS rank_metric_ingest_state (
+  season_id TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  metric TEXT NOT NULL,
+  window_start_at INTEGER NOT NULL,
+  last_captured_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (season_id, scope, metric)
+);
+
 CREATE TABLE IF NOT EXISTS rank_user_days (
   season_id TEXT NOT NULL,
   day_start_at INTEGER NOT NULL,

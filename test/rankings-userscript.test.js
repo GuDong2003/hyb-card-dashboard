@@ -10,7 +10,7 @@ test('userscript matches Card and CDK while keeping the bridge UI on Card', asyn
   assert.match(source, /@match\s+https:\/\/card\.gudong226\.com\/\*/);
   assert.match(source, /@match\s+https:\/\/cdk\.hybgzs\.com\/\*/);
   assert.match(source, /@connect\s+cdk\.hybgzs\.com/);
-  assert.match(source, /@version\s+1\.3\.3/);
+  assert.match(source, /@version\s+1\.4\.0/);
   assert.match(source, /@updateURL\s+https:\/\/card\.gudong226\.com\/userscripts\/hyb-card-dashboard-rankings\.user\.js/);
   assert.match(source, /@downloadURL\s+https:\/\/card\.gudong226\.com\/userscripts\/hyb-card-dashboard-rankings\.user\.js/);
   assert.match(source, /GM_addValueChangeListener/);
@@ -26,6 +26,8 @@ test('userscript matches Card and CDK while keeping the bridge UI on Card', asyn
   assert.match(source, /hyb-card-rankings-relay-claim-v1/);
   assert.match(source, /function normalizeCapturedAt/);
   assert.match(source, /lastUpdatedAt/);
+  assert.match(source, /finalSets/);
+  assert.match(source, /setsFinalRetry/);
   assert.match(source, /REQUEST_COOLDOWN_MS\s*=\s*3\s*\*\s*60\s*\*\s*60\s*\*\s*1000/);
   assert.match(source, /RETRY_COOLDOWN_MS\s*=\s*60\s*\*\s*60\s*\*\s*1000/);
   assert.match(source, /PROTECTED_COOLDOWN_MS\s*=\s*3\s*\*\s*60\s*\*\s*60\s*\*\s*1000/);
@@ -58,16 +60,16 @@ test('userscript separates manual refreshes from automatic cooldowns and retries
   assert.match(source, /function claimSourceRequest\(options = \{\}\)/);
   assert.match(source, /const manual = Boolean\(options\.manual\)/);
   assert.match(source, /if \(Number\(state\.blockedUntil\) > now\) throw sourceCooldownError\(state, now\)/);
-  assert.match(source, /if \(!manual && Number\(state\.nextAllowedAt\) > now\) throw sourceCooldownError\(state, now\)/);
+  assert.match(source, /if \(!manual && !bypassOrdinaryCooldown && Number\(state\.nextAllowedAt\) > now\)\s*\{\s*throw sourceCooldownError\(state, now\)/);
   assert.match(source, /function recordSourceFailure\(error, options = \{\}\)/);
   const protectedBranch = source.indexOf('if (protectedFailure) {');
   const manualFailureBranch = source.indexOf('if (manual) {', protectedBranch);
   assert.ok(protectedBranch >= 0 && manualFailureBranch > protectedBranch, 'manual failures must be handled after protection failures');
   assert.match(source, /async function loadSnapshot\(options = \{\}\)/);
-  assert.match(source, /claimSourceRequest\(\{ manual \}\)/);
-  assert.match(source, /recordSourceOutcome\(bundle, \{ manual \}\)/);
-  assert.match(source, /recordSourceFailure\(error, \{ manual \}\)/);
-  assert.match(source, /loadSnapshot\(\{ manual: Boolean\(data\.manual\) \}\)/);
+  assert.match(source, /claimSourceRequest\(\{ manual, finalSets, setsFinalRetry \}\)/);
+  assert.match(source, /recordSourceOutcome\(bundle, \{ manual, finalSets, setsFinalRetry \}\)/);
+  assert.match(source, /recordSourceFailure\(error, \{ manual, finalSets, setsFinalRetry \}\)/);
+  assert.match(source, /loadSnapshot\(\{\s*manual: Boolean\(data\.manual\),\s*finalSets: Boolean\(data\.finalSets\),\s*setsFinalRetry: Boolean\(data\.setsFinalRetry\)\s*\}\)/);
 });
 
 function createUserscriptContext(source, initialState, requestResult) {
@@ -136,10 +138,15 @@ function createUserscriptContext(source, initialState, requestResult) {
     listeners,
     postedMessages,
     requestCalls,
-    async request(manual) {
+    async request(manual, options = {}) {
       const request = {
         origin: 'https://card.gudong226.com',
-        data: { type: 'HYB_CARD_RANKINGS_REQUEST', requestId: `test-${Date.now()}`, manual }
+        data: {
+          type: 'HYB_CARD_RANKINGS_REQUEST',
+          requestId: `test-${Date.now()}`,
+          manual,
+          ...options
+        }
       };
       await listeners[0](request);
       return postedMessages.at(-1);
@@ -149,6 +156,44 @@ function createUserscriptContext(source, initialState, requestResult) {
     }
   };
 }
+
+test('userscript allows the fixed sets final request to bypass the ordinary three-hour source cooldown', async () => {
+  const source = await readFile(SCRIPT_PATH, 'utf8');
+  const now = Date.now();
+  const harness = createUserscriptContext(source, {
+    ownerId: null,
+    lockUntil: 0,
+    nextAllowedAt: now + 3 * 60 * 60 * 1000,
+    blockedUntil: 0,
+    retryCount: 0
+  }, { status: 200 });
+
+  const response = await harness.request(false, { finalSets: true });
+  assert.equal(response.ok, true);
+  assert.equal(harness.requestCalls.length, 2);
+  harness.dispose();
+});
+
+test('userscript keeps one final retry available after an earlier ordinary failure', async () => {
+  const source = await readFile(SCRIPT_PATH, 'utf8');
+  const now = Date.now();
+  const harness = createUserscriptContext(source, {
+    ownerId: null,
+    lockUntil: 0,
+    nextAllowedAt: now,
+    blockedUntil: 0,
+    retryCount: 1
+  }, { status: 503, body: 'temporary failure' });
+
+  const response = await harness.request(false, { finalSets: true });
+  const state = harness.storage.get('hyb-card-rankings-source-state-v1');
+  assert.equal(response.ok, false);
+  assert.equal(state.mode, 'final-retry-wait');
+  assert.equal(state.retryCount, 1);
+  assert.ok(state.nextAllowedAt >= now + 60 * 60 * 1000 - 100);
+  assert.equal(state.blockedUntil, 0);
+  harness.dispose();
+});
 
 test('userscript lets a manual request bypass ordinary cooldown while retaining the cooldown afterward', async () => {
   const source = await readFile(SCRIPT_PATH, 'utf8');

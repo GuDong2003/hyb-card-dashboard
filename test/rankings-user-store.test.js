@@ -7,10 +7,13 @@ import {
   mergeMetricField,
   hasMeaningfulUserChange,
   shouldSkipSourceCapture,
-  storeUserObservations
+  storeUserObservations,
+  AUTO_SETS_FINAL_CLAIM_SQL
 } from '../src/rankings-user-store.js';
 
-const SCHEMA = await readFile(new URL('../migrations-v2/0001_compact_rankings.sql', import.meta.url), 'utf8');
+const SCHEMA = `${await readFile(new URL('../migrations-v2/0001_compact_rankings.sql', import.meta.url), 'utf8')}
+ALTER TABLE rank_metric_ingest_state ADD COLUMN final_window_start_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE rank_metric_ingest_state ADD COLUMN final_retry_count INTEGER NOT NULL DEFAULT 0;`;
 
 class SqliteStatement {
   constructor(db, sql) {
@@ -162,6 +165,247 @@ test('automatic ingest uses one shared three-hour source window while manual ing
   ])], { mode: 'automatic' }, automaticAt + 3 * 60 * 60 * 1_000);
   assert.equal(afterWindow.skippedScopes.length, 0);
   assert.equal(db.db.prepare(`SELECT epic_total_value FROM rank_user_current WHERE user_id = 'u1'`).get().epic_total_value, 13);
+});
+
+test('automatic sets data follows the three-hour cadence before 08:00 without blocking epic or spend', async () => {
+  const db = new SqliteDb();
+  const beforeEight = Date.parse('2026-08-25T07:00:00+08:00');
+  await storeUserObservations(db, [normalizedSnapshot('global', beforeEight, [
+    entry('sets_total', 'u1', 1, 10),
+    entry('epic_total', 'u1', 10, 2),
+    entry('spend_total', 'u1', 500_000, 3)
+  ])], { mode: 'automatic' }, beforeEight);
+
+  const row = db.db.prepare(`
+    SELECT sets_total_value, epic_total_value, spend_total_value
+    FROM rank_user_current
+    WHERE season_id = 'season-1' AND user_id = 'u1'
+  `).get();
+  assert.equal(row.sets_total_value, 1);
+  assert.equal(row.epic_total_value, 10);
+  assert.equal(row.spend_total_value, 500_000);
+});
+
+test('automatic sets data follows three-hour refreshes before 08:00 and a fixed final refresh at 08:00', async () => {
+  const db = new SqliteDb();
+  const beforeEight = Date.parse('2026-08-25T07:00:00+08:00');
+  const afterEight = Date.parse('2026-08-25T08:30:00+08:00');
+  const laterSameDay = Date.parse('2026-08-25T12:00:00+08:00');
+  await storeUserObservations(db, [normalizedSnapshot('global', beforeEight, [
+    entry('sets_total', 'u1', 1, 10),
+    entry('epic_total', 'u1', 10, 2),
+    entry('spend_total', 'u1', 500_000, 3)
+  ])], { mode: 'automatic' }, beforeEight);
+
+  let row = db.db.prepare(`
+    SELECT sets_total_value, epic_total_value, spend_total_value
+    FROM rank_user_current
+    WHERE season_id = 'season-1' AND user_id = 'u1'
+  `).get();
+  assert.equal(row.sets_total_value, 1);
+  assert.equal(row.epic_total_value, 10);
+  assert.equal(row.spend_total_value, 500_000);
+
+  await storeUserObservations(db, [normalizedSnapshot('global', afterEight, [
+    entry('sets_total', 'u1', 2, 8),
+    entry('epic_total', 'u1', 12, 1),
+    entry('spend_total', 'u1', 600_000, 2)
+  ])], { mode: 'automatic', finalSets: true }, afterEight);
+  row = db.db.prepare(`
+    SELECT sets_total_value, epic_total_value, spend_total_value
+    FROM rank_user_current
+    WHERE season_id = 'season-1' AND user_id = 'u1'
+  `).get();
+  assert.equal(row.sets_total_value, 2);
+  assert.equal(row.epic_total_value, 10);
+  assert.equal(row.spend_total_value, 500_000);
+
+  await storeUserObservations(db, [normalizedSnapshot('global', laterSameDay, [
+    entry('sets_total', 'u1', 3, 7),
+    entry('epic_total', 'u1', 12, 1),
+    entry('spend_total', 'u1', 600_000, 2)
+  ])], { mode: 'automatic', finalSets: true }, laterSameDay);
+  row = db.db.prepare(`
+    SELECT sets_total_value, epic_total_value, spend_total_value
+    FROM rank_user_current
+    WHERE season_id = 'season-1' AND user_id = 'u1'
+  `).get();
+  assert.equal(row.sets_total_value, 2);
+  assert.equal(row.epic_total_value, 12);
+  assert.equal(row.spend_total_value, 600_000);
+
+  const nextDay = Date.parse('2026-08-26T08:30:00+08:00');
+  await storeUserObservations(db, [normalizedSnapshot('global', nextDay, [
+    entry('sets_total', 'u1', 4, 6),
+    entry('epic_total', 'u1', 14, 1),
+    entry('spend_total', 'u1', 700_000, 1)
+  ])], { mode: 'automatic', finalSets: true }, nextDay);
+  row = db.db.prepare(`
+    SELECT sets_total_value, epic_total_value, spend_total_value
+    FROM rank_user_current
+    WHERE season_id = 'season-1' AND user_id = 'u1'
+  `).get();
+  assert.equal(row.sets_total_value, 4);
+  assert.equal(row.epic_total_value, 14);
+  assert.equal(row.spend_total_value, 700_000);
+});
+
+test('manual sets refresh before 08:00 does not close the later automatic window', async () => {
+  const db = new SqliteDb();
+  const beforeEight = Date.parse('2026-08-25T07:00:00+08:00');
+  const manualAt = Date.parse('2026-08-25T07:30:00+08:00');
+  const afterEight = Date.parse('2026-08-25T08:30:00+08:00');
+  await storeUserObservations(db, [normalizedSnapshot('global', beforeEight, [
+    entry('sets_total', 'u1', 1, 10)
+  ])], { mode: 'automatic' }, beforeEight);
+  await storeUserObservations(db, [normalizedSnapshot('global', manualAt, [
+    entry('sets_total', 'u1', 2, 8)
+  ])], { mode: 'manual' }, manualAt);
+  await storeUserObservations(db, [normalizedSnapshot('global', afterEight, [
+    entry('sets_total', 'u1', 3, 7)
+  ])], { mode: 'automatic', finalSets: true }, afterEight);
+
+  const row = db.db.prepare(`
+    SELECT sets_total_value, sets_total_observed_at
+    FROM rank_user_current
+    WHERE season_id = 'season-1' AND user_id = 'u1'
+  `).get();
+  assert.equal(row.sets_total_value, 3);
+  assert.equal(row.sets_total_observed_at, afterEight);
+});
+
+test('manual sets refresh after 08:00 does not close the daily automatic final window', async () => {
+  const db = new SqliteDb();
+  const manualAt = Date.parse('2026-08-25T09:00:00+08:00');
+  await storeUserObservations(db, [normalizedSnapshot('global', manualAt, [
+    entry('sets_total', 'u1', 3, 7)
+  ])], { mode: 'manual' }, manualAt);
+  const laterAutomaticAt = Date.parse('2026-08-25T12:00:00+08:00');
+  const accepted = await storeUserObservations(db, [normalizedSnapshot('global', laterAutomaticAt, [
+    entry('sets_total', 'u1', 4, 6)
+  ])], { mode: 'automatic', finalSets: true }, laterAutomaticAt);
+
+  const row = db.db.prepare(`
+    SELECT sets_total_value, sets_total_observed_at
+    FROM rank_user_current
+    WHERE season_id = 'season-1' AND user_id = 'u1'
+  `).get();
+  assert.equal(row.sets_total_value, 4);
+  assert.equal(row.sets_total_observed_at, laterAutomaticAt);
+  assert.equal(accepted.skippedMetrics.length, 0);
+});
+
+test('fixed sets final refresh allows only one retry after a failed write', async () => {
+  const db = new SqliteDb();
+  const finalAt = Date.parse('2026-08-25T08:00:00+08:00');
+  const snapshots = [normalizedSnapshot('global', finalAt, [
+    entry('sets_total', 'u1', 2, 8)
+  ])];
+  const originalBatch = db.batch.bind(db);
+  let failBatch = true;
+  db.batch = async (statements) => {
+    if (failBatch) throw new Error('simulated_final_sets_failure');
+    return originalBatch(statements);
+  };
+
+  await assert.rejects(
+    storeUserObservations(db, snapshots, { mode: 'automatic', finalSets: true }, finalAt),
+    /simulated_final_sets_failure/
+  );
+  let state = db.db.prepare(`
+    SELECT window_start_at, final_window_start_at, final_retry_count
+    FROM rank_metric_ingest_state
+    WHERE season_id = 'season-1' AND scope = 'global' AND metric = 'sets'
+  `).get();
+  assert.deepEqual({ ...state }, {
+    window_start_at: 0,
+    final_window_start_at: Date.parse('2026-08-25T08:00:00+08:00'),
+    final_retry_count: 0
+  });
+
+  failBatch = false;
+  const retry = await storeUserObservations(db, snapshots, {
+    mode: 'automatic',
+    finalSets: true,
+    setsFinalRetry: true
+  }, finalAt + 60 * 60 * 1000);
+  assert.equal(retry.skippedMetrics.length, 0);
+  assert.equal(db.db.prepare(`SELECT sets_total_value FROM rank_user_current WHERE user_id = 'u1'`).get().sets_total_value, 2);
+
+  state = db.db.prepare(`
+    SELECT window_start_at, final_window_start_at, final_retry_count
+    FROM rank_metric_ingest_state
+    WHERE season_id = 'season-1' AND scope = 'global' AND metric = 'sets'
+  `).get();
+  assert.deepEqual({ ...state }, {
+    window_start_at: Date.parse('2026-08-25T08:00:00+08:00'),
+    final_window_start_at: Date.parse('2026-08-25T08:00:00+08:00'),
+    final_retry_count: 1
+  });
+
+  const blocked = await storeUserObservations(db, [normalizedSnapshot('global', finalAt + 2 * 60 * 60 * 1000, [
+    entry('sets_total', 'u1', 3, 7)
+  ])], { mode: 'automatic', finalSets: true, setsFinalRetry: true }, finalAt + 2 * 60 * 60 * 1000);
+  assert.equal(blocked.skippedMetrics[0].reason, 'sets_daily_window');
+});
+
+test('a temporary first-final claim keeps the completed window recoverable', () => {
+  const db = new SqliteDb();
+  const finalAt = Date.parse('2026-08-25T08:00:00+08:00');
+  const result = db.prepare(AUTO_SETS_FINAL_CLAIM_SQL).bind(
+    'season-1',
+    'global',
+    'sets',
+    0,
+    finalAt,
+    finalAt,
+    0,
+    finalAt
+  ).run();
+  assert.equal(result.meta.changes, 1);
+  const state = db.db.prepare(`
+    SELECT window_start_at, final_window_start_at, final_retry_count
+    FROM rank_metric_ingest_state
+    WHERE season_id = 'season-1' AND scope = 'global' AND metric = 'sets'
+  `).get();
+  assert.deepEqual({ ...state }, {
+    window_start_at: 0,
+    final_window_start_at: finalAt,
+    final_retry_count: 0
+  });
+});
+
+test('automatic sets claim is released when the user write fails', async () => {
+  const db = new SqliteDb();
+  const automaticAt = Date.parse('2026-08-25T08:30:00+08:00');
+  const snapshots = [normalizedSnapshot('global', automaticAt, [
+    entry('sets_total', 'u1', 2, 8)
+  ])];
+  const originalBatch = db.batch.bind(db);
+  let failBatch = true;
+  db.batch = async (statements) => {
+    if (failBatch) throw new Error('simulated_sets_batch_failure');
+    return originalBatch(statements);
+  };
+
+  await assert.rejects(
+    storeUserObservations(db, snapshots, { mode: 'automatic', finalSets: true }, automaticAt),
+    /simulated_sets_batch_failure/
+  );
+  const failedState = db.db.prepare(`
+    SELECT window_start_at, last_captured_at, updated_at
+    FROM rank_metric_ingest_state
+    WHERE season_id = 'season-1' AND scope = 'global' AND metric = 'sets'
+  `).get();
+  assert.deepEqual({ ...failedState }, { window_start_at: 0, last_captured_at: 0, updated_at: 0 });
+
+  failBatch = false;
+  await storeUserObservations(db, snapshots, {
+    mode: 'automatic',
+    finalSets: true,
+    setsFinalRetry: true
+  }, automaticAt + 1_000);
+  assert.equal(db.db.prepare(`SELECT sets_total_value FROM rank_user_current WHERE user_id = 'u1'`).get().sets_total_value, 2);
 });
 
 test('manual ingest still rejects an already accepted season scope capture', async () => {

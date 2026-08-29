@@ -5,7 +5,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { handleRankingsRequest } from '../src/rankings-worker.js';
 import { COMPACT_BOARD_KEYS, USER_CURRENT_COLUMNS } from '../src/rankings-user-store.js';
 
-const SCHEMA = await readFile(new URL('../migrations-v2/0001_compact_rankings.sql', import.meta.url), 'utf8');
+const SCHEMA = `${await readFile(new URL('../migrations-v2/0001_compact_rankings.sql', import.meta.url), 'utf8')}
+ALTER TABLE rank_metric_ingest_state ADD COLUMN final_window_start_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE rank_metric_ingest_state ADD COLUMN final_retry_count INTEGER NOT NULL DEFAULT 0;`;
 
 class Statement {
   constructor(db, sql) {

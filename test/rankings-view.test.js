@@ -178,6 +178,20 @@ test('user overview explains that free pulls are estimated from paid days', asyn
   assert.match(css, /\.rankings-free-pulls-notice-text\s*\{[\s\S]*?color:\s*var\(--amber\)/);
 });
 
+test('explains the separate daily refresh window for exchange counts', async () => {
+  const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
+  const noticeStart = html.indexOf('id="rankingsSetsRefreshNotice"');
+  const noticeEnd = html.indexOf('</section>', noticeStart);
+  assert.ok(noticeStart >= 0 && noticeEnd > noticeStart, '榜单上方应说明成套兑换次数的刷新规则');
+  const notice = html.slice(noticeStart, noticeEnd);
+  assert.match(notice, /00:00[～至-]08:00/);
+  assert.match(notice, /00:00[～至-]08:00 期间随自动刷新更新/);
+  assert.match(notice, /08:00 再进行一次最终刷新/);
+  assert.match(notice, /最终失败约 1 小时后最多重试一次/);
+  assert.match(notice, /手动刷新可立即更新/);
+  assert.match(notice, /其他榜单仍按每 3 小时自动刷新/);
+});
+
 test('rankings table does not create an independent vertical scroll container', async () => {
   const css = await readFile(new URL('../site/rankings.css', import.meta.url), 'utf8');
   const tableWrapStart = css.indexOf('.rankings-table-wrap {');
@@ -519,8 +533,11 @@ test('rankings client persists upload consent and gates snapshot uploads', async
   assert.match(source, /autoUpload\s*:\s*false/);
   assert.match(source, /hourlyRefresh\s*:\s*false/);
   assert.match(source, /AUTO_REFRESH_INTERVAL_MS\s*=\s*3\s*\*\s*60\s*\*\s*60\s*\*\s*1000/);
+  assert.match(source, /SETS_FINAL_REFRESH_HOUR_MS\s*=\s*8\s*\*\s*60\s*\*\s*60\s*\*\s*1000/);
   assert.match(source, /CAPTURE_BUCKET_MS\s*=\s*60\s*\*\s*60\s*\*\s*1000/);
   assert.match(source, /function scheduleHourlyRefresh/);
+  assert.match(source, /function scheduleSetsFinalRefresh/);
+  assert.match(source, /function runSetsFinalRefresh/);
   assert.match(source, /function runHourlyRefresh/);
   assert.match(source, /configureHourlyRefresh\(\{ runNow: state\.settings\.hourlyRefresh \}\)/);
   assert.match(source, /configureHourlyRefresh\(\{ runNow: true, delayMs: 600 \}\)/);
@@ -565,10 +582,54 @@ test('rankings client skips already uploaded automatic captures without storing 
   assert.match(source, /rememberUploadedSnapshots/);
   assert.match(source, /function readUploadState/);
   assert.match(source, /return \{\};/);
-  assert.match(source, /rememberUploadedSnapshots\(rememberableUploadSnapshots\(compactSnapshots, response\)\)/);
+  assert.match(source, /rememberUploadedSnapshots\(\s*rememberableUploadSnapshots\(compactSnapshots, response\)/);
   assert.match(source, /return \{ \.\.\.latest, skippedUpload: true \}/);
   assert.match(source, /source\.skippedUpload && state\.loaded/);
   assert.doesNotMatch(source, /fingerprint\s*:/);
+});
+
+test('upload watermarks keep ordinary and sets lanes independent', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  const readUploadState = extractFunction(source, 'readUploadState');
+  const key = 'season-1\u0000global';
+  let removed = false;
+  const context = {
+    UPLOAD_STATE_STORAGE_KEY: 'hyb-card-rankings-upload-state-v1',
+    window: {
+      localStorage: {
+        getItem() {
+          return JSON.stringify({
+            [key]: {
+              capturedAt: 0,
+              uploadedAt: Date.now(),
+              setsCapturedAt: 456,
+              setsUploadedAt: 789
+            }
+          });
+        },
+        removeItem() {
+          removed = true;
+        }
+      }
+    },
+    normalizeCapturedAt(value, fallback = null) {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric) : fallback;
+    },
+    uploadStateKey(season, scope) {
+      return `${String(season || '').trim()}\u0000${String(scope || '').trim()}`;
+    }
+  };
+
+  vm.runInNewContext(`${readUploadState}\nthis.result = readUploadState();`, context);
+
+  assert.equal(removed, false);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.result[key])), {
+    capturedAt: null,
+    uploadedAt: null,
+    setsCapturedAt: 456,
+    setsUploadedAt: 789
+  });
 });
 
 test('rankings upload preserves timestamp provenance and sends manual or automatic mode', async () => {
@@ -582,7 +643,9 @@ test('rankings upload preserves timestamp provenance and sends manual or automat
   assert.match(compact, /observedAt/);
   assert.match(compact, /capturedAtSource/);
   assert.match(upload, /mode:\s*options\.manual\s*\?\s*'manual'\s*:\s*'automatic'/);
-  assert.match(source, /REQUIRED_USERSCRIPT_VERSION\s*=\s*'1\.3\.3'/);
+  assert.match(source, /REQUIRED_USERSCRIPT_VERSION\s*=\s*'1\.4\.0'/);
+  assert.match(source, /finalSets/);
+  assert.match(source, /setsFinalRetry/);
 });
 
 test('automatic cooldown scopes are not remembered as successfully uploaded', async () => {
@@ -691,13 +754,13 @@ test('manual rankings refresh bypasses automatic retry scheduling but passes its
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
 
   assert.match(source, /const manualRefresh = refresh && !autoRefresh/);
-  assert.match(source, /ensureFreshSnapshot\(refresh, retry, manualRefresh\)/);
+  assert.match(source, /ensureFreshSnapshot\(refresh, retry, manualRefresh, \{ finalSets, setsFinalRetry \}\)/);
   assert.match(source, /function requestBridgeSnapshot\(options = \{\}\)/);
   assert.match(source, /const manual = Boolean\(options\.manual\)/);
-  assert.match(source, /requestBridgeSnapshot\(\{ manual \}\)/);
+  assert.match(source, /requestBridgeSnapshot\(\{ manual, finalSets, setsFinalRetry \}\)/);
   assert.match(source, /const canScheduleRetry = !manual && errorCanAutoRetry\(error\)/);
   assert.match(source, /const canScheduleRetry = !manualRefresh && errorCanAutoRetry\(error\)/);
-  assert.match(source, /if \(manual\) clearRankingsRetry\(\);/);
+  assert.match(source, /if \(manual\) clearRankingsRetry\(\{ preserveFinal: true \}\);/);
   assert.match(source, /部分来源失败，本次不自动重试/);
 });
 

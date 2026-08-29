@@ -103,7 +103,15 @@ test('compact schema has no legacy tables, raw payload, or fingerprint columns',
   const schema = await readFile(new URL('../migrations-v2/0001_compact_rankings.sql', import.meta.url), 'utf8');
   assert.match(schema, /create table if not exists rank_user_days/i);
   assert.match(schema, /create table if not exists rank_user_current/i);
+  assert.match(schema, /create table if not exists rank_metric_ingest_state/i);
   assert.doesNotMatch(schema, /rank_snapshots|rank_entries|rank_user_metrics|rank_daily_metrics|raw_json|fingerprint/i);
+});
+
+test('sets window migration is safe to apply to an existing compact database', async () => {
+  const migration = await readFile(new URL('../migrations-v2/0003_sets_ingest_state.sql', import.meta.url), 'utf8');
+  assert.match(migration, /create table if not exists rank_metric_ingest_state/i);
+  assert.match(migration, /primary key\s*\(season_id, scope, metric\)/i);
+  assert.doesNotMatch(migration, /\b(delete|drop|update|insert)\b/i);
 });
 
 test('compact verification is bounded and read-only', () => {

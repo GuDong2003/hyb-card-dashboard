@@ -3,6 +3,7 @@ import {
   estimatePullsFromSpend
 } from './rankings-core.js';
 import {
+  BEIJING_OFFSET_MS,
   DAY_BOUNDARY_OFFSET_MS,
   DAY_MS,
   dayStartAtForCapturedAt,
@@ -25,6 +26,8 @@ const CUMULATIVE_BOARD_KEYS = new Set(
 const SOURCE_ORDER = Object.freeze(['global', 'friends']);
 const SOURCE_ORDER_SET = new Set(SOURCE_ORDER);
 export const AUTO_INGEST_INTERVAL_MS = 3 * 60 * 60 * 1000;
+export const SETS_REFRESH_HOUR_MS = 8 * 60 * 60 * 1000;
+export const SETS_INGEST_METRIC = 'sets';
 const DERIVED_PERIODS = Object.freeze(['today', 'week', 'month']);
 const DERIVED_SORT_COLUMNS = Object.freeze([
   'sort_legend_value', 'sort_spend_usd', 'sort_estimated_pulls',
@@ -51,6 +54,19 @@ export const USER_CURRENT_COLUMNS = Object.freeze([
   ]),
   ...DERIVED_SORT_COLUMNS
 ]);
+
+export function setsRefreshWindowStartAt(timestamp) {
+  const value = positiveInteger(timestamp);
+  if (!value) return null;
+  const beijingMidnight = Math.floor((value + BEIJING_OFFSET_MS) / DAY_MS) * DAY_MS - BEIJING_OFFSET_MS;
+  return beijingMidnight + SETS_REFRESH_HOUR_MS;
+}
+
+function activeSetsRefreshWindowStartAt(timestamp) {
+  const value = positiveInteger(timestamp);
+  const windowStartAt = setsRefreshWindowStartAt(value);
+  return windowStartAt != null && value >= windowStartAt ? windowStartAt : null;
+}
 
 export function mergeMetricField(existing, incoming, cumulative = false) {
   const current = normalizeMetricField(existing);
@@ -650,9 +666,81 @@ export const INGEST_STATE_FINALIZE_SQL = `
   WHERE excluded.last_captured_at > rank_ingest_state.last_captured_at
 `;
 
+export const AUTO_SETS_REFRESH_CLAIM_SQL = `
+  INSERT INTO rank_metric_ingest_state (
+    season_id, scope, metric, window_start_at, last_captured_at, updated_at,
+    final_window_start_at, final_retry_count
+  ) VALUES (?, ?, ?, ?, 0, ?, 0, 0)
+  ON CONFLICT (season_id, scope, metric) DO UPDATE SET
+    updated_at = excluded.updated_at
+  WHERE rank_metric_ingest_state.last_captured_at < ?
+    AND (rank_metric_ingest_state.updated_at = 0 OR rank_metric_ingest_state.updated_at <= ?)
+`;
+
+export const AUTO_SETS_FINAL_CLAIM_SQL = `
+  INSERT INTO rank_metric_ingest_state (
+    season_id, scope, metric, window_start_at, last_captured_at, updated_at,
+    final_window_start_at, final_retry_count
+  ) VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+  ON CONFLICT (season_id, scope, metric) DO UPDATE SET
+    final_window_start_at = excluded.final_window_start_at,
+    final_retry_count = excluded.final_retry_count,
+    updated_at = excluded.updated_at
+  WHERE rank_metric_ingest_state.final_window_start_at < excluded.final_window_start_at
+    AND rank_metric_ingest_state.last_captured_at < ?
+`;
+
+export const AUTO_SETS_FINAL_RETRY_CLAIM_SQL = `
+  INSERT INTO rank_metric_ingest_state (
+    season_id, scope, metric, window_start_at, last_captured_at, updated_at,
+    final_window_start_at, final_retry_count
+  ) VALUES (?, ?, ?, ?, 0, ?, ?, 1)
+  ON CONFLICT (season_id, scope, metric) DO UPDATE SET
+    final_retry_count = 1,
+    updated_at = excluded.updated_at
+  WHERE rank_metric_ingest_state.final_window_start_at = excluded.final_window_start_at
+    AND rank_metric_ingest_state.final_retry_count < 1
+    AND rank_metric_ingest_state.window_start_at < excluded.final_window_start_at
+    AND rank_metric_ingest_state.last_captured_at < ?
+`;
+
+export const SETS_INGEST_STATE_FINALIZE_SQL = `
+  INSERT INTO rank_metric_ingest_state (
+    season_id, scope, metric, window_start_at, last_captured_at, updated_at,
+    final_window_start_at, final_retry_count
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT (season_id, scope, metric) DO UPDATE SET
+    window_start_at = MAX(rank_metric_ingest_state.window_start_at, excluded.window_start_at),
+    last_captured_at = MAX(rank_metric_ingest_state.last_captured_at, excluded.last_captured_at),
+    updated_at = MAX(rank_metric_ingest_state.updated_at, excluded.updated_at),
+    final_window_start_at = MAX(rank_metric_ingest_state.final_window_start_at, excluded.final_window_start_at),
+    final_retry_count = CASE
+      WHEN excluded.final_window_start_at > rank_metric_ingest_state.final_window_start_at
+        THEN excluded.final_retry_count
+      ELSE MAX(rank_metric_ingest_state.final_retry_count, excluded.final_retry_count)
+    END
+  WHERE excluded.window_start_at > rank_metric_ingest_state.window_start_at
+     OR excluded.last_captured_at > rank_metric_ingest_state.last_captured_at
+     OR excluded.updated_at > rank_metric_ingest_state.updated_at
+     OR excluded.final_window_start_at > rank_metric_ingest_state.final_window_start_at
+     OR excluded.final_retry_count > rank_metric_ingest_state.final_retry_count
+`;
+
+export const SETS_INGEST_MANUAL_FINALIZE_SQL = `
+  INSERT INTO rank_metric_ingest_state (
+    season_id, scope, metric, window_start_at, last_captured_at, updated_at,
+    final_window_start_at, final_retry_count
+  ) VALUES (?, ?, ?, 0, ?, 0, 0, 0)
+  ON CONFLICT (season_id, scope, metric) DO UPDATE SET
+    last_captured_at = MAX(rank_metric_ingest_state.last_captured_at, excluded.last_captured_at)
+  WHERE excluded.last_captured_at > rank_metric_ingest_state.last_captured_at
+`;
+
 export async function storeUserObservations(db, normalizedSnapshots = [], source = '', now = Date.now()) {
   const options = source && typeof source === 'object' ? source : { source, mode: 'manual' };
   const automatic = options.mode !== 'manual';
+  const finalSets = options.finalSets === true;
+  const setsFinalRetry = options.setsFinalRetry === true;
   const sourceGroups = new Map();
   for (const normalized of normalizedSnapshots) {
     if (!normalized || !normalized.seasonId || !normalized.scope) continue;
@@ -675,68 +763,195 @@ export async function storeUserObservations(db, normalizedSnapshots = [], source
     changedUsers: 0,
     changedDays: 0,
     changedFields: 0,
-    skippedScopes: []
+    storedSnapshots: 0,
+    storedEntries: 0,
+    skippedScopes: [],
+    skippedMetrics: []
   };
 
   const seasonGroups = new Map();
   const acceptedSourceGroups = [];
+  const acceptedMetricGroups = [];
+  const acceptedManualMetricGroups = [];
   const automaticClaims = [];
+  const automaticMetricClaims = [];
   try {
     for (const group of sourceGroups.values()) {
-      const state = await db.prepare(`
-        SELECT last_captured_at, updated_at
-        FROM rank_ingest_state
-        WHERE season_id = ? AND scope = ?
-        LIMIT 1
-      `).bind(group.seasonId, group.scope).first();
-      const skipReason = sourceCaptureSkipReason(state, group.capturedAt, automatic, now);
-      if (skipReason) {
-        result.skippedScopes.push({
-          seasonId: group.seasonId,
-          scope: group.scope,
-          capturedAt: group.capturedAt,
-          lastCapturedAt: Number(state && state.last_captured_at || 0),
-          reason: skipReason
-        });
-        continue;
-      }
+      const generalSnapshots = snapshotsForMetric(group.snapshots, false);
+      const setsSnapshots = snapshotsForMetric(group.snapshots, true);
+      const generalCapturedAt = maxSnapshotCapturedAt(generalSnapshots);
+      const setsCapturedAt = maxSnapshotCapturedAt(setsSnapshots);
+      const acceptedSnapshots = [];
+      let sourceAccepted = false;
 
-      if (automatic) {
-        const claim = await db.prepare(AUTO_INGEST_CLAIM_SQL).bind(
-          group.seasonId,
-          group.scope,
-          now,
-          group.capturedAt,
-          now - AUTO_INGEST_INTERVAL_MS
-        ).run();
-        if (Number(claim && claim.meta && claim.meta.changes || 0) === 0) {
+      if (generalSnapshots.length) {
+        const state = await db.prepare(`
+          SELECT last_captured_at, updated_at
+          FROM rank_ingest_state
+          WHERE season_id = ? AND scope = ?
+          LIMIT 1
+        `).bind(group.seasonId, group.scope).first();
+        const skipReason = sourceCaptureSkipReason(state, generalCapturedAt, automatic, now);
+        if (skipReason) {
           result.skippedScopes.push({
             seasonId: group.seasonId,
             scope: group.scope,
-            capturedAt: group.capturedAt,
+            capturedAt: generalCapturedAt,
             lastCapturedAt: Number(state && state.last_captured_at || 0),
-            reason: 'automatic_cooldown'
+            reason: skipReason
           });
-          continue;
+        } else {
+          if (automatic) {
+            const claim = await db.prepare(AUTO_INGEST_CLAIM_SQL).bind(
+              group.seasonId,
+              group.scope,
+              now,
+              generalCapturedAt,
+              now - AUTO_INGEST_INTERVAL_MS
+            ).run();
+            if (Number(claim && claim.meta && claim.meta.changes || 0) === 0) {
+              result.skippedScopes.push({
+                seasonId: group.seasonId,
+                scope: group.scope,
+                capturedAt: generalCapturedAt,
+                lastCapturedAt: Number(state && state.last_captured_at || 0),
+                reason: 'automatic_cooldown'
+              });
+            } else {
+              automaticClaims.push({
+                seasonId: group.seasonId,
+                scope: group.scope,
+                capturedAt: generalCapturedAt,
+                previousCapturedAt: Number(state && state.last_captured_at || 0),
+                previousAutomaticAt: Number(state && state.updated_at || 0),
+                claimedAt: now
+              });
+              sourceAccepted = true;
+            }
+          } else {
+            sourceAccepted = true;
+          }
+          if (sourceAccepted) acceptedSnapshots.push(...generalSnapshots);
         }
-        automaticClaims.push({
-          seasonId: group.seasonId,
-          scope: group.scope,
-          previousCapturedAt: Number(state && state.last_captured_at || 0),
-          previousAutomaticAt: Number(state && state.updated_at || 0),
-          claimedAt: now
-        });
       }
 
+      if (setsSnapshots.length) {
+        const state = await db.prepare(`
+          SELECT window_start_at, last_captured_at, updated_at,
+                 final_window_start_at, final_retry_count
+          FROM rank_metric_ingest_state
+          WHERE season_id = ? AND scope = ? AND metric = ?
+          LIMIT 1
+        `).bind(group.seasonId, group.scope, SETS_INGEST_METRIC).first();
+        const decision = setsCaptureDecision(state, setsCapturedAt, automatic, now, {
+          finalSets,
+          setsFinalRetry
+        });
+        if (!decision.accept) {
+          result.skippedMetrics.push({
+            seasonId: group.seasonId,
+            scope: group.scope,
+            metric: SETS_INGEST_METRIC,
+            capturedAt: setsCapturedAt,
+            lastCapturedAt: Number(state && state.last_captured_at || 0),
+            windowStartAt: Number(state && state.window_start_at || 0),
+            reason: decision.reason
+          });
+        } else {
+          let metricAccepted = true;
+          const previousWindowStartAt = Number(state && state.window_start_at || 0);
+          if (automatic) {
+            const claimStatement = decision.claimType === 'regular'
+              ? db.prepare(AUTO_SETS_REFRESH_CLAIM_SQL).bind(
+                group.seasonId,
+                group.scope,
+                SETS_INGEST_METRIC,
+                decision.windowStartAt,
+                now,
+                setsCapturedAt,
+                now - AUTO_INGEST_INTERVAL_MS
+              )
+              : decision.claimType === 'final_retry'
+                ? db.prepare(AUTO_SETS_FINAL_RETRY_CLAIM_SQL).bind(
+                  group.seasonId,
+                  group.scope,
+                  SETS_INGEST_METRIC,
+                  previousWindowStartAt,
+                  now,
+                  decision.finalWindowStartAt,
+                  setsCapturedAt
+                )
+                : db.prepare(AUTO_SETS_FINAL_CLAIM_SQL).bind(
+                  group.seasonId,
+                  group.scope,
+                  SETS_INGEST_METRIC,
+                  previousWindowStartAt,
+                  now,
+                  decision.finalWindowStartAt,
+                  decision.finalRetryCount,
+                  setsCapturedAt
+                );
+            const claim = await claimStatement.run();
+            metricAccepted = Number(claim && claim.meta && claim.meta.changes || 0) > 0;
+            if (metricAccepted) {
+              automaticMetricClaims.push({
+                seasonId: group.seasonId,
+                scope: group.scope,
+                metric: SETS_INGEST_METRIC,
+                windowStartAt: decision.windowStartAt,
+                previousWindowStartAt,
+                previousCapturedAt: Number(state && state.last_captured_at || 0),
+                previousUpdatedAt: Number(state && state.updated_at || 0),
+                previousFinalWindowStartAt: Number(state && state.final_window_start_at || 0),
+                previousFinalRetryCount: Number(state && state.final_retry_count || 0),
+                claimedFinalWindowStartAt: Number(decision.finalWindowStartAt || 0),
+                claimedFinalRetryCount: Number(decision.finalRetryCount || 0),
+                claimedAt: now
+              });
+            }
+          }
+          if (metricAccepted) {
+            acceptedSnapshots.push(...setsSnapshots);
+            acceptedMetricGroups.push({
+              ...group,
+              capturedAt: setsCapturedAt,
+              windowStartAt: decision.windowStartAt,
+              finalWindowStartAt: decision.finalWindowStartAt,
+              finalRetryCount: decision.finalRetryCount,
+              finalizeMetricState: decision.finalizeMetricState
+            });
+            if (decision.finalizeManualWatermark) {
+              acceptedManualMetricGroups.push({
+                ...group,
+                capturedAt: setsCapturedAt
+              });
+            }
+          } else {
+            result.skippedMetrics.push({
+              seasonId: group.seasonId,
+              scope: group.scope,
+              metric: SETS_INGEST_METRIC,
+              capturedAt: setsCapturedAt,
+              lastCapturedAt: Number(state && state.last_captured_at || 0),
+              windowStartAt: Number(state && state.window_start_at || 0),
+              reason: decision.claimFailureReason || 'sets_daily_window'
+            });
+          }
+        }
+      }
+
+      if (!acceptedSnapshots.length) continue;
       const seasonGroup = seasonGroups.get(group.seasonId) || {
         seasonId: group.seasonId,
         seasonName: group.seasonName,
         snapshots: []
       };
-      seasonGroup.snapshots.push(...group.snapshots);
+      seasonGroup.snapshots.push(...acceptedSnapshots);
       seasonGroup.seasonName = group.seasonName || seasonGroup.seasonName;
       seasonGroups.set(group.seasonId, seasonGroup);
-      acceptedSourceGroups.push(group);
+      result.storedSnapshots += acceptedSnapshots.length;
+      result.storedEntries += acceptedSnapshots.reduce((sum, snapshot) => sum + snapshot.entries.length, 0);
+      if (sourceAccepted) acceptedSourceGroups.push({ ...group, capturedAt: generalCapturedAt });
     }
 
     for (const group of seasonGroups.values()) {
@@ -786,8 +1001,32 @@ export async function storeUserObservations(db, normalizedSnapshots = [], source
         automatic ? now : 0
       ).run();
     }
+
+    for (const group of acceptedMetricGroups) {
+      if (!group.finalizeMetricState) continue;
+      await db.prepare(SETS_INGEST_STATE_FINALIZE_SQL).bind(
+        group.seasonId,
+        group.scope,
+        SETS_INGEST_METRIC,
+        Number(group.windowStartAt || 0),
+        group.capturedAt,
+        automatic ? now : 0,
+        Number(group.finalWindowStartAt || 0),
+        Number(group.finalRetryCount || 0)
+      ).run();
+    }
+
+    for (const group of acceptedManualMetricGroups) {
+      await db.prepare(SETS_INGEST_MANUAL_FINALIZE_SQL).bind(
+        group.seasonId,
+        group.scope,
+        SETS_INGEST_METRIC,
+        group.capturedAt
+      ).run();
+    }
   } catch (error) {
     await releaseAutomaticClaims(db, automaticClaims);
+    await releaseAutomaticMetricClaims(db, automaticMetricClaims);
     throw error;
   }
 
@@ -818,6 +1057,40 @@ async function releaseAutomaticClaims(db, claims) {
   }
 }
 
+async function releaseAutomaticMetricClaims(db, claims) {
+  for (const claim of claims) {
+    try {
+      await db.prepare(`
+        UPDATE rank_metric_ingest_state
+        SET window_start_at = ?,
+            last_captured_at = ?,
+            updated_at = ?,
+            final_window_start_at = ?,
+            final_retry_count = ?
+        WHERE season_id = ?
+          AND scope = ?
+          AND metric = ?
+          AND updated_at = ?
+      `).bind(
+        claim.previousWindowStartAt,
+        claim.previousCapturedAt,
+        claim.previousUpdatedAt,
+        Math.max(claim.previousFinalWindowStartAt, claim.claimedFinalWindowStartAt),
+        claim.claimedFinalWindowStartAt > claim.previousFinalWindowStartAt
+          ? claim.claimedFinalRetryCount
+          : Math.max(claim.previousFinalRetryCount, claim.claimedFinalRetryCount),
+        claim.seasonId,
+        claim.scope,
+        claim.metric,
+        claim.claimedAt
+      ).run();
+    } catch (_) {
+      // A failed release leaves only a temporary metric claim. The completed
+      // capture watermark remains unchanged and a later retry can reclaim it.
+    }
+  }
+}
+
 function sourceCaptureSkipReason(state, capturedAt, automatic, now) {
   if (shouldSkipSourceCapture(state, capturedAt)) return 'duplicate_capture';
   const lastAutomaticAt = state && positiveInteger(state.updated_at ?? state.updatedAt);
@@ -825,6 +1098,102 @@ function sourceCaptureSkipReason(state, capturedAt, automatic, now) {
     return 'automatic_cooldown';
   }
   return '';
+}
+
+function setsCaptureDecision(state, capturedAt, automatic, now, options = {}) {
+  if (shouldSkipSourceCapture(state, capturedAt)) {
+    return { accept: false, reason: 'duplicate_capture' };
+  }
+
+  const windowStartAt = Number(state && state.window_start_at || 0);
+  const finalWindowStartAt = Number(state && state.final_window_start_at || 0);
+  const finalRetryCount = Number(state && state.final_retry_count || 0);
+  if (!automatic) {
+    return {
+      accept: true,
+      windowStartAt,
+      finalWindowStartAt,
+      finalRetryCount,
+      finalizeMetricState: false,
+      finalizeManualWatermark: true
+    };
+  }
+
+  const activeWindowStartAt = activeSetsRefreshWindowStartAt(now);
+  if (activeWindowStartAt == null) {
+    const lastAutomaticAt = Number(state && state.updated_at || 0);
+    if (lastAutomaticAt && now - lastAutomaticAt < AUTO_INGEST_INTERVAL_MS) {
+      return { accept: false, reason: 'automatic_cooldown' };
+    }
+    return {
+      accept: true,
+      claimType: 'regular',
+      windowStartAt,
+      finalWindowStartAt,
+      finalRetryCount,
+      finalizeMetricState: true
+    };
+  }
+
+  if (windowStartAt >= activeWindowStartAt) {
+    return { accept: false, reason: 'sets_daily_window' };
+  }
+
+  if (options.setsFinalRetry) {
+    if (finalWindowStartAt === activeWindowStartAt && finalRetryCount < 1) {
+      return {
+        accept: true,
+        claimType: 'final_retry',
+        windowStartAt: activeWindowStartAt,
+        finalWindowStartAt: activeWindowStartAt,
+        finalRetryCount: 1,
+        finalizeMetricState: true
+      };
+    }
+    if (finalWindowStartAt < activeWindowStartAt) {
+      return {
+        accept: true,
+        claimType: 'final_first',
+        windowStartAt: activeWindowStartAt,
+        finalWindowStartAt: activeWindowStartAt,
+        finalRetryCount: 1,
+        finalizeMetricState: true
+      };
+    }
+    return { accept: false, reason: 'sets_final_retry_exhausted' };
+  }
+
+  if (!options.finalSets) {
+    return { accept: false, reason: 'sets_final_required' };
+  }
+
+  if (finalWindowStartAt >= activeWindowStartAt) {
+    return { accept: false, reason: 'sets_final_retry_required' };
+  }
+
+  return {
+    accept: true,
+    claimType: 'final_first',
+    windowStartAt: activeWindowStartAt,
+    finalWindowStartAt: activeWindowStartAt,
+    finalRetryCount: 0,
+    finalizeMetricState: true
+  };
+}
+
+function snapshotsForMetric(snapshots, sets) {
+  return snapshots.map((snapshot) => {
+    const entries = (snapshot.entries || []).filter((entry) => isSetsEntry(entry) === sets);
+    return entries.length ? { ...snapshot, entries } : null;
+  }).filter(Boolean);
+}
+
+function maxSnapshotCapturedAt(snapshots) {
+  return snapshots.reduce((max, snapshot) => Math.max(max, Number(snapshot.capturedAt) || 0), 0);
+}
+
+function isSetsEntry(entry) {
+  return String(entry && entry.boardKey || '').startsWith('sets_');
 }
 
 function buildUpsertSql(tableName, columns, currentTable) {
