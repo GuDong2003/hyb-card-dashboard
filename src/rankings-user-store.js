@@ -23,6 +23,7 @@ export const COMPACT_VALUE_COLUMNS = Object.freeze(
 const CUMULATIVE_BOARD_KEYS = new Set(
   COMPACT_BOARD_KEYS.filter((boardKey) => boardKey.endsWith('_total'))
 );
+const CURRENT_ELIGIBILITY_KEYS = new Set(['epic_total', 'spend_total', 'sets_total']);
 const SOURCE_ORDER = Object.freeze(['global', 'friends']);
 const SOURCE_ORDER_SET = new Set(SOURCE_ORDER);
 export const AUTO_INGEST_INTERVAL_MS = 3 * 60 * 60 * 1000;
@@ -548,15 +549,17 @@ function currentSortColumn(board, period, sort) {
 
 function currentDataWhere(alias = 'r', latestDayStartAt = null) {
   const dayStartAt = Number(latestDayStartAt);
-  const latestDayClause = Number.isFinite(dayStartAt) && dayStartAt > 0
-    ? `${alias}.last_observed_at >= ${Math.floor(dayStartAt)}`
-    : '1 = 1';
-  const requiredColumns = [
-    `${alias}.spend_total_value`,
-    `${alias}.sort_estimated_pulls`,
-    `${alias}.sets_total_value`
+  const requiredMetrics = [
+    ['epic_total_value', 'epic_total_observed_at'],
+    ['spend_total_value', 'spend_total_observed_at'],
+    ['sets_total_value', 'sets_total_observed_at']
   ];
-  return `(${latestDayClause} AND (${requiredColumns.map((column) => `${column} IS NOT NULL`).join(' OR ')}))`;
+  const requiredColumns = requiredMetrics.map(([valueColumn, observedColumn]) => {
+    const value = `${alias}.${valueColumn}`;
+    if (!Number.isFinite(dayStartAt) || dayStartAt <= 0) return `${value} IS NOT NULL`;
+    return `(${value} IS NOT NULL AND ${alias}.${observedColumn} >= ${Math.floor(dayStartAt)})`;
+  });
+  return `(${requiredColumns.join(' OR ')})`;
 }
 
 function currentSummaryColumns(period) {
@@ -1232,9 +1235,12 @@ function buildUpsertSql(tableName, columns, currentTable) {
     const pairObservedTogether = currentTable && pairMatch
       ? currentPairSql('excluded', pairMatch[1])
       : '';
-    const observationChanged = pairObservedTogether
-      ? `(${metricChanged} OR ${pairObservedTogether})`
-      : metricChanged;
+    const observationChangeConditions = [metricChanged];
+    if (currentTable && CURRENT_ELIGIBILITY_KEYS.has(boardKey)) {
+      observationChangeConditions.push(newerObservationDaySql(tableName, valueColumn, observedColumn));
+    }
+    if (pairObservedTogether) observationChangeConditions.push(pairObservedTogether);
+    const observationChanged = `(${observationChangeConditions.join(' OR ')})`;
     const mergedObservedAt = `CASE
       WHEN ${tableName}.${observedColumn} IS NULL THEN excluded.${observedColumn}
       WHEN excluded.${observedColumn} IS NULL THEN ${tableName}.${observedColumn}
@@ -1292,6 +1298,9 @@ function meaningfulChangeSql(tableName, columns, currentTable) {
     const existingObserved = `${tableName}.${observedColumn}`;
     checks.push(`(excluded.${valueColumn} IS NOT NULL AND (${tableName}.${valueColumn} IS NULL OR excluded.${valueColumn} > ${tableName}.${valueColumn}${cumulative ? '' : ` OR (${`(${existingObserved} IS NULL OR excluded.${observedColumn} > ${existingObserved} OR (excluded.${observedColumn} = ${existingObserved} AND excluded.${valueColumn} <> ${tableName}.${valueColumn}))`} AND excluded.${valueColumn} <> ${tableName}.${valueColumn})`}))`);
     checks.push(`(excluded.${rankColumn} IS NOT NULL AND excluded.${rankColumn} <> ${tableName}.${rankColumn} AND excluded.${observedColumn} IS NOT NULL AND (${existingObserved} IS NULL OR excluded.${observedColumn} >= ${existingObserved}))`);
+    if (currentTable && CURRENT_ELIGIBILITY_KEYS.has(boardKey)) {
+      checks.push(newerObservationDaySql(tableName, valueColumn, observedColumn));
+    }
   }
   if (currentTable) {
     for (const column of DERIVED_SORT_COLUMNS) {
@@ -1299,6 +1308,17 @@ function meaningfulChangeSql(tableName, columns, currentTable) {
     }
   }
   return checks.join(' OR\n    ');
+}
+
+function newerObservationDaySql(tableName, valueColumn, observedColumn) {
+  const boundaryShift = -DAY_BOUNDARY_OFFSET_MS;
+  const existingObserved = `${tableName}.${observedColumn}`;
+  return `(${tableName}.${valueColumn} IS NOT NULL
+    AND excluded.${valueColumn} IS NOT NULL
+    AND excluded.${observedColumn} IS NOT NULL
+    AND (${existingObserved} IS NULL
+      OR CAST((excluded.${observedColumn} + ${boundaryShift}) / ${DAY_MS} AS INTEGER)
+        > CAST((${existingObserved} + ${boundaryShift}) / ${DAY_MS} AS INTEGER)))`;
 }
 
 function mergedScopesSql(tableName) {

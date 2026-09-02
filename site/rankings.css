@@ -639,6 +639,31 @@
     font: inherit;
 }
 
+.rankings-page-jump {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+}
+
+.rankings-page-input {
+    width: 52px;
+    min-height: 30px;
+    padding: 0 6px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: var(--control-bg);
+    color: var(--text);
+    font: inherit;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+}
+
+.rankings-page-input:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: 1px;
+}
+
 .rankings-page-button {
     min-height: 30px;
     padding: 0 10px;

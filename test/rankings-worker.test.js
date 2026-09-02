@@ -147,6 +147,26 @@ test('returns 404 for an unknown rankings endpoint', async () => {
   assert.equal(response.status, 404);
 });
 
+test('GET rankings endpoints use cache windows matched to their refresh frequency', async () => {
+  const environment = env();
+  const capturedAt = Date.parse('2026-08-28T10:00:00+08:00');
+  seedSeason(environment, capturedAt);
+  seedUser(environment, 'alice-1', 'Alice');
+  const requests = [
+    ['https://card.test/api/rankings/latest', 'public, max-age=60, stale-while-revalidate=120'],
+    ['https://card.test/api/rankings/leaderboard?board=users&period=total&limit=50', 'public, max-age=900, stale-while-revalidate=1800'],
+    ['https://card.test/api/rankings/history?userId=alice-1&limit=30', 'public, max-age=3600, stale-while-revalidate=7200'],
+    ['https://card.test/api/rankings/users?q=alice&limit=20', 'public, max-age=1800, stale-while-revalidate=3600'],
+    ['https://card.test/api/rankings/events?board=epic', 'public, max-age=1800, stale-while-revalidate=3600']
+  ];
+
+  for (const [url, expected] of requests) {
+    const response = await handleRankingsRequest(new Request(url), environment);
+    assert.equal(response.status, 200, url);
+    assert.equal(response.headers.get('cache-control'), expected, url);
+  }
+});
+
 test('returns 429 before parsing or writing when the limiter rejects the source', async () => {
   let parsed = false;
   const environment = {
@@ -202,7 +222,7 @@ test('current users without any metric data stay out of leaderboard, search, tot
   assert.deepEqual((await search.json()).users, []);
 });
 
-test('latest leaderboard keeps users with any required metric and excludes stale or unrelated rows', async () => {
+test('latest leaderboard keeps users with any of the three core metrics and excludes stale or unrelated rows', async () => {
   const environment = env();
   seedSeason(environment);
   seedUser(environment, 'current-spend', 'Current Spend');
@@ -243,7 +263,11 @@ test('latest leaderboard keeps users with any required metric and excludes stale
   });
   updateCurrentUser(environment, 'old-spend', {
     last_observed_at: 98_000,
+    epic_total_value: null,
+    epic_total_rank: null,
+    epic_total_observed_at: null,
     spend_total_value: 2_000_000_000,
+    spend_total_observed_at: 98_000,
     sort_spend_usd: 4000,
     sort_estimated_pulls: 400,
     sort_probability: 0.25,
@@ -258,8 +282,8 @@ test('latest leaderboard keeps users with any required metric and excludes stale
   ), environment);
   const payload = await response.json();
   assert.equal(response.status, 200);
-  assert.deepEqual(payload.rows.map((row) => row.userId), ['current-sets']);
-  assert.equal(payload.totalRows, 2);
+  assert.deepEqual(payload.rows.map((row) => row.userId), ['current-epic']);
+  assert.equal(payload.totalRows, 3);
   assert.equal(payload.hasMore, true);
   assert.deepEqual(payload.pinnedRows, []);
 });

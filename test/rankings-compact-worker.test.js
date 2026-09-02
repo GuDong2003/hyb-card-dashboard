@@ -253,7 +253,7 @@ test('reports a skipped sets-only automatic upload without claiming it was store
     `INSERT INTO rank_metric_ingest_state
       (season_id, scope, metric, window_start_at, last_captured_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
-    ['season-1', 'global', 'sets', 9_999_999_999_999, 0, 0]
+    ['season-1', 'global', 'sets', 9_999_999_999_999, 0, Date.now()]
   );
 
   const response = await postSnapshots(environment, [snapshot], { mode: 'automatic' });

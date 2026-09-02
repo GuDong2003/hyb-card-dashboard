@@ -30,11 +30,11 @@ const PAGE_MAX_LIMIT = 100;
 const MAX_EVENT_ROWS = 200;
 const REFRESH_INTERVAL_MS = 3 * 60 * 60 * 1000;
 const CACHE_HEADERS = Object.freeze({
-  latest: { 'cache-control': 'public, max-age=15, stale-while-revalidate=30' },
-  leaderboard: { 'cache-control': 'public, max-age=30, stale-while-revalidate=60' },
-  history: { 'cache-control': 'public, max-age=60, stale-while-revalidate=120' },
-  users: { 'cache-control': 'public, max-age=30, stale-while-revalidate=60' },
-  events: { 'cache-control': 'public, max-age=30, stale-while-revalidate=60' }
+  latest: { 'cache-control': 'public, max-age=60, stale-while-revalidate=120' },
+  leaderboard: { 'cache-control': 'public, max-age=900, stale-while-revalidate=1800' },
+  history: { 'cache-control': 'public, max-age=3600, stale-while-revalidate=7200' },
+  users: { 'cache-control': 'public, max-age=1800, stale-while-revalidate=3600' },
+  events: { 'cache-control': 'public, max-age=1800, stale-while-revalidate=3600' }
 });
 
 export async function handleRankingsRequest(request, env) {

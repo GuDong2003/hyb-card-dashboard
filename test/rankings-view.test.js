@@ -672,6 +672,15 @@ test('fresh rankings GET sends explicit revalidation to the Worker cache layer',
   assert.match(apiGet, /no-cache/);
 });
 
+test('rankings client keeps a longer cache window for data that changes slowly', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  assert.match(source, /latest:\s*60\s*\*\s*1000/);
+  assert.match(source, /leaderboard:\s*5\s*\*\s*60\s*\*\s*1000/);
+  assert.match(source, /users:\s*30\s*\*\s*60\s*\*\s*1000/);
+  assert.match(source, /history:\s*60\s*\*\s*60\s*\*\s*1000/);
+  assert.match(source, /events:\s*30\s*\*\s*60\s*\*\s*1000/);
+});
+
 test('rankings client uses refresh and cloud upload labels', async () => {
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
   assert.match(source, /↻ 立即刷新/);
@@ -788,7 +797,8 @@ test('renders pinned users directly below the sticky table header', async () => 
 test('loads pinned rows with the paginated leaderboard response', async () => {
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
 
-  assert.match(source, /pinned:\s*Array\.from\(state\.pinnedUserIds\)\.join\('\,'\)/);
+  assert.match(source, /const requestedPinnedIds = Array\.from\(state\.pinnedUserIds\)/);
+  assert.match(source, /pinned:\s*requestedPinnedIds\.join\('\,'\)/);
   assert.match(source, /leaderboard\.pinnedRows/);
   assert.doesNotMatch(source, /async function loadPinnedRows/);
 });
@@ -821,6 +831,21 @@ test('pinning a loaded remote row updates the table without reloading the leader
   assert.equal(context.state.pinnedRows.length, 1);
   assert.equal(context.state.pinnedRows[0], loadedRow);
   assert.deepEqual(calls, { load: 0, render: 1, save: 1 });
+});
+
+test('initial leaderboard loading primes persisted pins and retries only missing current-season pins', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  const initialPinnedState = extractFunction(source, 'loadInitialPinnedState');
+  const loadLeaderboard = extractFunction(source, 'loadLeaderboard');
+
+  assert.match(source, /PINS_ACTIVE_SEASON_STORAGE_KEY/);
+  assert.match(source, /const initialPinnedState = loadInitialPinnedState\(\)/);
+  assert.match(source, /pinnedSeasonId:\s*initialPinnedState\.seasonId/);
+  assert.match(source, /pinnedUserIds:\s*initialPinnedState\.userIds/);
+  assert.match(initialPinnedState, /localStorage/);
+  assert.match(loadLeaderboard, /const requestedPinnedIds = Array\.from\(state\.pinnedUserIds\)/);
+  assert.match(loadLeaderboard, /skipPinnedRetry/);
+  assert.match(loadLeaderboard, /requestedPinnedIds/);
 });
 
 test('stale paired metrics explain which observation is out of date', async () => {
@@ -892,6 +917,69 @@ test('renders right-aligned pagination controls below the rankings table', async
   assert.match(source, /rankingsPageSize/);
   assert.match(css, /\.rankings-table-footer\s*\{[\s\S]*display:\s*flex/);
   assert.match(css, /\.rankings-pagination-controls\s*\{[\s\S]*margin-left:\s*auto/);
+});
+
+test('remote rankings pagination shows total pages and supports cursor-based page jumps', async () => {
+  const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  const renderRows = extractFunction(source, 'renderRankingsTableRows');
+  const loadLeaderboard = extractFunction(source, 'loadLeaderboard');
+  const rememberPageCursor = extractFunction(source, 'rememberLeaderboardPageCursor');
+  const pageCursor = extractFunction(source, 'leaderboardPageCursor');
+  const jumpToPage = extractFunction(source, 'jumpToLeaderboardPage');
+
+  assert.match(html, /id="rankingsPageInput"/);
+  assert.match(html, /id="rankingsPageJump"/);
+  assert.match(renderRows, /state\.leaderboard\.totalRows/);
+  assert.match(renderRows, /pageMeta\.pageCount/);
+  assert.match(loadLeaderboard, /rememberLeaderboardPageCursor/);
+  assert.match(rememberPageCursor, /pageCursors/);
+  assert.match(pageCursor, /pageCursors/);
+  assert.match(jumpToPage, /loadLeaderboard\(\{\s*render:\s*page === targetPage/);
+  assert.match(source, /rankingsPageJump/);
+  assert.match(source, /rankingsPageInput/);
+  assert.match(source, /addEventListener\(['"]keydown['"]/);
+});
+
+test('remote rankings pagination reloads the first page when navigating backwards', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  const pageCursor = extractFunction(source, 'leaderboardPageCursor');
+  const jumpToPage = extractFunction(source, 'jumpToLeaderboardPage');
+  const asyncJumpToPage = jumpToPage.replace(/^function /, 'async function ');
+  const calls = [];
+  const state = {
+      remotePage: true,
+      page: 2,
+      pageSize: 50,
+      paginationBusy: false,
+      rows: [{ userId: 'page-2-user' }],
+      partialRows: [],
+      pinnedRows: [],
+      leaderboard: {
+        pageCursors: [null, 'cursor-page-2', 'cursor-page-3'],
+        cursor: 'cursor-page-2',
+        nextCursor: 'cursor-page-3',
+        hasMore: true,
+        totalRows: 120,
+        limit: 50,
+        summary: null
+      }
+  };
+  const context = {
+    state,
+    renderRankingsPagination() {},
+    renderLeaderboard() {},
+    loadLeaderboard: undefined
+  };
+  context.loadLeaderboard = (options = {}) => {
+    calls.push({ page: state.page, cursor: state.leaderboard.cursor, render: options.render });
+    return Promise.resolve({ rows: [{ userId: 'page-1-user' }] });
+  };
+
+  await vm.runInNewContext(`${pageCursor}\n${asyncJumpToPage}\nthis.result = jumpToLeaderboardPage(1);`, context);
+
+  assert.deepEqual(calls, [{ page: 1, cursor: null, render: true }]);
+  assert.equal(context.state.page, 1);
 });
 
 test('adds a complete-days filter to the status header', async () => {

@@ -120,6 +120,33 @@ test('same-day repeated values are marked unchanged without using captured time 
   assert.equal(hasMeaningfulUserChange(existing, incoming), false);
 });
 
+test('current presence advances once on a new day but not on same-day refreshes', async () => {
+  const db = new SqliteDb();
+  const firstDay = Date.parse('2026-08-27T10:00:00+08:00');
+  const secondDay = Date.parse('2026-08-28T10:00:00+08:00');
+  const sameDayRefresh = Date.parse('2026-08-28T12:00:00+08:00');
+  const snapshot = (capturedAt) => normalizedSnapshot('global', capturedAt, [
+    entry('epic_total', 'u1', 12, 1)
+  ]);
+
+  await storeUserObservations(db, [snapshot(firstDay)], { mode: 'manual' }, firstDay);
+  await storeUserObservations(db, [snapshot(secondDay)], { mode: 'manual' }, secondDay);
+  let row = db.db.prepare(`
+    SELECT last_observed_at
+    FROM rank_user_current
+    WHERE season_id = 'season-1' AND user_id = 'u1'
+  `).get();
+  assert.equal(row.last_observed_at, secondDay);
+
+  await storeUserObservations(db, [snapshot(sameDayRefresh)], { mode: 'manual' }, sameDayRefresh);
+  row = db.db.prepare(`
+    SELECT last_observed_at
+    FROM rank_user_current
+    WHERE season_id = 'season-1' AND user_id = 'u1'
+  `).get();
+  assert.equal(row.last_observed_at, secondDay);
+});
+
 test('cumulative value keeps the maximum while rank uses the newer observation', () => {
   const merged = mergeMetricField({ value: 10, rank: 4, observedAt: 10_000 },
     { value: 12, rank: 2, observedAt: 11_000 }, true);

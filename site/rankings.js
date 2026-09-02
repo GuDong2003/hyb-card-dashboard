@@ -21,6 +21,7 @@
     const SETTINGS_STORAGE_KEY = 'hyb-card-rankings-settings-v1';
     const CALCULATOR_STORAGE_KEY = 'legend-card-calculator-snapshot-v1';
     const PINS_STORAGE_KEY = 'hyb-card-rankings-pins-v1';
+    const PINS_ACTIVE_SEASON_STORAGE_KEY = 'hyb-card-rankings-pins-active-season-v1';
     const UPLOAD_STATE_STORAGE_KEY = 'hyb-card-rankings-upload-state-v1';
     const AUTO_UPLOAD_MIN_INTERVAL_MS = 3 * 60 * 60 * 1000;
     const SPEND_VALUE_PER_USD = 500000;
@@ -41,11 +42,11 @@
     const LOCAL_SOURCE_SCOPES = Object.freeze(['global', 'friends']);
     const LOCAL_SOURCE_SCOPE_CONFIG = Object.freeze({ scope: 'global,friends', order: LOCAL_SOURCE_SCOPES });
     const API_CACHE_TTL = Object.freeze({
-        latest: 15 * 1000,
-        leaderboard: 30 * 1000,
-        users: 30 * 1000,
-        history: 60 * 1000,
-        events: 30 * 1000
+        latest: 60 * 1000,
+        leaderboard: 5 * 60 * 1000,
+        users: 30 * 60 * 1000,
+        history: 60 * 60 * 1000,
+        events: 30 * 60 * 1000
     });
     const apiMemoryCache = new Map();
 
@@ -78,15 +79,46 @@
         return String(seasonId || 'default').trim() || 'default';
     }
 
+    function normalizePinnedIds(values) {
+        return Array.isArray(values)
+            ? values.map((value) => String(value || '').trim()).filter(Boolean).slice(0, MAX_PINNED_USERS)
+            : [];
+    }
+
     function loadPinnedUsers(seasonId) {
         try {
             const stored = JSON.parse(window.localStorage.getItem(PINS_STORAGE_KEY) || '{}') || {};
-            const values = stored[pinSeasonKey(seasonId)];
-            return new Set(Array.isArray(values)
-                ? values.map((value) => String(value || '').trim()).filter(Boolean).slice(0, MAX_PINNED_USERS)
-                : []);
+            return new Set(normalizePinnedIds(stored[pinSeasonKey(seasonId)]));
         } catch (_) {
             return new Set();
+        }
+    }
+
+    function loadInitialPinnedState() {
+        try {
+            const stored = JSON.parse(window.localStorage.getItem(PINS_STORAGE_KEY) || '{}') || {};
+            if (typeof stored !== 'object' || Array.isArray(stored)) throw new Error('invalid pins');
+            const activeSeasonId = String(window.localStorage.getItem(PINS_ACTIVE_SEASON_STORAGE_KEY) || '').trim();
+            const storedSeasonIds = Object.keys(stored).filter((seasonId) => Array.isArray(stored[seasonId]));
+            const seasonId = activeSeasonId && Array.isArray(stored[activeSeasonId])
+                ? activeSeasonId
+                : storedSeasonIds[storedSeasonIds.length - 1] || '';
+            return {
+                seasonId,
+                userIds: new Set(normalizePinnedIds(stored[seasonId]))
+            };
+        } catch (_) {
+            return { seasonId: '', userIds: new Set() };
+        }
+    }
+
+    function rememberPinnedSeason(seasonId) {
+        const normalized = String(seasonId || '').trim();
+        if (!normalized) return;
+        try {
+            window.localStorage.setItem(PINS_ACTIVE_SEASON_STORAGE_KEY, normalized);
+        } catch (_) {
+            // Private browsing or storage restrictions must not block rankings viewing.
         }
     }
 
@@ -98,6 +130,7 @@
                 .filter(Boolean);
             stored[pinSeasonKey(seasonId)] = stored[pinSeasonKey(seasonId)].slice(0, MAX_PINNED_USERS);
             window.localStorage.setItem(PINS_STORAGE_KEY, JSON.stringify(stored));
+            rememberPinnedSeason(seasonId);
         } catch (_) {
             // Private browsing or storage restrictions must not block rankings viewing.
         }
@@ -148,6 +181,7 @@
         }
     }
 
+    const initialPinnedState = loadInitialPinnedState();
     const state = {
         view: 'calculator',
         board: 'users',
@@ -157,8 +191,8 @@
         settings: loadSettings(),
         latest: null,
         seasonId: '',
-        pinnedSeasonId: '',
-        pinnedUserIds: new Set(),
+        pinnedSeasonId: initialPinnedState.seasonId,
+        pinnedUserIds: initialPinnedState.userIds,
         localSnapshots: [],
         loaded: false,
         busy: false,
@@ -183,12 +217,13 @@
         leaderboard: {
             cursor: null,
             nextCursor: null,
-            previousCursors: [],
+            pageCursors: [null],
             hasMore: false,
             totalRows: 0,
             summary: null,
             limit: 50
         },
+        paginationBusy: false,
         pinnedRows: [],
         searchTimer: null,
         onlyCompleteDays: false,
@@ -2082,6 +2117,7 @@
         const normalized = String(seasonId || '').trim();
         if (!normalized) return;
         state.seasonId = normalized;
+        rememberPinnedSeason(normalized);
         if (state.pinnedSeasonId === normalized) return;
         state.pinnedSeasonId = normalized;
         state.pinnedUserIds = loadPinnedUsers(normalized);
@@ -2406,15 +2442,20 @@
     }
 
     async function loadLeaderboard(options = {}) {
+        if (options.fresh === true) resetLeaderboardPagination();
+        const requestPage = Math.max(1, Number(state.page) || 1);
+        const requestCursor = state.leaderboard.cursor || null;
+        const requestedPinnedIds = Array.from(state.pinnedUserIds);
+        const requestedPinnedIdSet = new Set(requestedPinnedIds);
         const params = new URLSearchParams({
             board: 'users',
             period: state.period,
             sort: state.sort,
             direction: state.sortDirection,
             limit: String(state.leaderboard.limit),
-            pinned: Array.from(state.pinnedUserIds).join(',')
+            pinned: requestedPinnedIds.join(',')
         });
-        if (state.leaderboard.cursor) params.set('cursor', state.leaderboard.cursor);
+        if (requestCursor) params.set('cursor', requestCursor);
         if (state.userQuery.trim()) params.set('q', state.userQuery.trim());
         const leaderboard = await apiGet(`/api/rankings/leaderboard?${params.toString()}`, {
             fresh: options.fresh === true
@@ -2429,19 +2470,43 @@
         if (leaderboard.summary) state.leaderboard.summary = leaderboard.summary;
         state.leaderboard.nextCursor = leaderboard.nextCursor || null;
         state.leaderboard.hasMore = Boolean(leaderboard.hasMore);
+        rememberLeaderboardPageCursor(requestPage, requestCursor, state.leaderboard.nextCursor);
         if (leaderboard.snapshot) {
             state.latest = { ...(state.latest || {}), snapshot: leaderboard.snapshot };
             syncPinnedSeason(leaderboard.snapshot.seasonId);
         }
-        renderLeaderboard(leaderboard);
+        const missingCurrentSeasonPins = requestPage === 1
+            && !requestCursor
+            && options.skipPinnedRetry !== true
+            && Array.from(state.pinnedUserIds).some((userId) => !requestedPinnedIdSet.has(userId));
+        if (missingCurrentSeasonPins) {
+            return loadLeaderboard({ ...options, skipPinnedRetry: true });
+        }
+        if (options.render !== false) renderLeaderboard(leaderboard);
         return leaderboard;
+    }
+
+    function rememberLeaderboardPageCursor(page, cursor, nextCursor) {
+        if (!Array.isArray(state.leaderboard.pageCursors) || !state.leaderboard.pageCursors.length) {
+            state.leaderboard.pageCursors = [null];
+        }
+        const pageIndex = Math.max(0, Math.floor(Number(page) || 1) - 1);
+        state.leaderboard.pageCursors[pageIndex] = cursor || null;
+        state.leaderboard.pageCursors[pageIndex + 1] = nextCursor || null;
+    }
+
+    function leaderboardPageCursor(page) {
+        const pageIndex = Math.max(0, Math.floor(Number(page) || 1) - 1);
+        const cursors = state.leaderboard.pageCursors;
+        if (!Array.isArray(cursors) || !Object.prototype.hasOwnProperty.call(cursors, pageIndex)) return undefined;
+        return cursors[pageIndex] || null;
     }
 
     function resetLeaderboardPagination() {
         state.page = 1;
         state.leaderboard.cursor = null;
         state.leaderboard.nextCursor = null;
-        state.leaderboard.previousCursors = [];
+        state.leaderboard.pageCursors = [null];
         state.leaderboard.hasMore = false;
     }
 
@@ -2623,15 +2688,99 @@
         const summary = $('#rankingsPaginationSummary');
         const controls = $('#rankingsPaginationControls');
         const pageSize = $('#rankingsPageSize');
+        const pageInput = $('#rankingsPageInput');
+        const pageJump = $('#rankingsPageJump');
         const indicator = $('#rankingsPageIndicator');
         const previous = $('#rankingsPreviousPage');
         const next = $('#rankingsNextPage');
         if (summary) summary.textContent = `共 ${formatNumber(totalRows)} 位用户`;
         if (pageSize) pageSize.value = String(state.pageSize);
-        if (indicator) indicator.textContent = `${state.page} / ${pageCount}`;
-        if (previous) previous.disabled = state.page <= 1;
-        if (next) next.disabled = state.page >= pageCount;
+        if (pageInput) {
+            pageInput.value = String(state.page);
+            pageInput.max = String(pageCount);
+            pageInput.disabled = state.paginationBusy || pageCount <= 1;
+        }
+        if (pageJump) pageJump.disabled = state.paginationBusy || pageCount <= 1;
+        if (indicator) indicator.textContent = `第 ${state.page} / ${pageCount} 页`;
+        if (previous) previous.disabled = state.paginationBusy || state.page <= 1;
+        if (next) next.disabled = state.paginationBusy || state.page >= pageCount;
         if (controls) controls.dataset.pageCount = String(pageCount);
+    }
+
+    async function jumpToLeaderboardPage(requestedPage) {
+        const totalRows = Math.max(0, Number(state.remotePage ? state.leaderboard.totalRows : state.rows.length) || 0);
+        const pageSize = Math.max(1, Number(state.remotePage ? state.leaderboard.limit : state.pageSize) || 50);
+        const pageCount = Math.max(1, Math.ceil(totalRows / pageSize));
+        const parsedPage = Number(String(requestedPage == null ? '' : requestedPage).trim());
+        if (!Number.isInteger(parsedPage) || parsedPage < 1) {
+            renderRankingsPagination(totalRows, pageCount);
+            return;
+        }
+        const targetPage = Math.min(pageCount, parsedPage);
+        if (!state.remotePage) {
+            state.page = targetPage;
+            renderRankingsTableRows();
+            return;
+        }
+        if (state.paginationBusy || targetPage === state.page) {
+            renderRankingsPagination(totalRows, pageCount);
+            return;
+        }
+
+        const original = {
+            page: state.page,
+            cursor: state.leaderboard.cursor,
+            nextCursor: state.leaderboard.nextCursor,
+            hasMore: state.leaderboard.hasMore,
+            rows: state.rows,
+            partialRows: state.partialRows,
+            pinnedRows: state.pinnedRows,
+            totalRows: state.leaderboard.totalRows,
+            summary: state.leaderboard.summary
+        };
+        state.paginationBusy = true;
+        renderRankingsPagination(totalRows, pageCount);
+        let startPage = targetPage;
+        while (startPage > 1 && leaderboardPageCursor(startPage) === undefined) startPage -= 1;
+        const firstPageToLoad = startPage === 1 ? 1 : startPage;
+        let loadedPage = original.page;
+        let lastPayload = null;
+        try {
+            for (let page = firstPageToLoad; page <= targetPage; page += 1) {
+                const cursor = leaderboardPageCursor(page);
+                if (cursor === undefined) throw new Error('分页游标不可用，请重新加载榜单');
+                state.page = page;
+                state.leaderboard.cursor = cursor;
+                lastPayload = await loadLeaderboard({ render: page === targetPage });
+                loadedPage = page;
+            }
+        } catch (error) {
+            if (lastPayload) {
+                state.page = loadedPage;
+                state.leaderboard.cursor = leaderboardPageCursor(loadedPage) || null;
+                renderLeaderboard(lastPayload);
+            } else {
+                state.page = original.page;
+                state.leaderboard.cursor = original.cursor;
+                state.leaderboard.nextCursor = original.nextCursor;
+                state.leaderboard.hasMore = original.hasMore;
+                state.rows = original.rows;
+                state.partialRows = original.partialRows;
+                state.pinnedRows = original.pinnedRows;
+                state.leaderboard.totalRows = original.totalRows;
+                state.leaderboard.summary = original.summary;
+                renderLeaderboard({ snapshot: state.latest && state.latest.snapshot });
+            }
+            throw error;
+        } finally {
+            state.paginationBusy = false;
+            if (lastPayload) {
+                const currentTotal = Math.max(0, Number(state.leaderboard.totalRows) || 0);
+                renderRankingsPagination(currentTotal, Math.max(1, Math.ceil(currentTotal / pageSize)));
+            } else {
+                renderRankingsPagination(totalRows, pageCount);
+            }
+        }
     }
 
     function renderRankingsTableRows() {
@@ -2656,18 +2805,12 @@
                     ? ''
                     : `<tr><td class="rankings-empty" colspan="12">${state.onlyCompleteDays ? '没有符合条件的完整天数用户' : state.userQuery ? '没有匹配的用户' : '暂无榜单数据'}</td></tr>`;
             const summaryRows = [...pinnedRows, ...normalRows];
-            const summary = $('#rankingsPaginationSummary');
-            const controls = $('#rankingsPaginationControls');
-            const pageSize = $('#rankingsPageSize');
-            const indicator = $('#rankingsPageIndicator');
+            const pageMeta = rankingsPageMeta(state.leaderboard.totalRows);
             const previous = $('#rankingsPreviousPage');
             const next = $('#rankingsNextPage');
-            if (summary) summary.textContent = `第 ${state.page} 页 · 当前 ${formatNumber(summaryRows.length)} 位用户`;
-            if (pageSize) pageSize.value = String(state.leaderboard.limit);
-            if (indicator) indicator.textContent = `第 ${state.page} 页`;
-            if (previous) previous.disabled = state.leaderboard.previousCursors.length === 0;
-            if (next) next.disabled = !state.leaderboard.hasMore;
-            if (controls) controls.dataset.pageCount = state.leaderboard.hasMore ? 'more' : String(state.page);
+            renderRankingsPagination(pageMeta.total, pageMeta.pageCount);
+            if (previous) previous.disabled = state.paginationBusy || state.page <= 1;
+            if (next) next.disabled = state.paginationBusy || state.page >= pageMeta.pageCount || !state.leaderboard.hasMore;
             const partialNotice = $('#rankingsPartialNotice');
             if (partialNotice) {
                 const incompleteCount = summaryRows.filter((row) => row.isPartial).length;
@@ -3059,23 +3202,28 @@
             if (state.remotePage) loadLeaderboard().catch((error) => setStatus(`换页失败：${String(error && error.message || error)}`, true));
             else renderRankingsTableRows();
         });
+        const requestLeaderboardPage = () => {
+            const input = $('#rankingsPageInput');
+            jumpToLeaderboardPage(input && input.value).catch((error) => setStatus(`跳转失败：${String(error && error.message || error)}`, true));
+        };
+        $('#rankingsPageJump')?.addEventListener('click', requestLeaderboardPage);
+        $('#rankingsPageInput')?.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter') return;
+            event.preventDefault();
+            requestLeaderboardPage();
+        });
         $('#rankingsPreviousPage')?.addEventListener('click', async () => {
-            if (!state.remotePage || !state.leaderboard.previousCursors.length) return;
-            state.leaderboard.cursor = state.leaderboard.previousCursors.pop() || null;
-            state.page = Math.max(1, state.page - 1);
+            if (state.paginationBusy || state.page <= 1) return;
             try {
-                await loadLeaderboard();
+                await jumpToLeaderboardPage(state.page - 1);
             } catch (error) {
                 setStatus(`换页失败：${String(error && error.message || error)}`, true);
             }
         });
         $('#rankingsNextPage')?.addEventListener('click', async () => {
-            if (!state.remotePage || !state.leaderboard.hasMore || !state.leaderboard.nextCursor) return;
-            state.leaderboard.previousCursors.push(state.leaderboard.cursor);
-            state.leaderboard.cursor = state.leaderboard.nextCursor;
-            state.page += 1;
+            if (state.paginationBusy || !state.leaderboard.hasMore) return;
             try {
-                await loadLeaderboard();
+                await jumpToLeaderboardPage(state.page + 1);
             } catch (error) {
                 setStatus(`换页失败：${String(error && error.message || error)}`, true);
             }
