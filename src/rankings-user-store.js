@@ -301,11 +301,10 @@ export async function queryCurrentBoard(db, options = {}) {
   const pinnedIds = Array.isArray(options.pinnedIds)
     ? options.pinnedIds.map((id) => String(id || '').trim()).filter(Boolean).slice(0, 20)
     : [];
-  const latestDayStartAt = Number(options.latestDayStartAt);
   const sortColumn = currentSortColumn(board, period, sort);
   const nullRank = `CASE WHEN ${sortColumn} IS NULL THEN 1 ELSE 0 END`;
   const params = [seasonId];
-  const baseWhere = ['r.season_id = ?', currentDataWhere('r', latestDayStartAt)];
+  const baseWhere = ['r.season_id = ?', currentDataWhere('r')];
   const filterWhere = [];
 
   if (Array.isArray(options.ids) && options.ids.length) {
@@ -334,8 +333,7 @@ export async function queryCurrentBoard(db, options = {}) {
       filterParams: params.slice(1),
       cursor: options.cursor || null,
       query: String(options.q || '').trim().slice(0, 128),
-      pinnedIds,
-      latestDayStartAt
+      pinnedIds
     });
   }
 
@@ -402,8 +400,7 @@ async function queryCurrentBoardWithTotal(db, options) {
     filterParams,
     cursor,
     query,
-    pinnedIds,
-    latestDayStartAt
+    pinnedIds
   } = options;
   const cursorTotalRows = cursor
     && Number.isFinite(Number(cursor.totalRows))
@@ -445,8 +442,7 @@ async function queryCurrentBoardWithTotal(db, options) {
     q: query,
     cursor,
     includeTotal: false,
-    totalRows,
-    latestDayStartAt
+    totalRows
   });
   const idsNeedingGlobalRanks = Array.from(new Set([
     ...(query ? page.rows.map((row) => String(row.user_id)) : []),
@@ -460,8 +456,7 @@ async function queryCurrentBoardWithTotal(db, options) {
       sort,
       direction,
       ids: idsNeedingGlobalRanks,
-      maxIds: 120,
-      latestDayStartAt
+      maxIds: 120
     })
     : [];
   const globallyRankedById = new Map(globallyRankedRows.map((row) => [String(row.user_id), row]));
@@ -485,7 +480,6 @@ async function queryPinnedWithRanks(db, options = {}) {
   const period = String(options.period || 'total');
   const sort = String(options.sort || 'legend');
   const direction = options.direction === 'asc' ? 'asc' : 'desc';
-  const latestDayStartAt = Number(options.latestDayStartAt);
   const maxIds = Math.max(1, Math.min(120, Math.floor(Number(options.maxIds) || 20)));
   const ids = Array.isArray(options.ids)
     ? options.ids.map((id) => String(id || '').trim()).filter(Boolean).slice(0, maxIds)
@@ -505,7 +499,7 @@ async function queryPinnedWithRanks(db, options = {}) {
         ) AS current_rank
       FROM rank_user_current r
       WHERE r.season_id = ?
-        AND ${currentDataWhere('r', latestDayStartAt)}
+        AND ${currentDataWhere('r')}
     )
     SELECT *
     FROM ranked
@@ -547,18 +541,9 @@ function currentSortColumn(board, period, sort) {
   return `r.${board}_${period}_value`;
 }
 
-function currentDataWhere(alias = 'r', latestDayStartAt = null) {
-  const dayStartAt = Number(latestDayStartAt);
-  const requiredMetrics = [
-    ['epic_total_value', 'epic_total_observed_at'],
-    ['spend_total_value', 'spend_total_observed_at'],
-    ['sets_total_value', 'sets_total_observed_at']
-  ];
-  const requiredColumns = requiredMetrics.map(([valueColumn, observedColumn]) => {
-    const value = `${alias}.${valueColumn}`;
-    if (!Number.isFinite(dayStartAt) || dayStartAt <= 0) return `${value} IS NOT NULL`;
-    return `(${value} IS NOT NULL AND ${alias}.${observedColumn} >= ${Math.floor(dayStartAt)})`;
-  });
+function currentDataWhere(alias = 'r') {
+  const requiredColumns = ['epic_total_value', 'spend_total_value', 'sets_total_value']
+    .map((column) => `${alias}.${column} IS NOT NULL`);
   return `(${requiredColumns.join(' OR ')})`;
 }
 

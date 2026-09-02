@@ -222,7 +222,7 @@ test('current users without any metric data stay out of leaderboard, search, tot
   assert.deepEqual((await search.json()).users, []);
 });
 
-test('latest leaderboard keeps users with any of the three core metrics and excludes stale or unrelated rows', async () => {
+test('latest leaderboard keeps users with any of the three core metrics regardless of observation day', async () => {
   const environment = env();
   seedSeason(environment);
   seedUser(environment, 'current-spend', 'Current Spend');
@@ -283,9 +283,9 @@ test('latest leaderboard keeps users with any of the three core metrics and excl
   const payload = await response.json();
   assert.equal(response.status, 200);
   assert.deepEqual(payload.rows.map((row) => row.userId), ['current-epic']);
-  assert.equal(payload.totalRows, 3);
+  assert.equal(payload.totalRows, 4);
   assert.equal(payload.hasMore, true);
-  assert.deepEqual(payload.pinnedRows, []);
+  assert.deepEqual(payload.pinnedRows.map((row) => row.userId), ['old-spend']);
 });
 
 test('leaderboard summary covers all eligible users and stays separate from search and cursor pages', async () => {

@@ -221,8 +221,7 @@ async function getLeaderboard(url, env) {
     q: query,
     includeTotal: true,
     pinnedIds,
-    cursor: cursorResult.cursor,
-    latestDayStartAt: Number(season.last_day_start_at)
+    cursor: cursorResult.cursor
   });
   const capturedAt = Number(season.last_observed_at);
   const rows = page.rows.map((row, index) => buildLeaderboardRow(row, board, period, Number(row.current_rank) || index + 1, capturedAt));
@@ -343,8 +342,7 @@ async function getUsers(url, env) {
       sort: 'user',
       direction: 'asc',
       ids,
-      limit: 20,
-      latestDayStartAt: Number(season.last_day_start_at)
+      limit: 20
     })
     : await queryCurrentBoard(env.RANKINGS_DB, {
       seasonId: season.season_id,
@@ -353,8 +351,7 @@ async function getUsers(url, env) {
       sort: 'user',
       direction: 'asc',
       q: query,
-      limit: 20,
-      latestDayStartAt: Number(season.last_day_start_at)
+      limit: 20
     });
   const period = String(url.searchParams.get('period') || 'total');
   return jsonResponse({
