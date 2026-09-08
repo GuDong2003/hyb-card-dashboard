@@ -382,53 +382,11 @@
     letter-spacing: -.02em;
 }
 
-.rankings-free-pulls-notice {
-    display: flex;
-    flex-wrap: nowrap;
-    align-items: center;
-    gap: 6px 12px;
+.rankings-notices {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(300px, 1fr);
+    gap: var(--rankings-section-gap);
     min-width: 0;
-    padding: 10px 14px;
-    border: 1px solid color-mix(in srgb, var(--amber) 42%, var(--line));
-    border-radius: 12px;
-    background: var(--gold-soft);
-    color: var(--muted);
-    font-size: .74rem;
-    line-height: 1.5;
-    white-space: nowrap;
-    overflow: hidden;
-}
-
-.rankings-free-pulls-notice[data-boost-state="active"] {
-    border-color: color-mix(in srgb, var(--amber) 72%, var(--line));
-    background: color-mix(in srgb, var(--gold-soft) 82%, var(--surface));
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--amber) 15%, transparent);
-}
-
-.rankings-free-pulls-notice[data-boost-state="disabled"] {
-    border-color: color-mix(in srgb, var(--line) 70%, var(--muted));
-    background: var(--surface);
-}
-
-.rankings-free-pulls-notice span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.rankings-free-pulls-notice-text {
-    color: var(--amber);
-    font-weight: 700;
-}
-
-.rankings-free-pulls-notice[data-boost-state="active"] .rankings-free-pulls-notice-text {
-    color: color-mix(in srgb, var(--amber) 88%, var(--text));
-}
-
-.rankings-free-pulls-notice strong {
-    flex: none;
-    color: var(--amber);
-    font-size: .76rem;
 }
 
 .rankings-grid {
@@ -1129,10 +1087,11 @@
 
 .rankings-notice {
     display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px 12px;
-    margin-top: 10px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    min-width: 0;
+    margin-top: 0;
     padding: 12px 14px;
     border: 1px solid color-mix(in srgb, var(--amber) 42%, var(--line));
     border-radius: 12px;
@@ -1141,9 +1100,102 @@
     font-size: .74rem;
 }
 
+.rankings-notices > .rankings-notice {
+    height: 100%;
+}
+
 .rankings-notice a {
     color: var(--blue-strong);
     font-weight: 800;
+}
+
+.rankings-notice > strong,
+.rankings-notice-heading > strong {
+    color: var(--amber);
+    font-size: .76rem;
+}
+
+.rankings-notice-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 4px 12px;
+    flex-wrap: wrap;
+}
+
+.rankings-free-pulls-legend {
+    color: var(--muted);
+    font-size: .66rem;
+    font-weight: 700;
+}
+
+.rankings-free-pulls-notice[data-boost-state="active"] {
+    border-color: color-mix(in srgb, var(--amber) 72%, var(--line));
+    background: color-mix(in srgb, var(--gold-soft) 82%, var(--surface));
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--amber) 15%, transparent);
+}
+
+.rankings-free-pulls-notice[data-boost-state="disabled"] {
+    border-color: color-mix(in srgb, var(--line) 70%, var(--muted));
+    background: var(--surface);
+}
+
+.rankings-free-pulls-notice-text {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+    color: var(--text);
+    font-size: .69rem;
+    font-weight: 700;
+    line-height: 1.35;
+}
+
+.rankings-free-pull-period {
+    display: grid;
+    grid-template-columns: minmax(112px, .85fr) minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+    align-items: baseline;
+    min-width: 0;
+    padding: 4px 6px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--gold-soft) 56%, transparent);
+    font-variant-numeric: tabular-nums;
+}
+
+.rankings-free-pull-period[data-period="boost"] {
+    background: color-mix(in srgb, var(--amber) 12%, var(--gold-soft));
+}
+
+.rankings-free-pull-period[data-period="current"] {
+    background: color-mix(in srgb, var(--green) 12%, var(--gold-soft));
+}
+
+.rankings-free-pull-period strong,
+.rankings-free-pull-period span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rankings-free-pull-period strong {
+    color: var(--text);
+    font-size: .68rem;
+}
+
+.rankings-free-pull-period span {
+    color: var(--muted);
+}
+
+.rankings-free-pulls-note {
+    color: var(--muted);
+    font-size: .66rem;
+    line-height: 1.4;
+}
+
+.rankings-sets-refresh-notice > span {
+    color: var(--text);
+    line-height: 1.6;
 }
 
 .rankings-trend-panel {
@@ -1630,15 +1682,13 @@ body.modal-open {
         width: 100%;
     }
 
-    .rankings-free-pulls-notice {
-        flex-wrap: wrap;
-        white-space: normal;
-        overflow: visible;
+    .rankings-notices {
+        grid-template-columns: 1fr;
     }
 
-    .rankings-free-pulls-notice span {
-        overflow: visible;
-        text-overflow: clip;
+    .rankings-free-pull-period {
+        grid-template-columns: minmax(100px, .85fr) minmax(0, 1fr) minmax(0, 1fr);
+        gap: 6px;
     }
 
     .rankings-table-footer {

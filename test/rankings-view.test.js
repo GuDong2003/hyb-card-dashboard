@@ -158,32 +158,44 @@ test('keeps Farm-style header spacing and the rankings inset on narrow layouts',
   assert.match(rankingsCss, /\.topbar-nav\s*\{[\s\S]*gap:\s*4px/);
 });
 
-test('user overview explains that free pulls are estimated from paid days', async () => {
+test('user overview uses a compact two-column notice layout', async () => {
   const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
   const css = await readFile(new URL('../site/rankings.css', import.meta.url), 'utf8');
   const rankingsJs = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
-  const noticeStart = html.indexOf('id="rankingsFreePullsNotice"');
-  const noticeEnd = html.indexOf('</section>', noticeStart);
-  assert.ok(noticeStart >= 0 && noticeEnd > noticeStart, '用户总览上方应有免费抽数说明框');
-  const notice = html.slice(noticeStart, noticeEnd);
-  assert.match(notice, /<strong>免费抽数按付费天数估算<\/strong>/);
-  assert.match(notice, /class="rankings-free-pulls-notice-text" id="rankingsFreePullsNoticeText"/);
+  const noticesStart = html.indexOf('<section class="rankings-notices"');
+  const noticesEnd = html.indexOf('<section class="rankings-grid"', noticesStart);
+  assert.ok(noticesStart >= 0 && noticesEnd > noticesStart, '用户总览上方应有并列说明区');
+  const notices = html.slice(noticesStart, noticesEnd);
+  assert.match(notices, /id="rankingsFreePullsNotice"/);
+  assert.match(notices, /<strong>免费抽数按付费天数估算<\/strong>/);
+  assert.match(notices, /class="rankings-free-pulls-notice-text" id="rankingsFreePullsNoticeText"/);
+  assert.match(notices, /付费 \+ 免费 = 每日总抽数/);
+  assert.match(notices, /id="rankingsSetsRefreshNotice"/);
+  assert.ok(notices.indexOf('rankingsFreePullsNotice') < notices.indexOf('rankingsSetsRefreshNotice'));
   assert.match(rankingsJs, /根据消费金额反推付费天数/);
-  assert.match(rankingsJs, /翻倍开始/);
-  assert.doesNotMatch(notice, /接口/);
-  const styleStart = css.indexOf('.rankings-free-pulls-notice {');
+  assert.match(rankingsJs, /第 1～18 天/);
+  assert.match(rankingsJs, /第 19～37 天 · 翻倍/);
+  assert.match(rankingsJs, /第 38 天起 · 当前/);
+  assert.doesNotMatch(notices, /接口/);
+  const styleStart = css.indexOf('.rankings-notices {');
   const styleEnd = css.indexOf('}', styleStart) + 1;
   assert.ok(styleStart >= 0 && styleEnd > styleStart);
-  assert.match(css.slice(styleStart, styleEnd), /flex-wrap\s*:\s*nowrap/);
-  assert.match(css, /\.rankings-free-pulls-notice-text\s*\{[\s\S]*?color:\s*var\(--amber\)/);
+  assert.match(css.slice(styleStart, styleEnd), /display\s*:\s*grid/);
+  assert.match(css.slice(styleStart, styleEnd), /grid-template-columns/);
+  assert.match(css, /\.rankings-free-pulls-notice-text\s*\{[\s\S]*?display:\s*grid/);
+  assert.match(css, /@media \(max-width: 700px\)[\s\S]*\.rankings-notices\s*\{[\s\S]*?grid-template-columns:\s*1fr/);
 });
 
-test('explains the separate daily refresh window for exchange counts', async () => {
+test('keeps the exchange-count refresh explanation in the right notice', async () => {
   const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
-  const noticeStart = html.indexOf('id="rankingsSetsRefreshNotice"');
-  const noticeEnd = html.indexOf('</section>', noticeStart);
-  assert.ok(noticeStart >= 0 && noticeEnd > noticeStart, '榜单上方应说明成套兑换次数的刷新规则');
-  const notice = html.slice(noticeStart, noticeEnd);
+  const noticesStart = html.indexOf('<section class="rankings-notices"');
+  const noticesEnd = html.indexOf('<section class="rankings-grid"', noticesStart);
+  assert.ok(noticesStart >= 0 && noticesEnd > noticesStart, '榜单上方应有并列说明区');
+  const notices = html.slice(noticesStart, noticesEnd);
+  const noticeStart = notices.indexOf('id="rankingsSetsRefreshNotice"');
+  assert.ok(noticeStart >= 0, '榜单上方应说明成套兑换次数的刷新规则');
+  const notice = notices.slice(noticeStart);
+  assert.match(notice, /<strong>成套兑换次数每天更新<\/strong>/);
   assert.match(notice, /00:00[～至-]08:00/);
   assert.match(notice, /00:00[～至-]08:00 期间随自动刷新更新/);
   assert.match(notice, /08:00 再进行一次最终刷新/);
@@ -352,9 +364,16 @@ test('rankings client uses same-origin Worker APIs and the Card bridge events', 
 test('ranking quota notice explains all three free-pull periods', async () => {
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
 
-  assert.match(source, /2026\/8\/20 04:00 前：VIP 每日付费 600 \+ 免费 50 = 650 抽；普通每日付费 400 \+ 免费 30 = 430 抽/);
-  assert.match(source, /2026\/8\/20 04:00～2026\/9\/8 04:00：VIP 每日付费 1000 \+ 免费 80 = 1080 抽；普通每日付费 800 \+ 免费 60 = 860 抽/);
-  assert.match(source, /2026\/9\/8 04:00 起：VIP 每日付费 1000 \+ 免费 50 = 1050 抽；普通每日付费 800 \+ 免费 30 = 830 抽/);
+  assert.match(source, /第 1～18 天/);
+  assert.match(source, /VIP 600\+50=650/);
+  assert.match(source, /普通 400\+30=430/);
+  assert.match(source, /第 19～37 天 · 翻倍/);
+  assert.match(source, /VIP 1000\+80=1080/);
+  assert.match(source, /普通 800\+60=860/);
+  assert.match(source, /第 38 天起 · 当前/);
+  assert.match(source, /VIP 1000\+50=1050/);
+  assert.match(source, /普通 800\+30=830/);
+  assert.doesNotMatch(source, /2026\/8\/20 04:00 前：/);
   assert.doesNotMatch(source, /结束：\$\{endText\}/);
 });
 

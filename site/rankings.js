@@ -617,16 +617,18 @@
     function renderRankingBoostNotice() {
         const notice = $('#rankingsFreePullsNotice');
         const text = $('#rankingsFreePullsNoticeText');
-        if (!notice || !text) return;
+        const note = $('#rankingsFreePullsNote');
+        if (!notice || !text || !note) return;
         const config = readRankingBoostConfig();
         const now = Date.now();
         const active = config.enabled && now >= config.startAt && (config.endAt == null || now < config.endAt);
         notice.dataset.boostState = active ? 'active' : config.enabled ? 'scheduled' : 'disabled';
-        text.textContent = '翻倍开始：2026/8/20 04:00（北京时间）。'
-            + '2026/8/20 04:00 前：VIP 每日付费 600 + 免费 50 = 650 抽；普通每日付费 400 + 免费 30 = 430 抽。'
-            + '2026/8/20 04:00～2026/9/8 04:00：VIP 每日付费 1000 + 免费 80 = 1080 抽；普通每日付费 800 + 免费 60 = 860 抽。'
-            + '2026/9/8 04:00 起：VIP 每日付费 1000 + 免费 50 = 1050 抽；普通每日付费 800 + 免费 30 = 830 抽。'
-            + '根据消费金额反推付费天数，并按各时间段的每日免费额度计入总抽数；出卡率仅供参考。';
+        text.innerHTML = [
+            ['第 1～18 天', 'VIP 600+50=650', '普通 400+30=430', 'standard'],
+            ['第 19～37 天 · 翻倍', 'VIP 1000+80=1080', '普通 800+60=860', 'boost'],
+            ['第 38 天起 · 当前', 'VIP 1000+50=1050', '普通 800+30=830', 'current']
+        ].map(([label, vip, ordinary, period]) => `<div class="rankings-free-pull-period" data-period="${period}"><strong>${label}</strong><span>${vip}</span><span>${ordinary}</span></div>`).join('');
+        note.textContent = '根据消费金额反推付费天数，并按对应时间段累计免费抽数；出卡率仅供参考。';
     }
 
     const TREND_METRICS = Object.freeze({
