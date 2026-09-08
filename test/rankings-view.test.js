@@ -349,6 +349,41 @@ test('rankings client uses same-origin Worker APIs and the Card bridge events', 
   assert.match(source, /partialRows/);
 });
 
+test('ranking quota notice explains all three free-pull periods', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+
+  assert.match(source, /2026\/8\/20 04:00 前：VIP 每日付费 600 \+ 免费 50 = 650 抽；普通每日付费 400 \+ 免费 30 = 430 抽/);
+  assert.match(source, /2026\/8\/20 04:00～2026\/9\/8 04:00：VIP 每日付费 1000 \+ 免费 80 = 1080 抽；普通每日付费 800 \+ 免费 60 = 860 抽/);
+  assert.match(source, /2026\/9\/8 04:00 起：VIP 每日付费 1000 \+ 免费 50 = 1050 抽；普通每日付费 800 \+ 免费 30 = 830 抽/);
+  assert.doesNotMatch(source, /结束：\$\{endText\}/);
+});
+
+test('local ranking estimates advance across the post-boost boundary', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  const rulesSource = await readFile(new URL('../site/stardust-rules.js', import.meta.url), 'utf8');
+  const quota = extractFunction(source, 'rankingQuotaForDay');
+  const estimate = extractFunction(source, 'estimateFromSpend');
+  const context = {
+    DAY_MS: 24 * 60 * 60 * 1000,
+    SPEND_VALUE_PER_USD: 500000,
+    state: { latest: null },
+    window: {}
+  };
+  vm.runInNewContext(rulesSource, context);
+  context.window.StardustRules = context.StardustRules;
+
+  vm.runInNewContext(
+    `${quota}\n${estimate}\nthis.result = estimateFromSpend(159000000000, true, {\n`
+      + `  capturedAt: Date.parse('2026-09-01T05:00:00+08:00'),\n`
+      + `  config: { enabled: true, durationDays: StardustRules.BOOST_DEFAULT_DURATION_DAYS }\n`
+      + `});`,
+    context
+  );
+
+  assert.equal(context.result.freePulls, 2520);
+  assert.equal(context.result.estimatedPulls, 34320);
+});
+
 test('rankings view provides daily user trend controls', async () => {
   const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');

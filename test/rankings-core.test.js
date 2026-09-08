@@ -193,6 +193,35 @@ test('keeps the doubled paid cap after the temporary free quota ends', () => {
   assert.equal(afterBoost.estimateStatus, 'complete_days');
 });
 
+test('uses the three current quota periods when estimating through September 9', () => {
+  const capturedAt = Date.parse('2026-09-09T05:00:00+08:00');
+  const vip = estimatePullsFromSpend(159_000_000_000, true, { capturedAt });
+  const ordinary = estimatePullsFromSpend(120_000_000_000, false, { capturedAt });
+
+  assert.equal(vip.estimatedDays, 39);
+  assert.equal(vip.paidPulls, 31_800);
+  assert.equal(vip.freePulls, 2_520);
+  assert.equal(vip.estimatedPulls, 34_320);
+  assert.equal(vip.estimateStatus, 'complete_days');
+
+  assert.equal(ordinary.estimatedDays, 39);
+  assert.equal(ordinary.paidPulls, 24_000);
+  assert.equal(ordinary.freePulls, 1_740);
+  assert.equal(ordinary.estimatedPulls, 25_740);
+  assert.equal(ordinary.estimateStatus, 'complete_days');
+});
+
+test('advances quota periods when estimated days extend beyond the capture date', () => {
+  const capturedAt = Date.parse('2026-09-01T05:00:00+08:00');
+  const vip = estimatePullsFromSpend(159_000_000_000, true, { capturedAt });
+  const ordinary = estimatePullsFromSpend(120_000_000_000, false, { capturedAt });
+
+  assert.equal(vip.freePulls, 2_520);
+  assert.equal(vip.estimatedPulls, 34_320);
+  assert.equal(ordinary.freePulls, 1_740);
+  assert.equal(ordinary.estimatedPulls, 25_740);
+});
+
 test('diffs rank movement and enter/leave events', () => {
   const previous = [row({ userId: 'u-1', rank: 4, value: 9 }), row({ userId: 'u-2', rank: 2, value: 5 })];
   const current = [row({ userId: 'u-1', rank: 1, value: 10 }), row({ userId: 'u-3', rank: 2, value: 7 })];

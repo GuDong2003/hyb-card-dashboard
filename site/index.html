@@ -527,14 +527,14 @@
                                 <span>开始：2026/8/20 04:00</span>
                                 <label for="boostEndMode">结束：
                                     <select id="boostEndMode" onchange="handleBoostSettingsChange()">
-                                        <option value="season" selected>赛季末</option>
+                                        <option value="season" selected>固定至 9/8 04:00</option>
                                         <option value="days">自定义持续天数</option>
                                     </select>
                                 </label>
                             </div>
                             <div class="boost-duration-row is-hidden" id="boostDurationRow">
                                 <label for="boostDurationDays">持续天数</label>
-                                <input type="number" id="boostDurationDays" min="1" max="72" value="72" inputmode="numeric" onchange="handleBoostSettingsChange()">
+                                <input type="number" id="boostDurationDays" min="1" max="72" value="19" inputmode="numeric" onchange="handleBoostSettingsChange()">
                                 <span>天</span>
                             </div>
                             <small class="boost-event-day" id="boostEventDayText">活动开始后显示当前第几天</small>
@@ -1319,7 +1319,7 @@
             dayElement.textContent = `当前使用原抽卡额度 · 翻倍活动开始：${formatBoostDate(status.startAt)}`;
         } else {
             statusElement.textContent = '待开始';
-            dayElement.textContent = `活动开始：${formatBoostDate(status.startAt)} · 结束：${mode === 'open' ? '-' : '赛季末'}`;
+            dayElement.textContent = `活动开始：${formatBoostDate(status.startAt)} · 结束：${mode === 'open' ? '-' : formatBoostDate(status.endAt)}`;
         }
     }
 

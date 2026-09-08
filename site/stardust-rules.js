@@ -10,11 +10,12 @@
     const DAY_MS = 24 * 60 * 60 * 1000;
     const SEASON_END_AT = SEASON_START_AT + SEASON_DAYS * DAY_MS;
     const BOOST_START_AT = Date.parse('2026-08-20T04:00:00+08:00');
-    const BOOST_DEFAULT_END_AT = SEASON_END_AT;
+    const BOOST_DEFAULT_END_AT = Date.parse('2026-09-08T04:00:00+08:00');
     const BOOST_DEFAULT_DURATION_DAYS = Math.max(
         1,
         Math.floor((BOOST_DEFAULT_END_AT - BOOST_START_AT) / DAY_MS)
     );
+    const BOOST_MAX_DURATION_DAYS = 72;
     const ORDINARY_DAILY_FREE_PULLS = 30;
     const ORDINARY_DAILY_PAID_PULLS = 400;
     const VIP_EXTRA_DAILY_FREE_PULLS = 20;
@@ -49,7 +50,7 @@
         return clamp(
             Math.floor(Number(value) || BOOST_DEFAULT_DURATION_DAYS),
             1,
-            BOOST_DEFAULT_DURATION_DAYS
+            BOOST_MAX_DURATION_DAYS
         );
     }
 

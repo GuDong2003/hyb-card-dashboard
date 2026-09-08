@@ -14,6 +14,7 @@ export const SEASON_START_AT = Date.parse('2026-08-02T04:00:00+08:00');
 export const SEASON_DAYS = 90;
 export const SEASON_END_AT = SEASON_START_AT + SEASON_DAYS * DAY_MS;
 export const BOOST_START_AT = Date.parse('2026-08-20T04:00:00+08:00');
+export const BOOST_DEFAULT_END_AT = Date.parse('2026-09-08T04:00:00+08:00');
 export const VIP_DAILY_SPEND_USD = 6000;
 export const VIP_DAILY_PAID_PULLS = 600;
 export const VIP_DAILY_FREE_PULLS = 50;
@@ -183,10 +184,10 @@ function seasonDayAt(timestamp) {
   return Math.max(1, Math.min(SEASON_DAYS, Math.floor((value - SEASON_START_AT) / DAY_MS) + 1));
 }
 
-function quotaForSeasonDay(day, { enabled = true, boostEndAt = SEASON_END_AT, vip = true } = {}) {
+function quotaForSeasonDay(day, { enabled = true, boostEndAt = BOOST_DEFAULT_END_AT, vip = true } = {}) {
   const seasonDay = Math.max(1, Math.min(SEASON_DAYS, Math.floor(Number(day) || 1)));
   const timestamp = SEASON_START_AT + (seasonDay - 1) * DAY_MS;
-  const normalizedBoostEndAt = boostEndAt == null ? SEASON_END_AT : Number(boostEndAt);
+  const normalizedBoostEndAt = boostEndAt == null ? BOOST_DEFAULT_END_AT : Number(boostEndAt);
   const boosted = enabled
     && timestamp >= BOOST_START_AT
     && Number.isFinite(normalizedBoostEndAt)
@@ -275,13 +276,16 @@ export function estimatePullsFromSpend(spendValue, isVip, options = {}) {
     break;
   }
   // If the spend is ahead of the capture window, preserve the old behavior
-  // of estimating additional full days using the last known quota.
+  // of estimating additional full days, while still advancing through the
+  // known quota schedule.
+  let nextSeasonDay = lastSeasonDay + 1;
   while (remainingSpend > 1e-9 && completeDays + (partialDay ? 1 : 0) < SEASON_DAYS * 2) {
-    const quota = quotaForSeasonDay(lastSeasonDay + 1, { enabled: boostEnabled, boostEndAt, vip: Boolean(isVip) });
+    const quota = quotaForSeasonDay(nextSeasonDay, { enabled: boostEnabled, boostEndAt, vip: Boolean(isVip) });
     if (remainingSpend + 1e-9 >= quota.paidCost) {
       remainingSpend -= quota.paidCost;
       completeDays += 1;
       freePulls += quota.freePulls;
+      nextSeasonDay += 1;
     } else {
       partialDay = true;
       freePulls += quota.freePulls;

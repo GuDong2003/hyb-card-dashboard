@@ -568,7 +568,8 @@
             ? normalizeDuration(values.boostDurationDays)
             : defaultDuration;
         const startAt = Number(rules.BOOST_START_AT) || Date.parse('2026-08-20T04:00:00+08:00');
-        const seasonEndAt = Number(rules.SEASON_END_AT) || startAt + defaultDuration * DAY_MS;
+        const seasonEndAt = Number(rules.BOOST_DEFAULT_END_AT)
+            || startAt + defaultDuration * DAY_MS;
         const endAt = mode === 'days'
             ? (typeof rules.getBoostEndAt === 'function' ? rules.getBoostEndAt(durationDays) : startAt + durationDays * DAY_MS)
             : seasonEndAt;
@@ -618,17 +619,14 @@
         const text = $('#rankingsFreePullsNoticeText');
         if (!notice || !text) return;
         const config = readRankingBoostConfig();
-        const rules = window.StardustRules || {};
         const now = Date.now();
-        const seasonDay = typeof rules.getSeasonDay === 'function' ? rules.getSeasonDay(now) : 1;
-        const vipQuota = rankingQuotaForDay(seasonDay, true, config);
-        const ordinaryQuota = rankingQuotaForDay(seasonDay, false, config);
         const active = config.enabled && now >= config.startAt && (config.endAt == null || now < config.endAt);
-        const endText = config.mode === 'open'
-            ? '-'
-            : config.endAt ? formatBeijingDate(config.endAt) : '—';
         notice.dataset.boostState = active ? 'active' : config.enabled ? 'scheduled' : 'disabled';
-        text.textContent = `当前额度：VIP ${vipQuota.paidPulls} 付费 + ${vipQuota.freePulls} 免费 = ${vipQuota.totalPulls} 抽/天；普通 ${ordinaryQuota.paidPulls} 付费 + ${ordinaryQuota.freePulls} 免费 = ${ordinaryQuota.totalPulls} 抽/天。翻倍开始：${formatBeijingDate(config.startAt)}；结束：${endText}。根据消费金额反推付费天数，并按 VIP / 普通玩家的每日免费额度计入总抽数；出卡率仅供参考。`;
+        text.textContent = '翻倍开始：2026/8/20 04:00（北京时间）。'
+            + '2026/8/20 04:00 前：VIP 每日付费 600 + 免费 50 = 650 抽；普通每日付费 400 + 免费 30 = 430 抽。'
+            + '2026/8/20 04:00～2026/9/8 04:00：VIP 每日付费 1000 + 免费 80 = 1080 抽；普通每日付费 800 + 免费 60 = 860 抽。'
+            + '2026/9/8 04:00 起：VIP 每日付费 1000 + 免费 50 = 1050 抽；普通每日付费 800 + 免费 30 = 830 抽。'
+            + '根据消费金额反推付费天数，并按各时间段的每日免费额度计入总抽数；出卡率仅供参考。';
     }
 
     const TREND_METRICS = Object.freeze({
@@ -1663,12 +1661,14 @@
             remainingSpend = 0;
             break;
         }
+        let nextSeasonDay = seasonDay + 1;
         while (remainingSpend > 1e-9 && completeDays + (partialDay ? 1 : 0) < 180) {
-            const quota = rankingQuotaForDay(seasonDay + 1, isVip, config);
+            const quota = rankingQuotaForDay(nextSeasonDay, isVip, config);
             if (remainingSpend + 1e-9 >= quota.paidCost) {
                 remainingSpend -= quota.paidCost;
                 completeDays += 1;
                 freePulls += quota.freePulls;
+                nextSeasonDay += 1;
             } else {
                 partialDay = true;
                 freePulls += quota.freePulls;

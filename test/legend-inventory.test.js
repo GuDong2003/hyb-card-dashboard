@@ -138,9 +138,9 @@ test('exposes the limited-time pull doubling controls and persists their setting
   assert.match(html, /id="boostEventCard"/);
   assert.match(html, /id="enableBoost"[^>]*checked/);
   assert.match(html, /id="boostEndMode"/);
-  assert.match(html, /<option value="season" selected>赛季末<\/option>/);
+  assert.match(html, /<option value="season" selected>固定至 9\/8 04:00<\/option>/);
   assert.match(html, /<option value="days">自定义持续天数<\/option>/);
-  assert.match(html, /id="boostDurationDays"[^>]*max="72"/);
+  assert.match(html, /id="boostDurationDays"[^>]*max="72"[^>]*value="19"/);
   assert.match(html, /id="boostEventDayText"/);
   assert.match(html, /const SNAPSHOT_CHECKBOX_FIELDS = \[[\s\S]*['"]enableBoost['"]/);
   assert.match(html, /const BOOST_SETTING_FIELDS = \[[\s\S]*['"]boostDurationDays['"]/);
