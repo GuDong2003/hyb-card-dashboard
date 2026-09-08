@@ -23,6 +23,11 @@
     const BOOST_ORDINARY_DAILY_PAID_PULLS = 800;
     const BOOST_VIP_DAILY_FREE_PULLS = BOOST_ORDINARY_DAILY_FREE_PULLS + VIP_EXTRA_DAILY_FREE_PULLS;
     const BOOST_VIP_DAILY_PAID_PULLS = BOOST_ORDINARY_DAILY_PAID_PULLS + VIP_EXTRA_DAILY_PAID_PULLS;
+    // 活动结束后，免费额度回调，付费额度保留活动后的上限。
+    const POST_BOOST_ORDINARY_DAILY_FREE_PULLS = ORDINARY_DAILY_FREE_PULLS;
+    const POST_BOOST_ORDINARY_DAILY_PAID_PULLS = BOOST_ORDINARY_DAILY_PAID_PULLS;
+    const POST_BOOST_VIP_DAILY_FREE_PULLS = POST_BOOST_ORDINARY_DAILY_FREE_PULLS + VIP_EXTRA_DAILY_FREE_PULLS;
+    const POST_BOOST_VIP_DAILY_PAID_PULLS = POST_BOOST_ORDINARY_DAILY_PAID_PULLS + VIP_EXTRA_DAILY_PAID_PULLS;
     // 保留旧名称作为兼容字段；收益表默认按 VIP 额度演算。
     const DAILY_PULLS = ORDINARY_DAILY_PAID_PULLS + VIP_EXTRA_DAILY_PAID_PULLS
         + ORDINARY_DAILY_FREE_PULLS + VIP_EXTRA_DAILY_FREE_PULLS;
@@ -110,8 +115,14 @@
         const seasonDay = clamp(Math.floor(Number(day) || 1), 1, SEASON_DAYS);
         const timestamp = SEASON_START_AT + (seasonDay - 1) * DAY_MS;
         const boosted = isBoostActiveAt(timestamp, { enabled, durationDays });
-        const ordinaryFreePulls = boosted ? BOOST_ORDINARY_DAILY_FREE_PULLS : ORDINARY_DAILY_FREE_PULLS;
-        const ordinaryPaidPulls = boosted ? BOOST_ORDINARY_DAILY_PAID_PULLS : ORDINARY_DAILY_PAID_PULLS;
+        const postBoosted = enabled
+            && timestamp >= getBoostEndAt(durationDays);
+        const ordinaryFreePulls = boosted
+            ? BOOST_ORDINARY_DAILY_FREE_PULLS
+            : postBoosted ? POST_BOOST_ORDINARY_DAILY_FREE_PULLS : ORDINARY_DAILY_FREE_PULLS;
+        const ordinaryPaidPulls = boosted
+            ? BOOST_ORDINARY_DAILY_PAID_PULLS
+            : postBoosted ? POST_BOOST_ORDINARY_DAILY_PAID_PULLS : ORDINARY_DAILY_PAID_PULLS;
         const freePulls = vip
             ? ordinaryFreePulls + VIP_EXTRA_DAILY_FREE_PULLS
             : ordinaryFreePulls;
@@ -271,6 +282,10 @@
         BOOST_ORDINARY_DAILY_PAID_PULLS,
         BOOST_VIP_DAILY_FREE_PULLS,
         BOOST_VIP_DAILY_PAID_PULLS,
+        POST_BOOST_ORDINARY_DAILY_FREE_PULLS,
+        POST_BOOST_ORDINARY_DAILY_PAID_PULLS,
+        POST_BOOST_VIP_DAILY_FREE_PULLS,
+        POST_BOOST_VIP_DAILY_PAID_PULLS,
         getSeasonDay,
         normalizeBoostDurationDays,
         getBoostEndAt,

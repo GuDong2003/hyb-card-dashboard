@@ -180,6 +180,19 @@ test('includes the limited-time doubled free quota when estimating cumulative sp
   assert.equal(withBoost.estimateStatus, 'partial_day');
 });
 
+test('keeps the doubled paid cap after the temporary free quota ends', () => {
+  const afterBoost = estimatePullsFromSpend(64_000_000_000, true, {
+    capturedAt: Date.parse('2026-08-22T05:00:00+08:00'),
+    boostEndAt: Date.parse('2026-08-21T04:00:00+08:00')
+  });
+
+  assert.equal(afterBoost.estimatedDays, 20);
+  assert.equal(afterBoost.paidPulls, 12_800);
+  assert.equal(afterBoost.freePulls, 1_030);
+  assert.equal(afterBoost.estimatedPulls, 13_830);
+  assert.equal(afterBoost.estimateStatus, 'complete_days');
+});
+
 test('diffs rank movement and enter/leave events', () => {
   const previous = [row({ userId: 'u-1', rank: 4, value: 9 }), row({ userId: 'u-2', rank: 2, value: 5 })];
   const current = [row({ userId: 'u-1', rank: 1, value: 10 }), row({ userId: 'u-3', rank: 2, value: 7 })];

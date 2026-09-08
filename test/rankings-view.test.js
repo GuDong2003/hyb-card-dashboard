@@ -330,6 +330,8 @@ test('rankings client uses same-origin Worker APIs and the Card bridge events', 
   assert.match(source, /SPEND_VALUE_PER_USD\s*=\s*500000/);
   assert.match(source, /VIP_DAILY_PAID_PULLS\s*=\s*600/);
   assert.match(source, /VIP_DAILY_FREE_PULLS\s*=\s*50/);
+  assert.match(source, /POST_BOOST_VIP_DAILY_PAID_PULLS\s*=\s*1000/);
+  assert.match(source, /POST_BOOST_VIP_DAILY_FREE_PULLS\s*=\s*50/);
   assert.match(source, /ORDINARY_DAILY_PAID_PULLS\s*=\s*400/);
   assert.match(source, /ORDINARY_DAILY_FREE_PULLS\s*=\s*30/);
   assert.match(source, /paidPulls/);

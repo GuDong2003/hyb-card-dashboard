@@ -39,6 +39,12 @@
     const BOOST_VIP_DAILY_SPEND_USD = 10000;
     const BOOST_VIP_DAILY_PAID_PULLS = 1000;
     const BOOST_VIP_DAILY_FREE_PULLS = 80;
+    const POST_BOOST_ORDINARY_DAILY_SPEND_USD = 8000;
+    const POST_BOOST_ORDINARY_DAILY_PAID_PULLS = 800;
+    const POST_BOOST_ORDINARY_DAILY_FREE_PULLS = 30;
+    const POST_BOOST_VIP_DAILY_SPEND_USD = 10000;
+    const POST_BOOST_VIP_DAILY_PAID_PULLS = 1000;
+    const POST_BOOST_VIP_DAILY_FREE_PULLS = 50;
     const LOCAL_SOURCE_SCOPES = Object.freeze(['global', 'friends']);
     const LOCAL_SOURCE_SCOPE_CONFIG = Object.freeze({ scope: 'global,friends', order: LOCAL_SOURCE_SCOPES });
     const API_CACHE_TTL = Object.freeze({
@@ -551,9 +557,8 @@
         } catch (_) {
             values = {};
         }
-        const mode = new Set(['open', 'season', 'days']).has(String(values.boostEndMode))
-            ? String(values.boostEndMode)
-            : 'open';
+        const storedMode = String(values.boostEndMode || '');
+        const mode = storedMode === 'days' || storedMode === 'season' ? storedMode : 'season';
         const rules = window.StardustRules || {};
         const defaultDuration = Number(rules.BOOST_DEFAULT_DURATION_DAYS) || 72;
         const normalizeDuration = typeof rules.normalizeBoostDurationDays === 'function'
@@ -562,16 +567,17 @@
         const durationDays = mode === 'days'
             ? normalizeDuration(values.boostDurationDays)
             : defaultDuration;
-        const seasonEndAt = Number(rules.SEASON_END_AT) || null;
+        const startAt = Number(rules.BOOST_START_AT) || Date.parse('2026-08-20T04:00:00+08:00');
+        const seasonEndAt = Number(rules.SEASON_END_AT) || startAt + defaultDuration * DAY_MS;
         const endAt = mode === 'days'
-            ? (typeof rules.getBoostEndAt === 'function' ? rules.getBoostEndAt(durationDays) : null)
-            : mode === 'season' ? seasonEndAt : null;
+            ? (typeof rules.getBoostEndAt === 'function' ? rules.getBoostEndAt(durationDays) : startAt + durationDays * DAY_MS)
+            : seasonEndAt;
         return {
             enabled: values.enableBoost !== false,
             mode,
             durationDays,
             endAt,
-            startAt: Number(rules.BOOST_START_AT) || Date.parse('2026-08-20T04:00:00+08:00')
+            startAt
         };
     }
 
@@ -590,13 +596,20 @@
         const boosted = config.enabled
             && timestamp >= config.startAt
             && (config.endAt == null || timestamp < config.endAt);
+        const postBoosted = config.enabled
+            && config.endAt != null
+            && timestamp >= config.endAt;
         if (isVip) {
             return boosted
                 ? { paidCost: BOOST_VIP_DAILY_SPEND_USD, paidPulls: BOOST_VIP_DAILY_PAID_PULLS, freePulls: BOOST_VIP_DAILY_FREE_PULLS, totalPulls: BOOST_VIP_DAILY_PAID_PULLS + BOOST_VIP_DAILY_FREE_PULLS }
+                : postBoosted
+                    ? { paidCost: POST_BOOST_VIP_DAILY_SPEND_USD, paidPulls: POST_BOOST_VIP_DAILY_PAID_PULLS, freePulls: POST_BOOST_VIP_DAILY_FREE_PULLS, totalPulls: POST_BOOST_VIP_DAILY_PAID_PULLS + POST_BOOST_VIP_DAILY_FREE_PULLS }
                 : { paidCost: VIP_DAILY_SPEND_USD, paidPulls: VIP_DAILY_PAID_PULLS, freePulls: VIP_DAILY_FREE_PULLS, totalPulls: VIP_DAILY_PULLS };
         }
         return boosted
             ? { paidCost: BOOST_ORDINARY_DAILY_SPEND_USD, paidPulls: BOOST_ORDINARY_DAILY_PAID_PULLS, freePulls: BOOST_ORDINARY_DAILY_FREE_PULLS, totalPulls: BOOST_ORDINARY_DAILY_PAID_PULLS + BOOST_ORDINARY_DAILY_FREE_PULLS }
+            : postBoosted
+                ? { paidCost: POST_BOOST_ORDINARY_DAILY_SPEND_USD, paidPulls: POST_BOOST_ORDINARY_DAILY_PAID_PULLS, freePulls: POST_BOOST_ORDINARY_DAILY_FREE_PULLS, totalPulls: POST_BOOST_ORDINARY_DAILY_PAID_PULLS + POST_BOOST_ORDINARY_DAILY_FREE_PULLS }
             : { paidCost: ORDINARY_DAILY_SPEND_USD, paidPulls: ORDINARY_DAILY_PAID_PULLS, freePulls: ORDINARY_DAILY_FREE_PULLS, totalPulls: ORDINARY_DAILY_PULLS };
     }
 

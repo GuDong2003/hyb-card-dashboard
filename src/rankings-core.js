@@ -12,6 +12,7 @@ export const SPEND_VALUE_PER_USD = 500000;
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const SEASON_START_AT = Date.parse('2026-08-02T04:00:00+08:00');
 export const SEASON_DAYS = 90;
+export const SEASON_END_AT = SEASON_START_AT + SEASON_DAYS * DAY_MS;
 export const BOOST_START_AT = Date.parse('2026-08-20T04:00:00+08:00');
 export const VIP_DAILY_SPEND_USD = 6000;
 export const VIP_DAILY_PAID_PULLS = 600;
@@ -27,6 +28,12 @@ export const BOOST_ORDINARY_DAILY_FREE_PULLS = 60;
 export const BOOST_VIP_DAILY_SPEND_USD = 10000;
 export const BOOST_VIP_DAILY_PAID_PULLS = 1000;
 export const BOOST_VIP_DAILY_FREE_PULLS = 80;
+export const POST_BOOST_ORDINARY_DAILY_SPEND_USD = 8000;
+export const POST_BOOST_ORDINARY_DAILY_PAID_PULLS = 800;
+export const POST_BOOST_ORDINARY_DAILY_FREE_PULLS = 30;
+export const POST_BOOST_VIP_DAILY_SPEND_USD = 10000;
+export const POST_BOOST_VIP_DAILY_PAID_PULLS = 1000;
+export const POST_BOOST_VIP_DAILY_FREE_PULLS = 50;
 
 const BOARD_KEY_SET = new Set(BOARD_KEYS);
 const SNAPSHOT_SCOPES = new Set(['global', 'friends']);
@@ -176,19 +183,28 @@ function seasonDayAt(timestamp) {
   return Math.max(1, Math.min(SEASON_DAYS, Math.floor((value - SEASON_START_AT) / DAY_MS) + 1));
 }
 
-function quotaForSeasonDay(day, { enabled = true, boostEndAt = null, vip = true } = {}) {
+function quotaForSeasonDay(day, { enabled = true, boostEndAt = SEASON_END_AT, vip = true } = {}) {
   const seasonDay = Math.max(1, Math.min(SEASON_DAYS, Math.floor(Number(day) || 1)));
   const timestamp = SEASON_START_AT + (seasonDay - 1) * DAY_MS;
+  const normalizedBoostEndAt = boostEndAt == null ? SEASON_END_AT : Number(boostEndAt);
   const boosted = enabled
     && timestamp >= BOOST_START_AT
-    && (boostEndAt == null || timestamp < Number(boostEndAt));
+    && Number.isFinite(normalizedBoostEndAt)
+    && timestamp < normalizedBoostEndAt;
+  const postBoosted = enabled
+    && Number.isFinite(normalizedBoostEndAt)
+    && timestamp >= normalizedBoostEndAt;
   if (vip) {
     return boosted
       ? { paidCost: BOOST_VIP_DAILY_SPEND_USD, paidPulls: BOOST_VIP_DAILY_PAID_PULLS, freePulls: BOOST_VIP_DAILY_FREE_PULLS }
+      : postBoosted
+        ? { paidCost: POST_BOOST_VIP_DAILY_SPEND_USD, paidPulls: POST_BOOST_VIP_DAILY_PAID_PULLS, freePulls: POST_BOOST_VIP_DAILY_FREE_PULLS }
       : { paidCost: VIP_DAILY_SPEND_USD, paidPulls: VIP_DAILY_PAID_PULLS, freePulls: VIP_DAILY_FREE_PULLS };
   }
   return boosted
     ? { paidCost: BOOST_ORDINARY_DAILY_SPEND_USD, paidPulls: BOOST_ORDINARY_DAILY_PAID_PULLS, freePulls: BOOST_ORDINARY_DAILY_FREE_PULLS }
+    : postBoosted
+      ? { paidCost: POST_BOOST_ORDINARY_DAILY_SPEND_USD, paidPulls: POST_BOOST_ORDINARY_DAILY_PAID_PULLS, freePulls: POST_BOOST_ORDINARY_DAILY_FREE_PULLS }
     : { paidCost: ORDINARY_DAILY_SPEND_USD, paidPulls: ORDINARY_DAILY_PAID_PULLS, freePulls: ORDINARY_DAILY_FREE_PULLS };
 }
 

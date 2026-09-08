@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" type="image/svg+xml" href="/legend-card-icon.svg">
     <title>传说卡收益计算</title>
-    <meta name="description" content="手动输入当前抽卡、传说库存与星尘状态，推演90天赛季的兑换收益、最大资金缺口与最终利润。">
+    <meta name="description" content="手动输入当前抽卡与传说库存，推演90天赛季的兑换收益、最大资金缺口与最终利润。">
     <meta property="og:type" content="website">
     <meta property="og:title" content="传说卡收益计算">
     <meta property="og:description" content="90天赛季收益与现金流模型">
@@ -527,8 +527,7 @@
                                 <span>开始：2026/8/20 04:00</span>
                                 <label for="boostEndMode">结束：
                                     <select id="boostEndMode" onchange="handleBoostSettingsChange()">
-                                        <option value="open" selected>未指定</option>
-                                        <option value="season">赛季末</option>
+                                        <option value="season" selected>赛季末</option>
                                         <option value="days">自定义持续天数</option>
                                     </select>
                                 </label>
@@ -543,19 +542,15 @@
                     </div>
 
                     <div class="input-section inventory-section">
-                        <h3 class="input-section-title">库存与星尘</h3>
-                        <div class="form-grid three">
+                        <h3 class="input-section-title">库存</h3>
+                        <div class="form-grid">
                             <div class="form-group">
                                 <label for="redeemedSets">已兑换套数 <span class="field-hint">已提交卡组</span></label>
                                 <input type="number" id="redeemedSets" min="0" value="" inputmode="numeric" oninput="calculate()">
                             </div>
                             <div class="form-group">
-                                <label for="currentUsableCards">当前可用传说 <span class="field-hint">含合成</span></label>
+                                <label for="currentUsableCards">目前已获得传说 <span class="field-hint">含抽卡、福袋、赠送</span></label>
                                 <input type="number" id="currentUsableCards" min="0" value="" inputmode="numeric" oninput="calculate()">
-                            </div>
-                            <div class="form-group">
-                                <label for="stardustBalance">当前星尘余额</label>
-                                <input type="number" id="stardustBalance" min="0" value="" inputmode="numeric" oninput="calculate()">
                             </div>
                         </div>
                         <div class="derived-stat" aria-live="polite">
@@ -575,13 +570,6 @@
 
                 <section class="control-section strategy-section">
                     <div class="strategy-stack">
-                        <label class="strategy-option" for="enableForge">
-                            <input type="checkbox" id="enableForge" onchange="calculate()">
-                            <span>
-                                <strong>每日融解 20 张史诗卡并合成传说</strong>
-                                <small>每天默认融解20张史诗卡，获得✦1,000并计入$900成本；星尘足够时自动合成，最多5张/天。</small>
-                            </span>
-                        </label>
                         <label class="strategy-option" for="enableSP">
                             <input type="checkbox" id="enableSP" onchange="calculate()">
                             <span>
@@ -695,10 +683,6 @@
                         <col class="simulation-col-day-cards">
                         <col class="simulation-col-cumulative-drawn">
                         <col class="simulation-col-previous-additional">
-                        <col class="forge-column simulation-col-dust is-hidden">
-                        <col class="forge-column simulation-col-crafted is-hidden">
-                        <col class="forge-column simulation-col-crafted-sets is-hidden">
-                        <col class="forge-column simulation-col-dissolve-cost is-hidden">
                         <col class="simulation-col-usable">
                         <col class="simulation-col-sets">
                         <col class="sp-column simulation-col-sp-bonus is-hidden">
@@ -712,10 +696,6 @@
                             <th>当日传说</th>
                             <th>累计抽出传说</th>
                             <th>此前合成传说</th>
-                            <th class="forge-column is-hidden">星尘余额</th>
-                            <th class="forge-column is-hidden">本期模拟合成传说</th>
-                            <th class="forge-column is-hidden">合成折算套数</th>
-                            <th class="forge-column is-hidden">累计融解成本</th>
                             <th>可用传说总量</th>
                             <th>累计成套</th>
                             <th class="sp-column is-hidden">累计 SP 加成</th>
@@ -930,7 +910,6 @@
         'currentCards',
         'currentUsableCards',
         'redeemedSets',
-        'stardustBalance',
         'spPointCap'
     ];
     const SNAPSHOT_VALUE_FIELDS = [
@@ -939,10 +918,9 @@
         'currentTotalDraws',
         'redeemedSets',
         'currentUsableCards',
-        'stardustBalance',
         'spPointCap'
     ];
-    const SNAPSHOT_CHECKBOX_FIELDS = ['enableSP', 'enableForge', 'enableBoost'];
+    const SNAPSHOT_CHECKBOX_FIELDS = ['enableSP', 'enableBoost'];
     const BOOST_SETTING_FIELDS = ['boostEndMode', 'boostDurationDays'];
     const DYNAMIC_DEFAULT_FIELDS = ['currentDay', 'currentTotalDraws'];
     const LEGACY_DYNAMIC_DEFAULTS = {
@@ -1041,8 +1019,8 @@
             if (saved.values.redeemedSets === undefined) {
                 document.getElementById('redeemedSets').value = '0';
             }
-            if (saved.values.boostEndMode === undefined) {
-                document.getElementById('boostEndMode').value = 'open';
+            if (!['season', 'days'].includes(String(saved.values.boostEndMode || ''))) {
+                document.getElementById('boostEndMode').value = 'season';
             }
             if (saved.values.boostDurationDays === undefined) {
                 document.getElementById('boostDurationDays').value = String(StardustRules.BOOST_DEFAULT_DURATION_DAYS);
@@ -1169,8 +1147,7 @@
             'currentTotalDraws',
             'currentCards',
             'currentUsableCards',
-            'redeemedSets',
-            'stardustBalance'
+            'redeemedSets'
         ].forEach((id) => {
             document.getElementById(id).value = String(normalized[id]);
         });
@@ -1758,9 +1735,7 @@
             heldLegendaryCards: currentUsableCards,
             redeemedSets
         });
-        const startingStardust = Math.max(0, Number.parseInt(document.getElementById('stardustBalance').value, 10) || 0);
         const enableSP = document.getElementById('enableSP').checked;
-        const enableForge = document.getElementById('enableForge').checked;
         const enableBoost = document.getElementById('enableBoost').checked;
         const boostDurationDays = getConfiguredBoostDurationDays();
         saveSnapshot();
@@ -1784,7 +1759,6 @@
         document.getElementById('totalAcquiredCardsText').innerText = `${inventorySummary.totalAcquiredCards} 张`;
         document.getElementById('previousCraftedCardsText').innerText = `${inventorySummary.previousCraftedCards} 张`;
         document.getElementById('currentTotalSetsText').innerText = `${inventorySummary.totalSets} 套`;
-        document.querySelectorAll('.forge-column').forEach(element => element.classList.toggle('is-hidden', !enableForge));
         document.querySelectorAll('.sp-column').forEach(element => element.classList.toggle('is-hidden', !enableSP));
 
         const dailyCards = new Array(90);
@@ -1806,17 +1780,6 @@
 
         const tableData = [];
         let cumulativeDrawn = 0;
-        let cumulativeDissolveCost = 0;
-        const automaticDissolveState = StardustRules.getAutomaticDissolveDayState();
-        const forgeProjection = enableForge
-            ? StardustRules.getForgeProjection({
-                currentDay,
-                currentStardust: startingStardust
-            })
-            : null;
-        const historicalCraftedCards = enableForge
-            ? forgeProjection.craftedByDay[currentDay]
-            : 0;
 
         for (let day = 1; day <= 90; day++) {
             const dayCards = dailyCards[day - 1];
@@ -1826,21 +1789,8 @@
                 ? Math.round((currentUsableCards / currentDay) * day)
                 : Math.round(currentUsableCards + Math.max(0, cumulativeDrawnByDay[day - 1] - currentCards));
 
-            let dustDisplay = enableForge ? forgeProjection.dustByDay[day] : startingStardust;
-            if (enableForge) {
-                const dissolveState = day < currentDay
-                    ? StardustRules.getDissolveDayState({
-                        day,
-                        currentDay,
-                        dissolveRemaining: 0
-                    })
-                    : automaticDissolveState;
-                cumulativeDissolveCost += dissolveState.cashCost;
-            }
-
-            const craftedCards = enableForge ? forgeProjection.craftedByDay[day] : 0;
-            const projectedCraftedCards = Math.max(0, craftedCards - historicalCraftedCards);
-            const usableCards = baseUsableCards + projectedCraftedCards;
+            // 后续只预测抽卡产生的传说；当前可用传说已经包含历史合成库存。
+            const usableCards = baseUsableCards;
             const redeemedSetBaseline = day < currentDay ? 0 : redeemedSets;
             const cumulativeSets = redeemedSetBaseline + Math.floor(usableCards / 6);
             const earnedSP = Math.floor(cumulativeDrawn * 0.1);
@@ -1850,10 +1800,6 @@
                 dayCards,
                 cumulativeDrawn,
                 previousCraftedCards: day < currentDay ? null : inventorySummary.previousCraftedCards,
-                dustDisplay,
-                craftedCards,
-                craftedSetEquivalent: craftedCards / 6,
-                cumulativeDissolveCost,
                 usableCards,
                 cumulativeSets,
                 earnedSP
@@ -1907,7 +1853,7 @@
             row.dailyFreePulls = dayQuota.freePulls;
             row.dailyTotalPulls = dayQuota.totalPulls;
             row.boosted = dayQuota.boosted;
-            row.cumulativeCost = cumulativeDailyCost + row.cumulativeDissolveCost;
+            row.cumulativeCost = cumulativeDailyCost;
             row.netProfit = row.totalRevenue - row.cumulativeCost;
 
             if (row.netProfit < minProfit) {
@@ -1934,7 +1880,6 @@
                 : row.day === maxProfitDay
                     ? 'cell-max-profit'
                     : (row.netProfit >= 0 ? 'val-pos' : 'val-neg');
-            const forgeHiddenClass = enableForge ? '' : ' is-hidden';
             const spHiddenClass = enableSP ? '' : ' is-hidden';
 
             tr.innerHTML = `
@@ -1942,10 +1887,6 @@
                 <td>${row.dayCards}</td>
                 <td>${row.cumulativeDrawn}</td>
                 <td>${row.previousCraftedCards === null ? '—' : row.previousCraftedCards}</td>
-                <td class="forge-column${forgeHiddenClass}">${row.dustDisplay === null ? '—' : row.dustDisplay}</td>
-                <td class="forge-column${forgeHiddenClass}">${row.craftedCards}</td>
-                <td class="forge-column${forgeHiddenClass}">${row.craftedSetEquivalent.toFixed(2)}</td>
-                <td class="forge-column${forgeHiddenClass}">${row.cumulativeDissolveCost}</td>
                 <td>${row.usableCards}</td>
                 <td>${row.cumulativeSets}</td>
                 <td class="sp-column${spHiddenClass}">${formatMoney(row.spBonus)}</td>

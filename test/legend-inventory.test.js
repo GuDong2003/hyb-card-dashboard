@@ -61,7 +61,7 @@ test('exposes redeemed sets and renames the held legendary inventory field', asy
 
   assert.match(html, /<label for="redeemedSets">已兑换套数/);
   assert.match(html, /<input type="number" id="redeemedSets"[^>]*value=""/);
-  assert.match(html, /<label for="currentUsableCards">当前可用传说[\s\S]*含合成/);
+  assert.match(html, /<label for="currentUsableCards">目前已获得传说\s*<span class="field-hint">含抽卡、福袋、赠送<\/span><\/label>/);
   assert.match(html, /const SNAPSHOT_VALUE_FIELDS = \[[\s\S]*['"]redeemedSets['"]/);
   assert.match(html, /saved\.values\.redeemedSets === undefined/);
 });
@@ -89,9 +89,24 @@ test('seeds projected sets from redeemed history without inflating drawn cards o
   assert.match(html, /const redeemedSetBaseline = day < currentDay \? 0 : redeemedSets/);
   assert.match(html, /const cumulativeSets = redeemedSetBaseline \+ Math\.floor\(usableCards \/ 6\)/);
   assert.match(html, /const earnedSP = Math\.floor\(cumulativeDrawn \* 0\.1\)/);
-  assert.match(html, /StardustRules\.getForgeProjection\(\{[\s\S]*currentStardust: startingStardust/);
-  assert.match(html, /const projectedCraftedCards = Math\.max\(0, craftedCards - historicalCraftedCards\)/);
-  assert.match(html, /const usableCards = baseUsableCards \+ projectedCraftedCards/);
+  assert.match(html, /const usableCards = baseUsableCards;/);
+  assert.doesNotMatch(html, /StardustRules\.getForgeProjection/);
+  assert.doesNotMatch(html, /const cumulativeDissolveCost/);
+});
+
+test('hides stardust and future forge controls while keeping current usable inventory', async () => {
+  const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
+
+  assert.match(html, /<h3 class="input-section-title">库存<\/h3>/);
+  assert.match(html, /<div class="input-section inventory-section">[\s\S]*?<div class="form-grid">/);
+  assert.match(html, /id="currentUsableCards"/);
+  assert.match(html, /id="redeemedSets"/);
+  assert.doesNotMatch(html, /id="stardustBalance"/);
+  assert.doesNotMatch(html, /id="enableForge"/);
+  assert.doesNotMatch(html, /getForgeProjection/);
+  assert.doesNotMatch(html, /cumulativeDissolveCost/);
+  assert.doesNotMatch(html, /class="forge-column/);
+  assert.doesNotMatch(html, /每日融解|星尘余额|累计融解成本|本期模拟合成传说/);
 });
 
 test('leaves manual inventory inputs blank for new users while keeping the saved snapshot key', async () => {
@@ -99,10 +114,10 @@ test('leaves manual inventory inputs blank for new users while keeping the saved
 
   assert.match(html, /<label for="currentCards">抽出传说\s*<span class="field-hint">不含合成<\/span><\/label>/);
   assert.match(html, /<input type="number" id="currentCards"[^>]*value=""/);
-  assert.match(html, /<label for="currentUsableCards">当前可用传说\s*<span class="field-hint">含合成<\/span><\/label>/);
+  assert.match(html, /<label for="currentUsableCards">目前已获得传说\s*<span class="field-hint">含抽卡、福袋、赠送<\/span><\/label>/);
   assert.match(html, /<input type="number" id="currentUsableCards"[^>]*value=""/);
   assert.match(html, /<input type="number" id="redeemedSets"[^>]*value=""/);
-  assert.match(html, /<input type="number" id="stardustBalance"[^>]*value=""/);
+  assert.doesNotMatch(html, /stardustBalance/);
   assert.match(html, /const SNAPSHOT_STORAGE_KEY = 'legend-card-calculator-snapshot-v1'/);
 });
 
@@ -110,9 +125,10 @@ test('keeps the inventory section labels on one line in the compact layout', asy
   const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
   const css = await readFile(new URL('../site/calculator-ui.css', import.meta.url), 'utf8');
 
-  assert.match(html, /<div class="input-section inventory-section">[\s\S]*<h3 class="input-section-title">库存与星尘<\/h3>/);
+  assert.match(html, /<div class="input-section inventory-section">[\s\S]*<h3 class="input-section-title">库存<\/h3>/);
   assert.match(css, /\.inventory-section \.form-group label[\s\S]*white-space:\s*nowrap/);
   assert.match(css, /\.inventory-section \.field-hint[\s\S]*white-space:\s*nowrap/);
+  assert.match(css, /\.inventory-section \.form-grid[\s\S]*gap:\s*18px/);
 });
 
 test('exposes the limited-time pull doubling controls and persists their settings', async () => {
@@ -122,7 +138,7 @@ test('exposes the limited-time pull doubling controls and persists their setting
   assert.match(html, /id="boostEventCard"/);
   assert.match(html, /id="enableBoost"[^>]*checked/);
   assert.match(html, /id="boostEndMode"/);
-  assert.match(html, /<option value="season">赛季末<\/option>/);
+  assert.match(html, /<option value="season" selected>赛季末<\/option>/);
   assert.match(html, /<option value="days">自定义持续天数<\/option>/);
   assert.match(html, /id="boostDurationDays"[^>]*max="72"/);
   assert.match(html, /id="boostEventDayText"/);

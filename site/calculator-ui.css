@@ -2530,6 +2530,10 @@ table.simulation-table tr.row-summary-target td {
     font-size: 0.64rem;
 }
 
+.inventory-section .form-grid {
+    gap: 18px;
+}
+
 .inventory-section .field-hint {
     flex: 0 0 auto;
     font-size: 0.54rem;

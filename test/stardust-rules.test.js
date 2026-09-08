@@ -31,6 +31,7 @@ test('models the Aug 20 limited-time pull doubling with a season-end default', a
   const beforeBoost = rules.getDailyQuotaForSeasonDay(18);
   const firstBoostDay = rules.getDailyQuotaForSeasonDay(19);
   const oneDayBoost = rules.getDailyQuotaForSeasonDay(20, { durationDays: 1 });
+  const afterBoost = rules.getDailyQuotaForSeasonDay(20, { durationDays: 1 });
   const activeStatus = rules.getBoostStatus(Date.parse('2026-08-20T05:00:00+08:00'));
 
   assert.equal(rules.BOOST_DEFAULT_DURATION_DAYS, 72);
@@ -51,7 +52,16 @@ test('models the Aug 20 limited-time pull doubling with a season-end default', a
     paidCost: 10000
   });
   assert.equal(oneDayBoost.boosted, false);
+  assert.deepEqual(JSON.parse(JSON.stringify(afterBoost)), {
+    seasonDay: 20,
+    boosted: false,
+    freePulls: 50,
+    paidPulls: 1000,
+    totalPulls: 1050,
+    paidCost: 10000
+  });
   assert.equal(rules.getCumulativePullsThroughDay(19), 12780);
+  assert.equal(rules.getCumulativePullsThroughDay(20, { durationDays: 1 }), 13830);
   assert.deepEqual(JSON.parse(JSON.stringify(activeStatus)), {
     state: 'active',
     day: 1,
