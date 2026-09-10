@@ -577,10 +577,40 @@ test('trend user name uses a history row before falling back to the user id', as
 
 test('rankings client accepts a multi-source local bundle before upload', async () => {
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
-  assert.match(source, /localSnapshots/);
+  assert.match(source, /pendingUploadSnapshots/);
   assert.match(source, /Array\.isArray\([\s\S]*snapshots/);
   assert.match(source, /scope[\s\S]*friends/);
   assert.match(source, /merge[\s\S]*leaderboards/i);
+});
+
+test('rankings upload requires a pending userscript snapshot and clears it after upload', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  const hasPending = extractFunction(source, 'hasPendingUploadSnapshot');
+  const renderControls = extractFunction(source, 'renderUploadControls');
+  const uploadPending = extractFunction(source, 'uploadPendingSnapshot');
+  const userscriptContext = {
+    state: {
+      pendingUploadSnapshots: [{ season: { id: 's1' } }],
+      pendingUploadSource: 'userscript'
+    }
+  };
+  vm.runInNewContext(`${hasPending}\nthis.result = hasPendingUploadSnapshot();`, userscriptContext);
+  assert.equal(userscriptContext.result, true);
+
+  const cloudContext = {
+    state: {
+      pendingUploadSnapshots: [{ season: { id: 's1' } }],
+      pendingUploadSource: 'cloud'
+    }
+  };
+  vm.runInNewContext(`${hasPending}\nthis.result = hasPendingUploadSnapshot();`, cloudContext);
+  assert.equal(cloudContext.result, false);
+  assert.match(renderControls, /hasPendingUploadSnapshot\(\)/);
+  assert.match(uploadPending, /hasPendingUploadSnapshot\(\)/);
+  assert.match(source, /function setPendingUploadSnapshots/);
+  assert.match(source, /function clearPendingUploadSnapshots/);
+  assert.match(source, /pendingUploadSource\s*=\s*'userscript'/);
+  assert.match(source, /pendingUploadSnapshots\s*=\s*\[\]/);
 });
 
 test('rankings client persists upload consent and gates snapshot uploads', async () => {

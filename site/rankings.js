@@ -199,7 +199,8 @@
         seasonId: '',
         pinnedSeasonId: initialPinnedState.seasonId,
         pinnedUserIds: initialPinnedState.userIds,
-        localSnapshots: [],
+        pendingUploadSnapshots: [],
+        pendingUploadSource: '',
         loaded: false,
         busy: false,
         bridgeReady: false,
@@ -244,6 +245,28 @@
             modalOpen: false
         }
     };
+
+    function setPendingUploadSnapshots(snapshot, source = '') {
+        const snapshots = normalizeSnapshotsForUpload(snapshot);
+        if (source !== 'userscript' || !snapshots.length) {
+            clearPendingUploadSnapshots();
+            return [];
+        }
+        state.pendingUploadSnapshots = snapshots;
+        state.pendingUploadSource = 'userscript';
+        return snapshots;
+    }
+
+    function clearPendingUploadSnapshots() {
+        state.pendingUploadSnapshots = [];
+        state.pendingUploadSource = '';
+    }
+
+    function hasPendingUploadSnapshot() {
+        return state.pendingUploadSource === 'userscript'
+            && Array.isArray(state.pendingUploadSnapshots)
+            && state.pendingUploadSnapshots.length > 0;
+    }
 
     const $ = (selector) => document.querySelector(selector);
 
@@ -496,14 +519,14 @@
         if (toggle) toggle.checked = state.settings.autoUpload === true;
         const uploadButton = $('#rankingsUploadButton');
         if (uploadButton) {
-            uploadButton.disabled = state.busy || !state.localSnapshots.length;
+            uploadButton.disabled = state.busy || !hasPendingUploadSnapshot();
             uploadButton.textContent = '上传云端';
         }
         const localStatus = $('#rankingsUploadStatus');
         if (localStatus) {
-            localStatus.textContent = state.localSnapshots.length
+            localStatus.textContent = hasPendingUploadSnapshot()
                 ? (state.settings.autoUpload ? '自动上传已开启' : '本次抓取仅保存在当前页面')
-                : '尚无待上传的本地快照';
+                : '尚无待上传的本地脚本快照，请先点击“立即刷新”';
         }
     }
 
@@ -2379,9 +2402,9 @@
     async function ensureFreshSnapshot(force = false, retry = false, manual = false, options = {}) {
         const finalSets = options.finalSets === true;
         const setsFinalRetry = options.setsFinalRetry === true;
-        if (!force && !retry && state.localSnapshots.length && !state.settings.autoUpload) {
+        if (!force && !retry && hasPendingUploadSnapshot() && !state.settings.autoUpload) {
             setStatus('已显示本地抓取数据，尚未上传云端');
-            return { localOnly: true, snapshots: state.localSnapshots };
+            return { localOnly: true, snapshots: state.pendingUploadSnapshots };
         }
         const latest = await loadLatestSnapshot({ fresh: force || retry });
         if (!force && !retry && latest.snapshot && !latest.stale) {
@@ -2398,8 +2421,8 @@
             const bundle = await requestBridgeSnapshot({ manual, finalSets, setsFinalRetry });
             state.bridgeReady = true;
             setStatus('已收到榜单数据，正在整理…', false, true);
-            state.localSnapshots = normalizeSnapshotsForUpload(bundle);
-            if (!state.localSnapshots.length) throw new Error('同步脚本返回的榜单为空');
+            setPendingUploadSnapshots(bundle, 'userscript');
+            if (!hasPendingUploadSnapshot()) throw new Error('同步脚本返回的榜单为空');
             const partial = Boolean(bundle.partial);
             const retryablePartial = !manual && partial && bundle.retryable !== false && !bundle.blocked;
             if (manual) clearRankingsRetry({ preserveFinal: true });
@@ -2416,11 +2439,11 @@
                                 : '已抓取本地榜单，部分来源失败，本轮不再自动重试。'
                     : '已抓取本地榜单，未上传云端');
                 renderUploadControls();
-                return { localOnly: true, snapshots: state.localSnapshots };
+                return { localOnly: true, snapshots: state.pendingUploadSnapshots };
             }
             setStatus('正在上传榜单快照…', false, true);
             const uploadResult = await uploadSnapshot(bundle, { manual, finalSets, setsFinalRetry });
-            state.localSnapshots = [];
+            clearPendingUploadSnapshots();
             if (uploadResult && uploadResult.skippedUpload) {
                 setStatus(`榜单没有新数据，已跳过上传 · ${formatDate(latest.snapshot && latest.snapshot.capturedAt)}`);
                 renderUploadControls();
@@ -2544,9 +2567,9 @@
             let leaderboardLoaded = false;
             if (refresh || autoRefresh) {
                 source = await ensureFreshSnapshot(refresh, retry, manualRefresh, { finalSets, setsFinalRetry });
-            } else if (state.localSnapshots.length && !state.settings.autoUpload) {
+            } else if (hasPendingUploadSnapshot() && !state.settings.autoUpload) {
                 setStatus('已显示本地抓取数据，尚未上传云端');
-                source = { localOnly: true, snapshots: state.localSnapshots };
+                source = { localOnly: true, snapshots: state.pendingUploadSnapshots };
             } else {
                 state.remotePage = true;
                 const leaderboard = await loadLeaderboard();
@@ -2598,7 +2621,7 @@
     }
 
     async function uploadPendingSnapshot() {
-        if (!state.localSnapshots.length || state.busy) return;
+        if (!hasPendingUploadSnapshot() || state.busy) return;
         if (state.scriptUpdateRequired) {
             renderUserscriptLink();
             setStatus(`同步脚本需要更新到 v${REQUIRED_USERSCRIPT_VERSION}；请点击“更新脚本”安装新版本。`, true);
@@ -2607,8 +2630,8 @@
         setBusy(true);
         setStatus('正在上传本次榜单快照…');
         try {
-            await uploadSnapshot({ snapshots: state.localSnapshots }, { manual: true });
-            state.localSnapshots = [];
+            await uploadSnapshot({ snapshots: state.pendingUploadSnapshots }, { manual: true });
+            clearPendingUploadSnapshots();
             const refreshed = await loadLatestSnapshot({ fresh: true });
             await loadLeaderboard({ fresh: true });
             setStatus(`已上传并同步 · ${formatDate(refreshed.snapshot && refreshed.snapshot.capturedAt)}`);
