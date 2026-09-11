@@ -30,6 +30,9 @@ const PAGE_MAX_LIMIT = 100;
 const MAX_EVENT_ROWS = 200;
 const REFRESH_INTERVAL_MS = 3 * 60 * 60 * 1000;
 export const PUBLISHED_HOME_CACHE_KEY = 'rankings:published-home:v1';
+export const RANKINGS_USAGE_COUNT_KEY = 'rankings:usage:visitors:v1';
+const RANKINGS_USAGE_VISITOR_PREFIX = 'rankings:usage:visitor:v1:';
+const USAGE_VISITOR_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const CACHE_HEADERS = Object.freeze({
   home: { 'cache-control': 'public, max-age=300, stale-while-revalidate=1800' },
   latest: { 'cache-control': 'public, max-age=60, stale-while-revalidate=120' },
@@ -38,7 +41,8 @@ const CACHE_HEADERS = Object.freeze({
   historyClosed: { 'cache-control': 'public, max-age=86400, stale-while-revalidate=604800' },
   users: { 'cache-control': 'public, max-age=1800, stale-while-revalidate=3600' },
   events: { 'cache-control': 'public, max-age=1800, stale-while-revalidate=3600' },
-  eventsClosed: { 'cache-control': 'public, max-age=86400, stale-while-revalidate=604800' }
+  eventsClosed: { 'cache-control': 'public, max-age=86400, stale-while-revalidate=604800' },
+  usage: { 'cache-control': 'public, max-age=600, stale-while-revalidate=3600' }
 });
 
 export async function handleRankingsRequest(request, env, executionContext = null) {
@@ -49,6 +53,8 @@ export async function handleRankingsRequest(request, env, executionContext = nul
       return await getPublishedHome(request, env, executionContext);
     }
     if (url.pathname === '/api/rankings/latest' && request.method === 'GET') return await getLatest(env);
+    if (url.pathname === '/api/rankings/usage' && request.method === 'GET') return await getUsage(env);
+    if (url.pathname === '/api/rankings/usage' && request.method === 'POST') return await postUsage(request, env);
     if (!env || !env.RANKINGS_DB) return databaseUnavailable(url);
     if (url.pathname === '/api/rankings/leaderboard' && request.method === 'GET') return await getLeaderboard(url, env);
     if (url.pathname === '/api/rankings/history' && request.method === 'GET') return await getHistory(url, env);
@@ -74,6 +80,75 @@ export async function handleRankingsRequest(request, env, executionContext = nul
       retryable: readRequest
     }, readRequest ? 503 : 500);
   }
+}
+
+async function getUsage(env) {
+  return jsonResponse({
+    ok: true,
+    visitors: await readUsageCount(env)
+  }, 200, CACHE_HEADERS.usage);
+}
+
+async function postUsage(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch (_) {
+    return jsonResponse({ ok: false, error: 'invalid_json' }, 400);
+  }
+
+  const visitorId = normalizeUsageVisitorId(body && body.visitorId);
+  if (!visitorId) return jsonResponse({ ok: false, error: 'invalid_visitor_id' }, 400);
+
+  const cache = env && env.RANKINGS_HOME_CACHE;
+  if (!cache || typeof cache.get !== 'function' || typeof cache.put !== 'function') {
+    return jsonResponse({ ok: true, visitors: null, counted: false }, 200, CACHE_HEADERS.usage);
+  }
+
+  try {
+    const visitorKey = `${RANKINGS_USAGE_VISITOR_PREFIX}${await hashUsageVisitorId(visitorId)}`;
+    const seen = await cache.get(visitorKey);
+    const current = await readUsageCountFromCache(cache);
+    if (seen != null) {
+      return jsonResponse({ ok: true, visitors: current, counted: false }, 200, CACHE_HEADERS.usage);
+    }
+
+    const next = current + 1;
+    await cache.put(RANKINGS_USAGE_COUNT_KEY, String(next));
+    await cache.put(visitorKey, '1');
+    return jsonResponse({ ok: true, visitors: next, counted: true }, 200, CACHE_HEADERS.usage);
+  } catch (error) {
+    console.error('rankings_usage_write_failed', {
+      message: String(error && error.message || error).slice(0, 240)
+    });
+    return jsonResponse({ ok: true, visitors: null, counted: false }, 200, CACHE_HEADERS.usage);
+  }
+}
+
+async function readUsageCount(env) {
+  const cache = env && env.RANKINGS_HOME_CACHE;
+  if (!cache || typeof cache.get !== 'function') return null;
+  try {
+    return await readUsageCountFromCache(cache);
+  } catch (_) {
+    return null;
+  }
+}
+
+async function readUsageCountFromCache(cache) {
+  const value = await cache.get(RANKINGS_USAGE_COUNT_KEY);
+  const count = Number(value);
+  return Number.isFinite(count) && count >= 0 ? Math.floor(count) : 0;
+}
+
+function normalizeUsageVisitorId(value) {
+  const visitorId = String(value == null ? '' : value).trim();
+  return USAGE_VISITOR_ID_PATTERN.test(visitorId) ? visitorId : '';
+}
+
+async function hashUsageVisitorId(visitorId) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(visitorId));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 async function getLatest(env) {

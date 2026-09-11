@@ -103,3 +103,18 @@ test('published home requests use the public edge cache', async () => {
   assert.deepEqual(await second.json(), { calls: 1 });
   assert.equal(cache.entries.size, 1);
 });
+
+test('visitor usage requests use the public edge cache', async () => {
+  const { api, ctx, cache, waits } = context();
+  let calls = 0;
+  const handler = async () => new Response(JSON.stringify({ visitors: ++calls }), {
+    headers: { 'cache-control': 'public, max-age=600, stale-while-revalidate=3600' }
+  });
+  const request = new Request('https://card.test/api/rankings/usage');
+  await fetchWithRankingsCache(request, {}, ctx, handler, api);
+  await Promise.all(waits);
+  const second = await fetchWithRankingsCache(request, {}, ctx, handler, api);
+  assert.equal(calls, 1);
+  assert.deepEqual(await second.json(), { visitors: 1 });
+  assert.equal(cache.entries.size, 1);
+});

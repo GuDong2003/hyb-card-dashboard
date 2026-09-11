@@ -23,6 +23,8 @@
     const PINS_STORAGE_KEY = 'hyb-card-rankings-pins-v1';
     const PINS_ACTIVE_SEASON_STORAGE_KEY = 'hyb-card-rankings-pins-active-season-v1';
     const UPLOAD_STATE_STORAGE_KEY = 'hyb-card-rankings-upload-state-v1';
+    const VISITOR_ID_STORAGE_KEY = 'hyb-card-rankings-visitor-id-v1';
+    const VISITOR_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
     const AUTO_UPLOAD_MIN_INTERVAL_MS = 3 * 60 * 60 * 1000;
     const SPEND_VALUE_PER_USD = 500000;
     const VIP_DAILY_SPEND_USD = 6000;
@@ -53,7 +55,8 @@
         leaderboard: 5 * 60 * 1000,
         users: 30 * 60 * 1000,
         history: 60 * 60 * 1000,
-        events: 30 * 60 * 1000
+        events: 30 * 60 * 1000,
+        usage: 10 * 60 * 1000
     });
     const apiMemoryCache = new Map();
 
@@ -283,6 +286,7 @@
         if (pathname.endsWith('/users')) return 'users';
         if (pathname.endsWith('/history')) return 'history';
         if (pathname.endsWith('/events')) return 'events';
+        if (pathname.endsWith('/usage')) return 'usage';
         return '';
     }
 
@@ -346,6 +350,71 @@
             throw error;
         }
         return body;
+    }
+
+    function isValidVisitorId(value) {
+        return VISITOR_ID_PATTERN.test(String(value || '').trim());
+    }
+
+    function createVisitorId() {
+        const cryptoApi = window.crypto;
+        if (cryptoApi && typeof cryptoApi.randomUUID === 'function') return cryptoApi.randomUUID();
+        if (cryptoApi && typeof cryptoApi.getRandomValues === 'function') {
+            const bytes = new Uint8Array(16);
+            cryptoApi.getRandomValues(bytes);
+            return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+        }
+        return `visitor-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    }
+
+    function readStoredVisitorId() {
+        try {
+            const value = String(window.localStorage.getItem(VISITOR_ID_STORAGE_KEY) || '').trim();
+            return isValidVisitorId(value) ? value : '';
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function rememberVisitorId(visitorId) {
+        try {
+            window.localStorage.setItem(VISITOR_ID_STORAGE_KEY, visitorId);
+        } catch (_) {
+            // Private browsing or storage restrictions must not block rankings viewing.
+        }
+    }
+
+    function renderVisitorCount(value) {
+        const element = $('#rankingsVisitorCount');
+        if (!element) return;
+        const count = Number(value);
+        element.textContent = Number.isFinite(count) && count >= 0
+            ? `累计访客：${Math.floor(count).toLocaleString('zh-CN')}`
+            : '累计访客：—';
+    }
+
+    async function loadVisitorUsage() {
+        const storedVisitorId = readStoredVisitorId();
+        if (!storedVisitorId) {
+            const visitorId = createVisitorId();
+            try {
+                const registered = await apiPost('/api/rankings/usage', { visitorId });
+                if (registered && Number.isFinite(Number(registered.visitors))) {
+                    rememberVisitorId(visitorId);
+                    renderVisitorCount(registered.visitors);
+                    return;
+                }
+            } catch (_) {
+                // Fall through to a cached read so a usage outage never affects the dashboard.
+            }
+        }
+
+        try {
+            const usage = await apiGet('/api/rankings/usage');
+            renderVisitorCount(usage && usage.visitors);
+        } catch (_) {
+            renderVisitorCount(null);
+        }
     }
 
     function setStatus(message, isError = false, isBusy = false) {
@@ -3325,6 +3394,7 @@
         });
         installRankingsRetryLifecycleListeners();
         bindControls();
+        void loadVisitorUsage();
         window.addEventListener('hyb:calculator-settings-changed', () => {
             renderRankingBoostNotice();
             if (state.view !== 'rankings' || !state.rows.length) return;

@@ -70,6 +70,28 @@ test('adds the simplified profit link beside the profit table button', async () 
   assert.match(nav, /<a class="topbar-view-btn" href="https:\/\/gd3210\.ccwu\.cc\/" target="_blank" rel="noopener noreferrer"[^>]*>收益-简化<\/a>/);
 });
 
+test('shows the visitor count immediately before the Farm link', async () => {
+  const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
+  const actionsStart = html.indexOf('<nav class="topbar-actions"');
+  const actionsEnd = html.indexOf('</nav>', actionsStart);
+  assert.ok(actionsStart >= 0 && actionsEnd > actionsStart);
+  const actions = html.slice(actionsStart, actionsEnd);
+  const visitorIndex = actions.indexOf('id="rankingsVisitorCount"');
+  const farmIndex = actions.indexOf('class="farm-link"');
+  assert.ok(visitorIndex >= 0, '顶栏应包含累计访客元素');
+  assert.ok(farmIndex > visitorIndex, '累计访客应位于 Farm 左侧');
+  assert.match(actions, /累计访客：—/);
+});
+
+test('rankings client loads and displays anonymous visitor usage', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  assert.match(source, /\/api\/rankings\/usage/);
+  assert.match(source, /localStorage/);
+  assert.match(source, /visitorId/);
+  assert.match(source, /rankingsVisitorCount/);
+  assert.match(source, /累计访客：/);
+});
+
 test('keeps the rankings entry visible and defaults to the rankings view', async () => {
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /rankingsEntryUnlocked/);

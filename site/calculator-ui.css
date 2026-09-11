@@ -1909,9 +1909,9 @@ body {
 
 .farm-link,
 .github-link,
-.theme-toggle {
+.theme-toggle,
+.visitor-count {
     display: inline-grid;
-    width: 34px;
     height: 34px;
     flex: none;
     place-items: center;
@@ -1921,6 +1921,27 @@ body {
     color: var(--icon-text);
     cursor: pointer;
     text-decoration: none;
+}
+
+.farm-link,
+.github-link,
+.theme-toggle {
+    width: 34px;
+}
+
+.visitor-count {
+    width: auto;
+    max-width: 150px;
+    padding: 0 9px;
+    border: 1px solid var(--line);
+    background: var(--formula-bg);
+    color: var(--muted);
+    cursor: default;
+    font-size: .72rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 750;
+    line-height: 1;
+    white-space: nowrap;
 }
 
 .farm-link img,
