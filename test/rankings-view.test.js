@@ -90,6 +90,23 @@ test('rankings client loads and displays anonymous visitor usage', async () => {
   assert.match(source, /visitorId/);
   assert.match(source, /rankingsVisitorCount/);
   assert.match(source, /累计访客：/);
+  assert.match(source, /let memoryVisitorId = '';/);
+  assert.match(source, /if \(isValidVisitorId\(memoryVisitorId\)\) return memoryVisitorId;/);
+  assert.match(source, /memoryVisitorId = visitorId;/);
+});
+
+test('visitor usage stays live while the page is open', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  assert.match(source, /const VISITOR_USAGE_REFRESH_INTERVAL_MS\s*=\s*60\s*\*\s*1000/);
+  assert.match(source, /apiGet\('\/api\/rankings\/usage',\s*\{\s*cache:\s*'no-store'\s*\}\)/);
+  assert.match(source, /function scheduleVisitorUsageRefresh\(\)/);
+  assert.match(source, /function clearVisitorUsageRefreshTimer\(\)/);
+  assert.match(source, /function handleVisitorUsageWake\(\)/);
+  assert.match(source, /function installVisitorUsageLifecycleListeners\(\)/);
+  assert.match(source, /document\.addEventListener\('visibilitychange'/);
+  assert.match(source, /else clearVisitorUsageRefreshTimer\(\)/);
+  assert.match(source, /window\.addEventListener\('pageshow'/);
+  assert.doesNotMatch(source, /usage:\s*10\s*\*\s*60\s*\*\s*1000/);
 });
 
 test('keeps the rankings entry visible and defaults to the rankings view', async () => {

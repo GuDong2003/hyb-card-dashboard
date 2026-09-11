@@ -33,6 +33,11 @@ export const PUBLISHED_HOME_CACHE_KEY = 'rankings:published-home:v1';
 export const RANKINGS_USAGE_COUNT_KEY = 'rankings:usage:visitors:v1';
 const RANKINGS_USAGE_VISITOR_PREFIX = 'rankings:usage:visitor:v1:';
 const USAGE_VISITOR_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
+const VISITOR_COUNTER_NAME = 'global';
+const VISITOR_COUNTER_COUNT_KEY = 'count';
+const VISITOR_COUNTER_MIGRATION_KEY = 'legacy-migrated';
+const VISITOR_COUNTER_VISITOR_PREFIX = 'visitor:';
+const VISITOR_HASH_PATTERN = /^[a-f0-9]{64}$/;
 const CACHE_HEADERS = Object.freeze({
   home: { 'cache-control': 'public, max-age=300, stale-while-revalidate=1800' },
   latest: { 'cache-control': 'public, max-age=60, stale-while-revalidate=120' },
@@ -42,7 +47,7 @@ const CACHE_HEADERS = Object.freeze({
   users: { 'cache-control': 'public, max-age=1800, stale-while-revalidate=3600' },
   events: { 'cache-control': 'public, max-age=1800, stale-while-revalidate=3600' },
   eventsClosed: { 'cache-control': 'public, max-age=86400, stale-while-revalidate=604800' },
-  usage: { 'cache-control': 'public, max-age=600, stale-while-revalidate=3600' }
+  usage: { 'cache-control': 'no-store' }
 });
 
 export async function handleRankingsRequest(request, env, executionContext = null) {
@@ -83,10 +88,23 @@ export async function handleRankingsRequest(request, env, executionContext = nul
 }
 
 async function getUsage(env) {
-  return jsonResponse({
-    ok: true,
-    visitors: await readUsageCount(env)
-  }, 200, CACHE_HEADERS.usage);
+  const counter = visitorCounterStub(env);
+  if (!counter) return visitorCounterUnavailableResponse(env);
+
+  try {
+    const response = await counter.fetch(new Request('https://visitor-counter/read', { method: 'GET' }));
+    const data = await response.json().catch(() => ({}));
+    const count = normalizeVisitorCount(data && data.visitors);
+    if (!response.ok || !data || data.ok === false || count === null) {
+      throw new Error('invalid_counter_response');
+    }
+    return jsonResponse({ ok: true, visitors: count }, 200, CACHE_HEADERS.usage);
+  } catch (error) {
+    console.error('rankings_usage_counter_read_failed', {
+      message: String(error && error.message || error).slice(0, 240)
+    });
+    return visitorCounterUnavailableResponse(env);
+  }
 }
 
 async function postUsage(request, env) {
@@ -100,29 +118,44 @@ async function postUsage(request, env) {
   const visitorId = normalizeUsageVisitorId(body && body.visitorId);
   if (!visitorId) return jsonResponse({ ok: false, error: 'invalid_visitor_id' }, 400);
 
-  const cache = env && env.RANKINGS_HOME_CACHE;
-  if (!cache || typeof cache.get !== 'function' || typeof cache.put !== 'function') {
-    return jsonResponse({ ok: true, visitors: null, counted: false }, 200, CACHE_HEADERS.usage);
-  }
+  const counter = visitorCounterStub(env);
+  if (!counter) return visitorCounterUnavailableResponse(env);
 
   try {
-    const visitorKey = `${RANKINGS_USAGE_VISITOR_PREFIX}${await hashUsageVisitorId(visitorId)}`;
-    const seen = await cache.get(visitorKey);
-    const current = await readUsageCountFromCache(cache);
-    if (seen != null) {
-      return jsonResponse({ ok: true, visitors: current, counted: false }, 200, CACHE_HEADERS.usage);
+    const visitorHash = await hashUsageVisitorId(visitorId);
+    const response = await counter.fetch(new Request('https://visitor-counter/record', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ visitorHash })
+    }));
+    const data = await response.json().catch(() => ({}));
+    const count = normalizeVisitorCount(data && data.visitors);
+    if (!response.ok || !data || data.ok === false || count === null) {
+      throw new Error('invalid_counter_response');
     }
-
-    const next = current + 1;
-    await cache.put(RANKINGS_USAGE_COUNT_KEY, String(next));
-    await cache.put(visitorKey, '1');
-    return jsonResponse({ ok: true, visitors: next, counted: true }, 200, CACHE_HEADERS.usage);
+    return jsonResponse({
+      ok: true,
+      visitors: count,
+      counted: Boolean(data.counted)
+    }, 200, CACHE_HEADERS.usage);
   } catch (error) {
-    console.error('rankings_usage_write_failed', {
+    console.error('rankings_usage_counter_write_failed', {
       message: String(error && error.message || error).slice(0, 240)
     });
-    return jsonResponse({ ok: true, visitors: null, counted: false }, 200, CACHE_HEADERS.usage);
+    return visitorCounterUnavailableResponse(env);
   }
+}
+
+async function visitorCounterUnavailableResponse(env) {
+  return jsonResponse({
+    ok: false,
+    error: 'visitor_counter_unavailable',
+    visitors: await readUsageCount(env),
+    counted: false
+  }, 503, {
+    ...CACHE_HEADERS.usage,
+    'retry-after': '60'
+  });
 }
 
 async function readUsageCount(env) {
@@ -135,10 +168,14 @@ async function readUsageCount(env) {
   }
 }
 
+function normalizeVisitorCount(value) {
+  const count = Number(value);
+  return Number.isFinite(count) && count >= 0 ? Math.floor(count) : null;
+}
+
 async function readUsageCountFromCache(cache) {
   const value = await cache.get(RANKINGS_USAGE_COUNT_KEY);
-  const count = Number(value);
-  return Number.isFinite(count) && count >= 0 ? Math.floor(count) : 0;
+  return normalizeVisitorCount(value) ?? 0;
 }
 
 function normalizeUsageVisitorId(value) {
@@ -149,6 +186,116 @@ function normalizeUsageVisitorId(value) {
 async function hashUsageVisitorId(visitorId) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(visitorId));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function visitorCounterStub(env) {
+  const namespace = env && env.VISITOR_COUNTER;
+  if (!namespace || typeof namespace.idFromName !== 'function' || typeof namespace.get !== 'function') return null;
+  try {
+    return namespace.get(namespace.idFromName(VISITOR_COUNTER_NAME));
+  } catch (_) {
+    return null;
+  }
+}
+
+export class VisitorCounter {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env || {};
+    this.operation = Promise.resolve();
+  }
+
+  fetch(request) {
+    const operation = this.operation.then(
+      () => this.handle(request),
+      () => this.handle(request)
+    );
+    this.operation = operation.catch(() => {});
+    return operation;
+  }
+
+  async handle(request) {
+    const url = new URL(request.url);
+    if (request.method === 'GET' && url.pathname === '/read') {
+      return jsonResponse({ ok: true, visitors: await this.readCount() }, 200, CACHE_HEADERS.usage);
+    }
+
+    if (request.method !== 'POST' || url.pathname !== '/record') {
+      return jsonResponse({ ok: false, error: 'not_found' }, 404, CACHE_HEADERS.usage);
+    }
+
+    let body;
+    try {
+      body = await request.json();
+    } catch (_) {
+      return jsonResponse({ ok: false, error: 'invalid_json' }, 400, CACHE_HEADERS.usage);
+    }
+
+    const visitorHash = String(body && body.visitorHash || '').trim();
+    if (!VISITOR_HASH_PATTERN.test(visitorHash)) {
+      return jsonResponse({ ok: false, error: 'invalid_visitor_hash' }, 400, CACHE_HEADERS.usage);
+    }
+
+    const count = await this.readCount();
+    const markerKey = `${VISITOR_COUNTER_VISITOR_PREFIX}${visitorHash}`;
+    if (await this.state.storage.get(markerKey) != null) {
+      return jsonResponse({ ok: true, visitors: count, counted: false }, 200, CACHE_HEADERS.usage);
+    }
+
+    if (await this.legacyVisitorSeen(visitorHash)) {
+      await this.state.storage.put(markerKey, '1');
+      return jsonResponse({ ok: true, visitors: count, counted: false }, 200, CACHE_HEADERS.usage);
+    }
+
+    const next = count + 1;
+    await this.state.storage.put({
+      [VISITOR_COUNTER_COUNT_KEY]: String(next),
+      [markerKey]: '1'
+    });
+    await this.writeLegacyState(visitorHash, next);
+    return jsonResponse({ ok: true, visitors: next, counted: true }, 200, CACHE_HEADERS.usage);
+  }
+
+  async readCount() {
+    const stored = normalizeVisitorCount(await this.state.storage.get(VISITOR_COUNTER_COUNT_KEY));
+    const migrationState = await this.state.storage.get(VISITOR_COUNTER_MIGRATION_KEY);
+    if (stored !== null && migrationState === '1') return stored;
+
+    let legacy;
+    try {
+      legacy = await readUsageCountFromCache(this.env && this.env.RANKINGS_HOME_CACHE);
+    } catch (_) {
+      return stored === null ? 0 : stored;
+    }
+    const next = stored === null ? legacy : Math.max(stored, legacy);
+    const updates = { [VISITOR_COUNTER_MIGRATION_KEY]: '1' };
+    if (stored !== next) updates[VISITOR_COUNTER_COUNT_KEY] = String(next);
+    await this.state.storage.put(updates);
+    return next;
+  }
+
+  async legacyVisitorSeen(visitorHash) {
+    const cache = this.env && this.env.RANKINGS_HOME_CACHE;
+    if (!cache || typeof cache.get !== 'function') return false;
+    try {
+      return (await cache.get(`${RANKINGS_USAGE_VISITOR_PREFIX}${visitorHash}`)) != null;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async writeLegacyState(visitorHash, count) {
+    const cache = this.env && this.env.RANKINGS_HOME_CACHE;
+    if (!cache || typeof cache.put !== 'function') return;
+    try {
+      await cache.put(RANKINGS_USAGE_COUNT_KEY, String(count));
+      await cache.put(`${RANKINGS_USAGE_VISITOR_PREFIX}${visitorHash}`, '1');
+    } catch (error) {
+      console.error('rankings_usage_legacy_sync_failed', {
+        message: String(error && error.message || error).slice(0, 240)
+      });
+    }
+  }
 }
 
 async function getLatest(env) {

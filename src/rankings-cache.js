@@ -4,8 +4,7 @@ const CACHEABLE_PATHS = new Set([
   '/api/rankings/leaderboard',
   '/api/rankings/history',
   '/api/rankings/users',
-  '/api/rankings/events',
-  '/api/rankings/usage'
+  '/api/rankings/events'
 ]);
 
 export async function fetchWithRankingsCache(

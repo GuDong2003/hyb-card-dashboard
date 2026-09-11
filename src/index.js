@@ -2,6 +2,8 @@ import { handleRankingsRequest } from './rankings-worker.js';
 import { refreshCompactRankings } from './rankings-maintenance.js';
 import { fetchWithRankingsCache } from './rankings-cache.js';
 
+export { VisitorCounter } from './rankings-worker.js';
+
 export async function scheduled(controller, env) {
     const scheduledAt = Number(controller && controller.scheduledTime);
     const maintenanceAt = Number.isFinite(scheduledAt) && scheduledAt > 0 ? scheduledAt : Date.now();

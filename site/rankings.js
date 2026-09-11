@@ -11,6 +11,7 @@
     const AUTO_REFRESH_INTERVAL_MS = 3 * 60 * 60 * 1000;
     const SETS_FINAL_REFRESH_HOUR_MS = 8 * 60 * 60 * 1000;
     const CAPTURE_BUCKET_MS = 60 * 60 * 1000;
+    const VISITOR_USAGE_REFRESH_INTERVAL_MS = 60 * 1000;
     const RANKINGS_RETRY_MS = 60 * 60 * 1000;
     const MAX_AUTO_RETRIES = 1;
     const MAX_PINNED_USERS = 20;
@@ -55,8 +56,7 @@
         leaderboard: 5 * 60 * 1000,
         users: 30 * 60 * 1000,
         history: 60 * 60 * 1000,
-        events: 30 * 60 * 1000,
-        usage: 10 * 60 * 1000
+        events: 30 * 60 * 1000
     });
     const apiMemoryCache = new Map();
 
@@ -286,7 +286,6 @@
         if (pathname.endsWith('/users')) return 'users';
         if (pathname.endsWith('/history')) return 'history';
         if (pathname.endsWith('/events')) return 'events';
-        if (pathname.endsWith('/usage')) return 'usage';
         return '';
     }
 
@@ -294,12 +293,14 @@
         const cacheKey = String(path);
         const cacheType = apiCacheType(path);
         const ttl = API_CACHE_TTL[cacheType] || 0;
+        const noStore = options.cache === 'no-store';
         const fresh = options.fresh === true || options.cache === 'reload';
         const cached = apiMemoryCache.get(cacheKey);
-        if (!fresh && cached && cached.expiresAt > Date.now()) return cached.body;
-        if (fresh) apiMemoryCache.delete(cacheKey);
+        if (!fresh && !noStore && cached && cached.expiresAt > Date.now()) return cached.body;
+        if (fresh || noStore) apiMemoryCache.delete(cacheKey);
         const headers = { accept: 'application/json' };
         if (fresh) headers['cache-control'] = 'no-cache';
+        if (noStore) headers['cache-control'] = 'no-store';
         const response = await fetch(apiUrl(path), {
             method: 'GET',
             credentials: 'same-origin',
@@ -317,7 +318,7 @@
             error.retryable = body.retryable !== false && response.status >= 500;
             throw error;
         }
-        if (response.ok && ttl > 0) apiMemoryCache.set(cacheKey, {
+        if (response.ok && !noStore && ttl > 0) apiMemoryCache.set(cacheKey, {
             body,
             expiresAt: Date.now() + ttl
         });
@@ -368,15 +369,22 @@
     }
 
     function readStoredVisitorId() {
+        if (isValidVisitorId(memoryVisitorId)) return memoryVisitorId;
         try {
             const value = String(window.localStorage.getItem(VISITOR_ID_STORAGE_KEY) || '').trim();
-            return isValidVisitorId(value) ? value : '';
+            if (isValidVisitorId(value)) {
+                memoryVisitorId = value;
+                return value;
+            }
         } catch (_) {
-            return '';
+            // Private browsing or storage restrictions use the page-lifetime fallback below.
         }
+        return memoryVisitorId;
     }
 
     function rememberVisitorId(visitorId) {
+        if (!isValidVisitorId(visitorId)) return;
+        memoryVisitorId = visitorId;
         try {
             window.localStorage.setItem(VISITOR_ID_STORAGE_KEY, visitorId);
         } catch (_) {
@@ -393,28 +401,75 @@
             : '累计访客：—';
     }
 
-    async function loadVisitorUsage() {
-        const storedVisitorId = readStoredVisitorId();
-        if (!storedVisitorId) {
-            const visitorId = createVisitorId();
-            try {
-                const registered = await apiPost('/api/rankings/usage', { visitorId });
-                if (registered && Number.isFinite(Number(registered.visitors))) {
-                    rememberVisitorId(visitorId);
-                    renderVisitorCount(registered.visitors);
-                    return;
-                }
-            } catch (_) {
-                // Fall through to a cached read so a usage outage never affects the dashboard.
-            }
-        }
+    let memoryVisitorId = '';
+    let visitorUsageRequest = null;
+    let visitorUsageRefreshTimer = null;
 
-        try {
-            const usage = await apiGet('/api/rankings/usage');
-            renderVisitorCount(usage && usage.visitors);
-        } catch (_) {
-            renderVisitorCount(null);
-        }
+    function visitorUsagePageVisible() {
+        return !document.visibilityState || document.visibilityState === 'visible';
+    }
+
+    function loadVisitorUsage() {
+        if (visitorUsageRequest) return visitorUsageRequest;
+        visitorUsageRequest = (async () => {
+            const storedVisitorId = readStoredVisitorId();
+            if (!storedVisitorId) {
+                const visitorId = createVisitorId();
+                try {
+                    const registered = await apiPost('/api/rankings/usage', { visitorId });
+                    if (registered && Number.isFinite(Number(registered.visitors))) {
+                        rememberVisitorId(visitorId);
+                        renderVisitorCount(registered.visitors);
+                        return;
+                    }
+                } catch (_) {
+                    // Fall through to a real-time read so a usage outage never affects the dashboard.
+                }
+            }
+
+            try {
+                const usage = await apiGet('/api/rankings/usage', { cache: 'no-store' });
+                renderVisitorCount(usage && usage.visitors);
+            } catch (_) {
+                renderVisitorCount(null);
+            }
+        })().finally(() => {
+            visitorUsageRequest = null;
+        });
+        return visitorUsageRequest;
+    }
+
+    function clearVisitorUsageRefreshTimer() {
+        if (visitorUsageRefreshTimer) window.clearTimeout(visitorUsageRefreshTimer);
+        visitorUsageRefreshTimer = null;
+    }
+
+    function scheduleVisitorUsageRefresh() {
+        clearVisitorUsageRefreshTimer();
+        if (!visitorUsagePageVisible()) return;
+        visitorUsageRefreshTimer = window.setTimeout(() => {
+            visitorUsageRefreshTimer = null;
+            if (!visitorUsagePageVisible()) return;
+            void loadVisitorUsage();
+            scheduleVisitorUsageRefresh();
+        }, VISITOR_USAGE_REFRESH_INTERVAL_MS);
+    }
+
+    function handleVisitorUsageWake() {
+        if (!visitorUsagePageVisible()) return;
+        void loadVisitorUsage();
+        scheduleVisitorUsageRefresh();
+    }
+
+    function installVisitorUsageLifecycleListeners() {
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') handleVisitorUsageWake();
+            else clearVisitorUsageRefreshTimer();
+        });
+        window.addEventListener('focus', handleVisitorUsageWake);
+        window.addEventListener('pageshow', handleVisitorUsageWake);
+        window.addEventListener('online', handleVisitorUsageWake);
+        scheduleVisitorUsageRefresh();
     }
 
     function setStatus(message, isError = false, isBusy = false) {
@@ -3397,6 +3452,7 @@
         installRankingsRetryLifecycleListeners();
         bindControls();
         void loadVisitorUsage();
+        installVisitorUsageLifecycleListeners();
         window.addEventListener('hyb:calculator-settings-changed', () => {
             renderRankingBoostNotice();
             if (state.view !== 'rankings' || !state.rows.length) return;

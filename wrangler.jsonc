@@ -21,6 +21,20 @@
       "id": "e4e066e0d472423f9391eb62ac998b90"
     }
   ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "VISITOR_COUNTER",
+        "class_name": "VisitorCounter"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["VisitorCounter"]
+    }
+  ],
   "routes": [
     {
       "pattern": "card.gudong226.com",
