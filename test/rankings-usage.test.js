@@ -95,9 +95,8 @@ test('first visitor registration increments through the durable counter without 
     visitors: 1,
     counted: true
   });
-  assert.equal(environment.RANKINGS_HOME_CACHE.values.get(RANKINGS_USAGE_COUNT_KEY), '1');
-  assert.equal(environment.RANKINGS_HOME_CACHE.puts.length, 2);
-  assert.equal(environment.RANKINGS_HOME_CACHE.puts.some(({ key }) => key.includes('visitor-')), false);
+  assert.equal(environment.RANKINGS_HOME_CACHE.puts.length, 0);
+  assert.equal(environment.RANKINGS_HOME_CACHE.getCount(), 0);
 });
 
 test('the same visitor registration does not increment the count twice', async () => {
@@ -118,12 +117,13 @@ test('the same visitor registration does not increment the count twice', async (
     visitors: 1,
     counted: false
   });
-  assert.equal(environment.RANKINGS_HOME_CACHE.puts.length, 2);
+  assert.equal(environment.RANKINGS_HOME_CACHE.puts.length, 0);
+  assert.equal(environment.RANKINGS_HOME_CACHE.getCount(), 0);
 });
 
 test('durable visitor counter serializes concurrent registrations without losing increments', async () => {
   const environment = usageEnvironment({ [RANKINGS_USAGE_COUNT_KEY]: '2' });
-  environment.VISITOR_COUNTER = createVisitorCounterNamespace(environment);
+  environment.VISITOR_COUNTER = createVisitorCounterNamespace(environment, { count: '2' });
 
   const uniqueResults = await Promise.all([
     handleRankingsRequest(usageRequest('POST', { visitorId: 'visitor-cccccccccccccccc' }), environment),
@@ -144,12 +144,13 @@ test('durable visitor counter serializes concurrent registrations without losing
 
   const current = await handleRankingsRequest(usageRequest('GET'), environment);
   assert.deepEqual(await current.json(), { ok: true, visitors: 6 });
-  assert.equal(environment.RANKINGS_HOME_CACHE.values.get(RANKINGS_USAGE_COUNT_KEY), '6');
+  assert.equal(environment.RANKINGS_HOME_CACHE.values.get(RANKINGS_USAGE_COUNT_KEY), '2');
+  assert.equal(environment.RANKINGS_HOME_CACHE.puts.length, 0);
 });
 
-test('durable visitor counter reads the legacy count only during initialization', async () => {
+test('durable visitor counter ignores the compatibility KV after its state exists', async () => {
   const environment = usageEnvironment({ [RANKINGS_USAGE_COUNT_KEY]: '2' });
-  environment.VISITOR_COUNTER = createVisitorCounterNamespace(environment);
+  environment.VISITOR_COUNTER = createVisitorCounterNamespace(environment, { count: '2' });
 
   const first = await handleRankingsRequest(usageRequest('GET'), environment);
   assert.deepEqual(await first.json(), { ok: true, visitors: 2 });
@@ -157,7 +158,7 @@ test('durable visitor counter reads the legacy count only during initialization'
   environment.RANKINGS_HOME_CACHE.values.set(RANKINGS_USAGE_COUNT_KEY, '5');
   const second = await handleRankingsRequest(usageRequest('GET'), environment);
   assert.deepEqual(await second.json(), { ok: true, visitors: 2 });
-  assert.equal(environment.RANKINGS_HOME_CACHE.getCount(), 1, 'legacy count is read once per durable counter');
+  assert.equal(environment.RANKINGS_HOME_CACHE.getCount(), 0, 'visitor reads stay inside the durable counter');
 });
 
 test('durable counter binding failures do not fall back to unsafe KV increments', async () => {
@@ -176,9 +177,10 @@ test('durable counter binding failures do not fall back to unsafe KV increments'
   assert.deepEqual(await response.json(), {
     ok: false,
     error: 'visitor_counter_unavailable',
-    visitors: 4,
+    visitors: null,
     counted: false
   });
+  assert.equal(environment.RANKINGS_HOME_CACHE.getCount(), 0);
   assert.equal(environment.RANKINGS_HOME_CACHE.puts.length, 0);
 });
 
@@ -194,11 +196,12 @@ test('missing durable counter binding never performs a KV read-modify-write', as
     assert.deepEqual(await response.json(), {
       ok: false,
       error: 'visitor_counter_unavailable',
-      visitors: 4,
+      visitors: null,
       counted: false
     });
   }
   assert.equal(environment.RANKINGS_HOME_CACHE.values.get(RANKINGS_USAGE_COUNT_KEY), '4');
+  assert.equal(environment.RANKINGS_HOME_CACHE.getCount(), 0);
   assert.equal(environment.RANKINGS_HOME_CACHE.puts.length, 0);
 });
 
@@ -210,7 +213,7 @@ test('durable counter read failures return 503 with a retry hint', async () => {
   assert.deepEqual(await response.json(), {
     ok: false,
     error: 'visitor_counter_unavailable',
-    visitors: 4,
+    visitors: null,
     counted: false
   });
   assert.equal(response.headers.get('retry-after'), '60');
@@ -232,6 +235,7 @@ test('durable counter registration keeps count and marker atomic when storage fa
     }
     return originalPut(key, value);
   };
+  storage.values.set('count', '7');
   environment.VISITOR_COUNTER = createVisitorCounterNamespace(environment, {}, storage);
 
   const originalConsoleError = console.error;
@@ -250,20 +254,15 @@ test('durable counter registration keeps count and marker atomic when storage fa
   assert.deepEqual(await response.json(), {
     ok: false,
     error: 'visitor_counter_unavailable',
-    visitors: 7,
+    visitors: null,
     counted: false
   });
   assert.equal(storage.values.get('count'), '7');
   assert.equal([...storage.values.keys()].some((key) => String(key).startsWith('visitor:')), false);
 });
 
-test('durable visitor counter keeps its count when the legacy KV read is unavailable', async () => {
-  const environment = {
-    RANKINGS_HOME_CACHE: {
-      async get() { throw new Error('legacy KV unavailable'); },
-      async put() { throw new Error('legacy KV unavailable'); }
-    }
-  };
+test('durable visitor counter keeps its count without a compatibility KV', async () => {
+  const environment = {};
   environment.VISITOR_COUNTER = createVisitorCounterNamespace(environment, { count: '4' });
 
   const response = await handleRankingsRequest(usageRequest('GET'), environment);
@@ -273,7 +272,7 @@ test('durable visitor counter keeps its count when the legacy KV read is unavail
 
 test('usage GET reads the durable counter without edge caching or D1 dependency', async () => {
   const environment = usageEnvironment({ [RANKINGS_USAGE_COUNT_KEY]: '37' });
-  environment.VISITOR_COUNTER = createVisitorCounterNamespace(environment);
+  environment.VISITOR_COUNTER = createVisitorCounterNamespace(environment, { count: '37' });
   const first = await handleRankingsRequest(usageRequest('GET'), environment);
   const second = await handleRankingsRequest(usageRequest('GET'), environment);
 

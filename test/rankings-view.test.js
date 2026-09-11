@@ -97,7 +97,7 @@ test('rankings client loads and displays anonymous visitor usage', async () => {
 
 test('visitor usage stays live while the page is open', async () => {
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
-  assert.match(source, /const VISITOR_USAGE_REFRESH_INTERVAL_MS\s*=\s*60\s*\*\s*1000/);
+  assert.match(source, /const VISITOR_USAGE_REFRESH_INTERVAL_MS\s*=\s*10\s*\*\s*60\s*\*\s*1000/);
   assert.match(source, /apiGet\('\/api\/rankings\/usage',\s*\{\s*cache:\s*'no-store'\s*\}\)/);
   assert.match(source, /function scheduleVisitorUsageRefresh\(\)/);
   assert.match(source, /function clearVisitorUsageRefreshTimer\(\)/);
@@ -106,7 +106,7 @@ test('visitor usage stays live while the page is open', async () => {
   assert.match(source, /document\.addEventListener\('visibilitychange'/);
   assert.match(source, /else clearVisitorUsageRefreshTimer\(\)/);
   assert.match(source, /window\.addEventListener\('pageshow'/);
-  assert.doesNotMatch(source, /usage:\s*10\s*\*\s*60\s*\*\s*1000/);
+  assert.doesNotMatch(source, /usage:\s*60\s*\*\s*1000/);
 });
 
 test('keeps the rankings entry visible and defaults to the rankings view', async () => {

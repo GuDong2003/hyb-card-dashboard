@@ -30,12 +30,11 @@ const PAGE_MAX_LIMIT = 100;
 const MAX_EVENT_ROWS = 200;
 const REFRESH_INTERVAL_MS = 3 * 60 * 60 * 1000;
 export const PUBLISHED_HOME_CACHE_KEY = 'rankings:published-home:v1';
+// Kept as a migration reference for existing KV data; visitor traffic no longer reads or writes it.
 export const RANKINGS_USAGE_COUNT_KEY = 'rankings:usage:visitors:v1';
-const RANKINGS_USAGE_VISITOR_PREFIX = 'rankings:usage:visitor:v1:';
 const USAGE_VISITOR_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const VISITOR_COUNTER_NAME = 'global';
 const VISITOR_COUNTER_COUNT_KEY = 'count';
-const VISITOR_COUNTER_MIGRATION_KEY = 'legacy-migrated';
 const VISITOR_COUNTER_VISITOR_PREFIX = 'visitor:';
 const VISITOR_HASH_PATTERN = /^[a-f0-9]{64}$/;
 const CACHE_HEADERS = Object.freeze({
@@ -89,7 +88,7 @@ export async function handleRankingsRequest(request, env, executionContext = nul
 
 async function getUsage(env) {
   const counter = visitorCounterStub(env);
-  if (!counter) return visitorCounterUnavailableResponse(env);
+  if (!counter) return visitorCounterUnavailableResponse();
 
   try {
     const response = await counter.fetch(new Request('https://visitor-counter/read', { method: 'GET' }));
@@ -103,7 +102,7 @@ async function getUsage(env) {
     console.error('rankings_usage_counter_read_failed', {
       message: String(error && error.message || error).slice(0, 240)
     });
-    return visitorCounterUnavailableResponse(env);
+    return visitorCounterUnavailableResponse();
   }
 }
 
@@ -119,7 +118,7 @@ async function postUsage(request, env) {
   if (!visitorId) return jsonResponse({ ok: false, error: 'invalid_visitor_id' }, 400);
 
   const counter = visitorCounterStub(env);
-  if (!counter) return visitorCounterUnavailableResponse(env);
+  if (!counter) return visitorCounterUnavailableResponse();
 
   try {
     const visitorHash = await hashUsageVisitorId(visitorId);
@@ -142,15 +141,15 @@ async function postUsage(request, env) {
     console.error('rankings_usage_counter_write_failed', {
       message: String(error && error.message || error).slice(0, 240)
     });
-    return visitorCounterUnavailableResponse(env);
+    return visitorCounterUnavailableResponse();
   }
 }
 
-async function visitorCounterUnavailableResponse(env) {
+async function visitorCounterUnavailableResponse() {
   return jsonResponse({
     ok: false,
     error: 'visitor_counter_unavailable',
-    visitors: await readUsageCount(env),
+    visitors: null,
     counted: false
   }, 503, {
     ...CACHE_HEADERS.usage,
@@ -158,24 +157,9 @@ async function visitorCounterUnavailableResponse(env) {
   });
 }
 
-async function readUsageCount(env) {
-  const cache = env && env.RANKINGS_HOME_CACHE;
-  if (!cache || typeof cache.get !== 'function') return null;
-  try {
-    return await readUsageCountFromCache(cache);
-  } catch (_) {
-    return null;
-  }
-}
-
 function normalizeVisitorCount(value) {
   const count = Number(value);
   return Number.isFinite(count) && count >= 0 ? Math.floor(count) : null;
-}
-
-async function readUsageCountFromCache(cache) {
-  const value = await cache.get(RANKINGS_USAGE_COUNT_KEY);
-  return normalizeVisitorCount(value) ?? 0;
 }
 
 function normalizeUsageVisitorId(value) {
@@ -242,59 +226,16 @@ export class VisitorCounter {
       return jsonResponse({ ok: true, visitors: count, counted: false }, 200, CACHE_HEADERS.usage);
     }
 
-    if (await this.legacyVisitorSeen(visitorHash)) {
-      await this.state.storage.put(markerKey, '1');
-      return jsonResponse({ ok: true, visitors: count, counted: false }, 200, CACHE_HEADERS.usage);
-    }
-
     const next = count + 1;
     await this.state.storage.put({
       [VISITOR_COUNTER_COUNT_KEY]: String(next),
       [markerKey]: '1'
     });
-    await this.writeLegacyState(visitorHash, next);
     return jsonResponse({ ok: true, visitors: next, counted: true }, 200, CACHE_HEADERS.usage);
   }
 
   async readCount() {
-    const stored = normalizeVisitorCount(await this.state.storage.get(VISITOR_COUNTER_COUNT_KEY));
-    const migrationState = await this.state.storage.get(VISITOR_COUNTER_MIGRATION_KEY);
-    if (stored !== null && migrationState === '1') return stored;
-
-    let legacy;
-    try {
-      legacy = await readUsageCountFromCache(this.env && this.env.RANKINGS_HOME_CACHE);
-    } catch (_) {
-      return stored === null ? 0 : stored;
-    }
-    const next = stored === null ? legacy : Math.max(stored, legacy);
-    const updates = { [VISITOR_COUNTER_MIGRATION_KEY]: '1' };
-    if (stored !== next) updates[VISITOR_COUNTER_COUNT_KEY] = String(next);
-    await this.state.storage.put(updates);
-    return next;
-  }
-
-  async legacyVisitorSeen(visitorHash) {
-    const cache = this.env && this.env.RANKINGS_HOME_CACHE;
-    if (!cache || typeof cache.get !== 'function') return false;
-    try {
-      return (await cache.get(`${RANKINGS_USAGE_VISITOR_PREFIX}${visitorHash}`)) != null;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  async writeLegacyState(visitorHash, count) {
-    const cache = this.env && this.env.RANKINGS_HOME_CACHE;
-    if (!cache || typeof cache.put !== 'function') return;
-    try {
-      await cache.put(RANKINGS_USAGE_COUNT_KEY, String(count));
-      await cache.put(`${RANKINGS_USAGE_VISITOR_PREFIX}${visitorHash}`, '1');
-    } catch (error) {
-      console.error('rankings_usage_legacy_sync_failed', {
-        message: String(error && error.message || error).slice(0, 240)
-      });
-    }
+    return normalizeVisitorCount(await this.state.storage.get(VISITOR_COUNTER_COUNT_KEY)) ?? 0;
   }
 }
 
