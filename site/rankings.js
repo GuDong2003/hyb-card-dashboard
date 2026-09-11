@@ -711,8 +711,7 @@
     function renderRankingBoostNotice() {
         const notice = $('#rankingsFreePullsNotice');
         const text = $('#rankingsFreePullsNoticeText');
-        const note = $('#rankingsFreePullsNote');
-        if (!notice || !text || !note) return;
+        if (!notice || !text) return;
         const config = readRankingBoostConfig();
         const now = Date.now();
         const active = config.enabled && now >= config.startAt && (config.endAt == null || now < config.endAt);
@@ -722,7 +721,6 @@
             ['第 19～37 天 · 翻倍', 'VIP 1000+80=1080', '普通 800+60=860', 'boost'],
             ['第 38 天起 · 当前', 'VIP 1000+50=1050', '普通 800+30=830', 'current']
         ].map(([label, vip, ordinary, period]) => `<div class="rankings-free-pull-period" data-period="${period}"><strong>${label}</strong><span>${vip}</span><span>${ordinary}</span></div>`).join('');
-        note.textContent = '根据消费金额反推付费天数，并按对应时间段累计免费抽数；出卡率仅供参考。';
     }
 
     const TREND_METRICS = Object.freeze({
@@ -2540,11 +2538,13 @@
                 : error && error.code === 'userscript_missing'
                     ? '；请先安装同步脚本后再刷新。'
                     : error && error.cooldown
-                    ? '；请求处于冷却期，请稍后再试。'
-                    : scheduled || canScheduleRetry
-                        ? retryStatusSuffix()
-                        : '；本轮不再自动重试。';
-            setStatus(`${String(error && error.message || error)}${suffix}`, true);
+                        ? ''
+                        : scheduled || canScheduleRetry
+                            ? retryStatusSuffix()
+                            : '；本轮不再自动重试。';
+            setStatus(error && error.cooldown
+                ? 'CDK 冷却中，请稍后再试'
+                : `${String(error && error.message || error)}${suffix}`, true);
             renderUploadControls();
             return latest;
         }
@@ -2691,11 +2691,13 @@
                 : error && error.code === 'userscript_missing'
                     ? '；请先安装同步脚本后再刷新。'
                     : error && error.cooldown
-                    ? '；请求处于冷却期，请稍后再试。'
-                    : scheduled || canScheduleRetry
-                        ? retryStatusSuffix()
-                        : '；本轮不再自动重试。';
-            setStatus(`读取失败：${String(error && error.message || error)}${suffix}`, true);
+                        ? ''
+                        : scheduled || canScheduleRetry
+                            ? retryStatusSuffix()
+                            : '；本轮不再自动重试。';
+            setStatus(error && error.cooldown
+                ? 'CDK 冷却中，请稍后再试'
+                : `读取失败：${String(error && error.message || error)}${suffix}`, true);
             renderLeaderboard({ snapshot: state.latest && state.latest.snapshot });
         } finally {
             setBusy(false);

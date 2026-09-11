@@ -192,9 +192,11 @@ test('user overview uses a compact two-column notice layout', async () => {
   assert.match(notices, /<strong>免费抽数按付费天数估算<\/strong>/);
   assert.match(notices, /class="rankings-free-pulls-notice-text" id="rankingsFreePullsNoticeText"/);
   assert.match(notices, /付费 \+ 免费 = 每日总抽数/);
+  assert.doesNotMatch(notices, /rankingsFreePullsNote/);
+  assert.doesNotMatch(notices, /根据消费金额反推付费天数/);
   assert.match(notices, /id="rankingsSetsRefreshNotice"/);
   assert.ok(notices.indexOf('rankingsFreePullsNotice') < notices.indexOf('rankingsSetsRefreshNotice'));
-  assert.match(rankingsJs, /根据消费金额反推付费天数/);
+  assert.doesNotMatch(rankingsJs, /根据消费金额反推付费天数/);
   assert.match(rankingsJs, /第 1～18 天/);
   assert.match(rankingsJs, /第 19～37 天 · 翻倍/);
   assert.match(rankingsJs, /第 38 天起 · 当前/);
@@ -881,6 +883,13 @@ test('manual rankings refresh bypasses automatic retry scheduling but passes its
   assert.match(source, /const canScheduleRetry = !manualRefresh && errorCanAutoRetry\(error\)/);
   assert.match(source, /if \(manual\) clearRankingsRetry\(\{ preserveFinal: true \}\);/);
   assert.match(source, /部分来源失败，本次不自动重试/);
+});
+
+test('rankings status keeps cooldown errors short and does not append a duplicate retry message', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+
+  assert.match(source, /CDK 冷却中，请稍后再试/);
+  assert.doesNotMatch(source, /请求处于冷却期，请稍后再试/);
 });
 
 test('renders pinned users directly below the sticky table header', async () => {

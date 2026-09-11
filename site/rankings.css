@@ -1187,12 +1187,6 @@
     color: var(--muted);
 }
 
-.rankings-free-pulls-note {
-    color: var(--muted);
-    font-size: .66rem;
-    line-height: 1.4;
-}
-
 .rankings-sets-refresh-notice > span {
     color: var(--text);
     line-height: 1.6;
