@@ -1,4 +1,5 @@
 const CACHEABLE_PATHS = new Set([
+  '/api/rankings/home',
   '/api/rankings/latest',
   '/api/rankings/leaderboard',
   '/api/rankings/history',
@@ -15,7 +16,7 @@ export async function fetchWithRankingsCache(
 ) {
   const cache = cacheApi && cacheApi.default;
   if (!cache || typeof cache.match !== 'function' || !isCacheableRequest(request)) {
-    return handler(request, env);
+    return handler(request, env, executionContext);
   }
 
   const key = new Request(new URL(request.url).href, { method: 'GET' });
@@ -37,7 +38,7 @@ export async function fetchWithRankingsCache(
     }
   }
 
-  const response = await handler(request, env);
+  const response = await handler(request, env, executionContext);
   if (response.status === 200 && isPublicResponse(response) && typeof cache.put === 'function') {
     const pending = cache.put(key, response.clone());
     if (executionContext && typeof executionContext.waitUntil === 'function') {

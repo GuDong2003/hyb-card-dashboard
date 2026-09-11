@@ -48,6 +48,7 @@
     const LOCAL_SOURCE_SCOPES = Object.freeze(['global', 'friends']);
     const LOCAL_SOURCE_SCOPE_CONFIG = Object.freeze({ scope: 'global,friends', order: LOCAL_SOURCE_SCOPES });
     const API_CACHE_TTL = Object.freeze({
+        home: 5 * 60 * 1000,
         latest: 60 * 1000,
         leaderboard: 5 * 60 * 1000,
         users: 30 * 60 * 1000,
@@ -276,6 +277,7 @@
 
     function apiCacheType(path) {
         const pathname = new URL(path, window.location.origin).pathname;
+        if (pathname.endsWith('/home')) return 'home';
         if (pathname.endsWith('/latest')) return 'latest';
         if (pathname.endsWith('/leaderboard')) return 'leaderboard';
         if (pathname.endsWith('/users')) return 'users';
@@ -2485,6 +2487,14 @@
         const requestCursor = state.leaderboard.cursor || null;
         const requestedPinnedIds = Array.from(state.pinnedUserIds);
         const requestedPinnedIdSet = new Set(requestedPinnedIds);
+        const usePublishedHome = requestPage === 1
+            && !requestCursor
+            && !state.userQuery.trim()
+            && state.board === 'users'
+            && state.period === 'total'
+            && state.sort === 'legend'
+            && state.sortDirection === 'desc'
+            && requestedPinnedIds.length === 0;
         const params = new URLSearchParams({
             board: 'users',
             period: state.period,
@@ -2495,7 +2505,10 @@
         });
         if (requestCursor) params.set('cursor', requestCursor);
         if (state.userQuery.trim()) params.set('q', state.userQuery.trim());
-        const leaderboard = await apiGet(`/api/rankings/leaderboard?${params.toString()}`, {
+        const endpoint = usePublishedHome
+            ? '/api/rankings/home'
+            : `/api/rankings/leaderboard?${params.toString()}`;
+        const leaderboard = await apiGet(endpoint, {
             fresh: options.fresh === true
         });
         state.remotePage = true;

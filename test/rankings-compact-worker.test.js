@@ -89,8 +89,53 @@ class CompactD1 {
   }
 }
 
+class MemoryKv {
+  constructor(entries = {}) {
+    this.values = new Map(Object.entries(entries));
+    this.puts = [];
+  }
+
+  async get(key, options = {}) {
+    const value = this.values.get(String(key));
+    if (value == null) return null;
+    return options.type === 'json' ? JSON.parse(value) : value;
+  }
+
+  async put(key, value, options = {}) {
+    this.puts.push({ key: String(key), value: String(value), options });
+    this.values.set(String(key), String(value));
+  }
+}
+
 function compactEnv() {
   return { RANKINGS_DB: new CompactD1() };
+}
+
+function publishedHomePayload() {
+  return {
+    ok: true,
+    board: 'users',
+    period: 'total',
+    sort: 'legend',
+    boardKey: 'users_total',
+    snapshot: {
+      seasonId: 'season-1',
+      seasonName: 'Season 1',
+      capturedAt: 100_000
+    },
+    rows: [],
+    partialRows: [],
+    pinnedRows: [],
+    totalRows: 0,
+    summary: {
+      totalRows: 0,
+      totalSpendUsd: null,
+      averageEstimatedPulls: null,
+      averageProbability: null
+    },
+    hasMore: false,
+    nextCursor: null
+  };
 }
 
 function seedSeason(environment, capturedAt = 100_000) {
@@ -221,6 +266,35 @@ test('stores one user-day row without snapshots, entries, raw_json, or fingerpri
   assert.equal(environment.RANKINGS_DB.userDays[0].raw_json, undefined);
   assert.equal(environment.RANKINGS_DB.userDays[0].fingerprint, undefined);
   assert.equal(environment.RANKINGS_DB.queries.some(({ sql }) => /rank_snapshots|rank_entries|raw_json|fingerprint/i.test(sql)), false);
+});
+
+test('published home and latest snapshots work without a D1 binding', async () => {
+  const payload = publishedHomePayload();
+  const environment = {
+    RANKINGS_HOME_CACHE: new MemoryKv({
+      'rankings:published-home:v1': JSON.stringify(payload)
+    })
+  };
+  const home = await handleRankingsRequest(new Request('https://card.test/api/rankings/home'), environment);
+  const latest = await handleRankingsRequest(new Request('https://card.test/api/rankings/latest'), environment);
+  assert.equal(home.status, 200);
+  assert.equal(latest.status, 200);
+  assert.deepEqual((await home.json()).snapshot, payload.snapshot);
+  assert.deepEqual((await latest.json()).snapshot, payload.snapshot);
+});
+
+test('accepted snapshots publish one shared home payload to KV', async () => {
+  const environment = compactEnv();
+  environment.RANKINGS_HOME_CACHE = new MemoryKv();
+  seedSeason(environment, 10_000);
+  const response = await postSnapshot(environment, snapshotAt(10_000));
+  assert.equal(response.status, 200);
+  const payload = await environment.RANKINGS_HOME_CACHE.get('rankings:published-home:v1', { type: 'json' });
+  assert.equal(payload.ok, true);
+  assert.equal(payload.board, 'users');
+  assert.equal(payload.totalRows, 1);
+  assert.equal(payload.rows[0].userId, 'u-1');
+  assert.equal(environment.RANKINGS_HOME_CACHE.puts.length, 1);
 });
 
 test('automatic uploads share one server-side three-hour gate and manual refresh bypasses it', async () => {

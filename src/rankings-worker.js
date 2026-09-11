@@ -29,33 +29,34 @@ const PAGE_DEFAULT_LIMIT = 50;
 const PAGE_MAX_LIMIT = 100;
 const MAX_EVENT_ROWS = 200;
 const REFRESH_INTERVAL_MS = 3 * 60 * 60 * 1000;
+export const PUBLISHED_HOME_CACHE_KEY = 'rankings:published-home:v1';
 const CACHE_HEADERS = Object.freeze({
+  home: { 'cache-control': 'public, max-age=300, stale-while-revalidate=1800' },
   latest: { 'cache-control': 'public, max-age=60, stale-while-revalidate=120' },
   leaderboard: { 'cache-control': 'public, max-age=900, stale-while-revalidate=1800' },
   history: { 'cache-control': 'public, max-age=3600, stale-while-revalidate=7200' },
+  historyClosed: { 'cache-control': 'public, max-age=86400, stale-while-revalidate=604800' },
   users: { 'cache-control': 'public, max-age=1800, stale-while-revalidate=3600' },
-  events: { 'cache-control': 'public, max-age=1800, stale-while-revalidate=3600' }
+  events: { 'cache-control': 'public, max-age=1800, stale-while-revalidate=3600' },
+  eventsClosed: { 'cache-control': 'public, max-age=86400, stale-while-revalidate=604800' }
 });
 
-export async function handleRankingsRequest(request, env) {
+export async function handleRankingsRequest(request, env, executionContext = null) {
   const url = new URL(request.url);
-  if (!env || !env.RANKINGS_DB) {
-    return jsonResponse({
-      ok: false,
-      error: 'database_unavailable',
-      message: '榜单数据库暂时不可用，请稍后重试',
-      endpoint: url.pathname,
-      retryable: true
-    }, 503);
-  }
 
   try {
+    if (url.pathname === '/api/rankings/home' && request.method === 'GET') {
+      return await getPublishedHome(request, env, executionContext);
+    }
     if (url.pathname === '/api/rankings/latest' && request.method === 'GET') return await getLatest(env);
+    if (!env || !env.RANKINGS_DB) return databaseUnavailable(url);
     if (url.pathname === '/api/rankings/leaderboard' && request.method === 'GET') return await getLeaderboard(url, env);
     if (url.pathname === '/api/rankings/history' && request.method === 'GET') return await getHistory(url, env);
     if (url.pathname === '/api/rankings/users' && request.method === 'GET') return await getUsers(url, env);
     if (url.pathname === '/api/rankings/events' && request.method === 'GET') return await getEvents(url, env);
-    if (url.pathname === '/api/rankings/snapshots' && request.method === 'POST') return await postSnapshot(request, env);
+    if (url.pathname === '/api/rankings/snapshots' && request.method === 'POST') {
+      return await postSnapshot(request, env, executionContext);
+    }
     return jsonResponse({ ok: false, error: 'not_found' }, 404);
   } catch (error) {
     const readRequest = request.method === 'GET' && url.pathname.startsWith('/api/rankings/');
@@ -76,6 +77,17 @@ export async function handleRankingsRequest(request, env) {
 }
 
 async function getLatest(env) {
+  const published = await readPublishedHome(env);
+  if (published && published.snapshot) {
+    const capturedAt = Number(published.snapshot.capturedAt || 0);
+    return jsonResponse({
+      ok: true,
+      snapshot: published.snapshot,
+      stale: !capturedAt || Date.now() - capturedAt >= REFRESH_INTERVAL_MS,
+      boards: [...COMPACT_BOARD_KEYS]
+    }, 200, CACHE_HEADERS.latest);
+  }
+  if (!env || !env.RANKINGS_DB) return databaseUnavailable(new URL('https://card.internal/api/rankings/latest'));
   const season = await latestSeason(env);
   if (!season) return jsonResponse({ ok: true, snapshot: null, stale: true, boards: [] }, 200, CACHE_HEADERS.latest);
   return jsonResponse({
@@ -86,7 +98,76 @@ async function getLatest(env) {
   }, 200, CACHE_HEADERS.latest);
 }
 
-async function postSnapshot(request, env) {
+async function getPublishedHome(request, env, executionContext) {
+  const published = await readPublishedHome(env);
+  if (published) return jsonResponse(published, 200, CACHE_HEADERS.home);
+  if (!env || !env.RANKINGS_DB) return databaseUnavailable(new URL(request.url));
+
+  const fallbackUrl = new URL(request.url);
+  fallbackUrl.pathname = '/api/rankings/leaderboard';
+  fallbackUrl.search = new URLSearchParams({
+    board: 'users',
+    period: 'total',
+    sort: 'legend',
+    direction: 'desc',
+    limit: String(PAGE_DEFAULT_LIMIT)
+  }).toString();
+  const response = await getLeaderboard(fallbackUrl, env);
+  if (!response.ok) return response;
+  const payload = await response.json();
+  await schedulePublishedHome(env, payload, executionContext);
+  return jsonResponse(payload, 200, CACHE_HEADERS.home);
+}
+
+async function readPublishedHome(env) {
+  const cache = env && env.RANKINGS_HOME_CACHE;
+  if (!cache || typeof cache.get !== 'function') return null;
+  try {
+    const payload = await cache.get(PUBLISHED_HOME_CACHE_KEY, { type: 'json' });
+    return isPublishedHomePayload(payload) ? payload : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function isPublishedHomePayload(payload) {
+  return Boolean(payload
+    && payload.ok === true
+    && payload.board === 'users'
+    && payload.period === 'total'
+    && Array.isArray(payload.rows)
+    && payload.snapshot
+    && Number(payload.snapshot.capturedAt) > 0);
+}
+
+function schedulePublishedHome(env, payload, executionContext) {
+  const cache = env && env.RANKINGS_HOME_CACHE;
+  if (!cache || typeof cache.put !== 'function' || !isPublishedHomePayload(payload)) return;
+  const pending = Promise.resolve()
+    .then(() => cache.put(PUBLISHED_HOME_CACHE_KEY, JSON.stringify(payload)))
+    .catch((error) => {
+      console.error('rankings_home_cache_publish_failed', {
+        message: String(error && error.message || error).slice(0, 240)
+      });
+    });
+  if (executionContext && typeof executionContext.waitUntil === 'function') {
+    executionContext.waitUntil(pending);
+    return Promise.resolve();
+  }
+  return pending;
+}
+
+function databaseUnavailable(url) {
+  return jsonResponse({
+    ok: false,
+    error: 'database_unavailable',
+    message: '榜单数据库暂时不可用，请稍后重试',
+    endpoint: url.pathname,
+    retryable: true
+  }, 503);
+}
+
+async function postSnapshot(request, env, executionContext = null) {
   const rateLimitResponse = await limitSnapshotWrites(request, env);
   if (rateLimitResponse) return rateLimitResponse;
 
@@ -125,6 +206,10 @@ async function postSnapshot(request, env) {
     }, 500);
   }
 
+  if (stored.storedSnapshots > 0) {
+    await scheduleLatestHomePublish(env, executionContext);
+  }
+
   const errors = bundle.errors.slice();
   const skippedScopes = stored.skippedScopes || [];
   const skippedMetrics = stored.skippedMetrics || [];
@@ -158,6 +243,40 @@ async function postSnapshot(request, env) {
     partial: errors.length > 0 || skippedScopes.length > 0 || skippedMetrics.length > 0,
     errors
   });
+}
+
+function scheduleLatestHomePublish(env, executionContext) {
+  const cache = env && env.RANKINGS_HOME_CACHE;
+  if (!cache || typeof cache.put !== 'function') return;
+  const pending = publishLatestHome(env);
+  if (executionContext && typeof executionContext.waitUntil === 'function') {
+    executionContext.waitUntil(pending);
+    return Promise.resolve();
+  }
+  return pending;
+}
+
+async function publishLatestHome(env) {
+  const cache = env && env.RANKINGS_HOME_CACHE;
+  if (!cache || typeof cache.put !== 'function') return;
+  try {
+    const url = new URL('https://card.internal/api/rankings/leaderboard');
+    url.search = new URLSearchParams({
+      board: 'users',
+      period: 'total',
+      sort: 'legend',
+      direction: 'desc',
+      limit: String(PAGE_DEFAULT_LIMIT)
+    }).toString();
+    const response = await getLeaderboard(url, env);
+    if (!response.ok) return;
+    const payload = await response.json();
+    await schedulePublishedHome(env, payload, null);
+  } catch (error) {
+    console.error('rankings_home_cache_publish_failed', {
+      message: String(error && error.message || error).slice(0, 240)
+    });
+  }
 }
 
 async function limitSnapshotWrites(request, env) {
@@ -321,7 +440,7 @@ async function getHistory(url, env) {
     nextCursor,
     hasMore: Boolean(nextCursor),
     events: buildUserEvents(rows)
-  }, 200, CACHE_HEADERS.history);
+  }, 200, historyCacheHeaders(range, season.last_observed_at));
 }
 
 async function getUsers(url, env) {
@@ -428,7 +547,22 @@ async function getEvents(url, env) {
     since: range.since,
     until: range.until,
     events: events.slice(-MAX_EVENT_ROWS)
-  }, 200, CACHE_HEADERS.events);
+  }, 200, eventCacheHeaders(range, season.last_observed_at));
+}
+
+function historyCacheHeaders(range, latestCapturedAt) {
+  return isClosedRange(range, latestCapturedAt) ? CACHE_HEADERS.historyClosed : CACHE_HEADERS.history;
+}
+
+function eventCacheHeaders(range, latestCapturedAt) {
+  return isClosedRange(range, latestCapturedAt) ? CACHE_HEADERS.eventsClosed : CACHE_HEADERS.events;
+}
+
+function isClosedRange(range, latestCapturedAt) {
+  const latestDayStartAt = dayStartAtForCapturedAt(Number(latestCapturedAt));
+  return latestDayStartAt != null
+    && range
+    && Number(range.until) < latestDayStartAt;
 }
 
 async function latestSeason(env) {

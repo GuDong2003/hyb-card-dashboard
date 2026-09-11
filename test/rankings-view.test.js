@@ -746,9 +746,11 @@ test('automatic cooldown scopes are not remembered as successfully uploaded', as
 test('initial rankings view uses leaderboard metadata without a separate latest request', async () => {
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
   const loadView = extractFunction(source, 'loadRankingsView');
+  const loadLeaderboard = extractFunction(source, 'loadLeaderboard');
   assert.match(loadView, /let leaderboardLoaded = false/);
   assert.match(loadView, /await loadLeaderboard\(\)/);
   assert.match(loadView, /if \(!leaderboardLoaded\)/);
+  assert.match(loadLeaderboard, /\/api\/rankings\/home/);
 });
 
 test('fresh rankings GET sends explicit revalidation to the Worker cache layer', async () => {

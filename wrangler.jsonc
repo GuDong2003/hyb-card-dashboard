@@ -15,6 +15,12 @@
       "database_id": "457cdbe7-aac9-411f-9543-1ffb834365b4"
     }
   ],
+  "kv_namespaces": [
+    {
+      "binding": "RANKINGS_HOME_CACHE",
+      "id": "e4e066e0d472423f9391eb62ac998b90"
+    }
+  ],
   "routes": [
     {
       "pattern": "card.gudong226.com",

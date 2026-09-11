@@ -165,6 +165,12 @@ test('GET rankings endpoints use cache windows matched to their refresh frequenc
     assert.equal(response.status, 200, url);
     assert.equal(response.headers.get('cache-control'), expected, url);
   }
+
+  const closedHistory = await handleRankingsRequest(new Request(
+    'https://card.test/api/rankings/history?userId=alice-1&since=2026-08-20T04:00:00%2B08:00&until=2026-08-27T04:00:00%2B08:00&limit=30'
+  ), environment);
+  assert.equal(closedHistory.status, 200);
+  assert.equal(closedHistory.headers.get('cache-control'), 'public, max-age=86400, stale-while-revalidate=604800');
 });
 
 test('returns 429 before parsing or writing when the limiter rejects the source', async () => {
