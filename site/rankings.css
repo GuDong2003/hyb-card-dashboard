@@ -137,6 +137,16 @@
     cursor: pointer;
 }
 
+.rankings-upload-toggle.is-disabled {
+    cursor: not-allowed;
+    opacity: .62;
+}
+
+.rankings-upload-toggle.is-disabled input,
+.rankings-upload-toggle.is-disabled .rankings-toggle-track {
+    cursor: not-allowed;
+}
+
 .rankings-toggle-copy {
     display: grid;
     min-width: 0;
@@ -269,6 +279,14 @@
 .rankings-source-status.is-error,
 .rankings-error {
     color: var(--red);
+}
+
+.rankings-primary-actions .btn:disabled,
+.rankings-secondary-actions .btn.is-disabled {
+    cursor: not-allowed;
+    opacity: .56;
+    pointer-events: none;
+    transform: none;
 }
 
 .rankings-secondary-actions .btn.is-update-required {

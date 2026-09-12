@@ -286,21 +286,76 @@ test('rankings setup keeps script controls aligned to the right', async () => {
   assert.ok(secondaryStart > primaryStart);
   const primary = html.slice(primaryStart, secondaryStart);
   const secondary = html.slice(secondaryStart);
-  assert.match(primary, /id="rankingsRefreshButton"[^>]*>↻ 立即刷新</);
-  assert.match(primary, /id="rankingsUploadButton"[^>]*>上传云端</);
-  assert.match(secondary, /id="rankingsAutoUpload"/);
-  assert.match(secondary, /id="rankingsHourlyRefresh"/);
+  assert.match(primary, /id="rankingsRefreshButton"[^>]*disabled[^>]*>↻ 刷新暂时停用</);
+  assert.match(primary, /id="rankingsUploadButton"[^>]*disabled[^>]*>上传云端</);
+  assert.match(secondary, /id="rankingsAutoUpload"[^>]*disabled/);
+  assert.match(secondary, /id="rankingsHourlyRefresh"[^>]*disabled/);
   assert.doesNotMatch(secondary, /rankings-script-update-notice|rankingsScriptUpdateNotice/);
   assert.ok(
     secondary.indexOf('id="rankingsHourlyRefresh"') < secondary.indexOf('id="rankingsAutoUpload"'),
     '每小时刷新开关应位于自动上传左侧'
   );
-  assert.match(secondary, /id="rankingsInstallLink"[^>]*>安装用户脚本</);
+  assert.match(secondary, /id="rankingsInstallLink"[^>]*aria-disabled="true"[^>]*>脚本安装暂时停用</);
   assert.match(secondary, /href="https:\/\/cdk\.hybgzs\.com\/"[^>]*>打开 CDK</);
   assert.doesNotMatch(html, />检查更新</);
   assert.doesNotMatch(html, />安装同步脚本</);
   assert.match(css, /\.rankings-secondary-actions\s*\{[\s\S]*flex:\s*0 0 auto[\s\S]*justify-content:\s*flex-end[\s\S]*margin-left:\s*auto/);
   assert.match(css, /\.rankings-secondary-actions \.btn\.is-update-required\s*\{[\s\S]*border-color:\s*var\(--amber\)/);
+});
+
+test('temporarily disables all ranking sync controls without hiding cloud data', async () => {
+  const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../site/rankings.css', import.meta.url), 'utf8');
+
+  assert.match(html, /id="rankingsRefreshButton"[^>]*disabled[^>]*>↻ 刷新暂时停用</);
+  assert.match(html, /class="rankings-upload-toggle is-disabled"[^>]*aria-disabled="true"/);
+  assert.match(html, /id="rankingsHourlyRefresh"[^>]*disabled/);
+  assert.match(html, /class="btn btn-secondary is-disabled"[^>]*id="rankingsInstallLink"/);
+  assert.match(html, /id="rankingsInstallLink"[^>]*tabindex="-1"/);
+  assert.match(source, /const RANKINGS_REFRESH_DISABLED\s*=\s*true/);
+  assert.match(source, /function createRefreshDisabledError\(\)/);
+  assert.match(source, /code\s*=\s*'refresh_disabled'/);
+  assert.match(source, /if \(RANKINGS_REFRESH_DISABLED\) return Promise\.reject\(createRefreshDisabledError\(\)\)/);
+  assert.match(source, /if \(RANKINGS_REFRESH_DISABLED\) \{[\s\S]*?clearRankingsRetry\(\);[\s\S]*?return false;/);
+  assert.match(css, /\.rankings-upload-toggle\.is-disabled/);
+  assert.match(css, /\.rankings-secondary-actions \.btn\.is-disabled/);
+  assert.match(source, /uploadButton\.disabled = RANKINGS_REFRESH_DISABLED/);
+  assert.match(source, /toggle\.disabled = RANKINGS_REFRESH_DISABLED/);
+  assert.ok(html.includes('id="rankingsSummary"'), '云端榜单数据仍需保留');
+});
+
+test('refresh-disabled bridge requests reject before posting to the userscript', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  const requestBridgeSnapshot = extractFunction(source, 'requestBridgeSnapshot');
+  const postedMessages = [];
+  const context = {
+    RANKINGS_REFRESH_DISABLED: true,
+    state: { bridgeRequest: null },
+    createRefreshDisabledError() {
+      const error = new Error('榜单刷新暂时停用');
+      error.code = 'refresh_disabled';
+      error.retryable = false;
+      return error;
+    },
+    window: {
+      location: { origin: 'https://card.gudong226.com' },
+      addEventListener() {},
+      removeEventListener() {},
+      setTimeout() { return 1; },
+      clearTimeout() {},
+      postMessage(message) {
+        postedMessages.push(message);
+        throw new Error('bridge_should_not_be_called');
+      }
+    }
+  };
+  vm.runInNewContext(`${requestBridgeSnapshot}\nthis.requestBridgeSnapshot = requestBridgeSnapshot;`, context);
+  await assert.rejects(
+    context.requestBridgeSnapshot(),
+    (error) => error && error.code === 'refresh_disabled'
+  );
+  assert.deepEqual(postedMessages, []);
 });
 
 test('user overview shows ranking and all core metrics', async () => {
@@ -812,9 +867,9 @@ test('rankings client keeps a longer cache window for data that changes slowly',
 
 test('rankings client uses refresh and cloud upload labels', async () => {
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
-  assert.match(source, /↻ 立即刷新/);
+  assert.match(source, /↻ 刷新暂时停用/);
   assert.match(source, /上传云端/);
-  assert.match(source, /state\.busy \? '↻ 同步中…' : '↻ 立即刷新'/);
+  assert.match(source, /RANKINGS_REFRESH_DISABLED\s*\?\s*'↻ 刷新暂时停用'/);
 });
 
 test('ranking upload keeps current observations but strips raw payload fields', async () => {

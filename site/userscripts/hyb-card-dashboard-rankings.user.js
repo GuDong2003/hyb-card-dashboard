@@ -19,6 +19,7 @@
   'use strict';
 
   const SCRIPT_VERSION = '1.4.0';
+  const SCRIPT_DISABLED = true;
   const CARD_ORIGIN = 'https://card.gudong226.com';
   const CDK_ORIGIN = 'https://cdk.hybgzs.com';
   const SOURCE_APIS = Object.freeze({
@@ -608,6 +609,8 @@
     });
     GM_setValue(RELAY_READY_KEY, { readyAt: Date.now(), origin: CDK_ORIGIN, scriptVersion: SCRIPT_VERSION });
   }
+
+  if (SCRIPT_DISABLED) return;
 
   if (location.origin === CARD_ORIGIN) startCardBridge();
   else if (location.origin === CDK_ORIGIN) startCdkRelay();

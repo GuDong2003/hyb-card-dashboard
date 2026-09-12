@@ -715,21 +715,21 @@
         <section id="rankingsView" class="rankings-view dashboard-view is-hidden" aria-label="榜单统计">
         <section class="panel rankings-setup" id="rankingsSetup" aria-label="榜单同步设置">
             <div class="rankings-primary-actions">
-                <button class="btn" type="button" id="rankingsRefreshButton" title="通过用户脚本立即获取榜单">↻ 立即刷新</button>
-                <button class="btn" type="button" id="rankingsUploadButton" disabled>上传云端</button>
-                <div class="rankings-source-status" id="rankingsStatus" data-state="idle" aria-live="polite">等待榜单数据</div>
-                <span class="rankings-upload-status" id="rankingsUploadStatus">尚无待上传的本地脚本快照，请先点击“立即刷新”</span>
+                <button class="btn" type="button" id="rankingsRefreshButton" title="榜单同步暂时停用" disabled>↻ 刷新暂时停用</button>
+                <button class="btn" type="button" id="rankingsUploadButton" title="榜单同步暂时停用" disabled>上传云端</button>
+                <div class="rankings-source-status" id="rankingsStatus" data-state="idle" aria-live="polite">榜单同步暂时停用</div>
+                <span class="rankings-upload-status" id="rankingsUploadStatus">榜单同步暂时停用；已有本地快照暂不可上传</span>
             </div>
             <div class="rankings-secondary-actions">
-                <label class="rankings-upload-toggle">
-                    <span class="rankings-toggle-copy"><strong>每 3 小时刷新</strong><small>页面打开时自动抓取</small></span>
-                    <span class="rankings-toggle-control"><input id="rankingsHourlyRefresh" type="checkbox"><span class="rankings-toggle-track"></span></span>
+                <label class="rankings-upload-toggle is-disabled" aria-disabled="true" title="榜单同步暂时停用">
+                    <span class="rankings-toggle-copy"><strong>每 3 小时刷新（暂时停用）</strong><small>榜单同步暂时停用</small></span>
+                    <span class="rankings-toggle-control"><input id="rankingsHourlyRefresh" type="checkbox" disabled><span class="rankings-toggle-track"></span></span>
                 </label>
-                <label class="rankings-upload-toggle">
-                    <span class="rankings-toggle-copy"><strong>自动上传</strong><small>抓取后写入共享榜单</small></span>
-                    <span class="rankings-toggle-control"><input id="rankingsAutoUpload" type="checkbox"><span class="rankings-toggle-track"></span></span>
+                <label class="rankings-upload-toggle is-disabled" aria-disabled="true" title="榜单同步暂时停用">
+                    <span class="rankings-toggle-copy"><strong>自动上传（暂时停用）</strong><small>榜单同步暂时停用</small></span>
+                    <span class="rankings-toggle-control"><input id="rankingsAutoUpload" type="checkbox" disabled><span class="rankings-toggle-track"></span></span>
                 </label>
-                <a class="btn btn-secondary" id="rankingsInstallLink" href="/userscripts/hyb-card-dashboard-rankings.user.js" target="_blank" rel="noreferrer">安装用户脚本</a>
+                <a class="btn btn-secondary is-disabled" id="rankingsInstallLink" aria-disabled="true" tabindex="-1">脚本安装暂时停用</a>
                 <a class="btn btn-secondary" href="https://cdk.hybgzs.com/" target="_blank" rel="noreferrer">打开 CDK</a>
             </div>
         </section>

@@ -5,6 +5,25 @@ import vm from 'node:vm';
 
 const SCRIPT_PATH = new URL('../site/userscripts/hyb-card-dashboard-rankings.user.js', import.meta.url);
 
+test('userscript installation and capture are temporarily disabled', async () => {
+  const source = await readFile(SCRIPT_PATH, 'utf8');
+  assert.match(source, /const SCRIPT_DISABLED\s*=\s*true;/);
+  assert.match(source, /if \(SCRIPT_DISABLED\) return;/);
+  const listeners = [];
+  const postedMessages = [];
+  const context = {
+    location: { origin: 'https://card.gudong226.com' },
+    window: {
+      addEventListener(type, listener) { listeners.push({ type, listener }); },
+      postMessage(message) { postedMessages.push(message); }
+    },
+    console
+  };
+  vm.runInNewContext(source, context, { filename: 'hyb-card-dashboard-rankings.user.js' });
+  assert.deepEqual(listeners, []);
+  assert.deepEqual(postedMessages, []);
+});
+
 test('userscript matches Card and CDK while keeping the bridge UI on Card', async () => {
   const source = await readFile(SCRIPT_PATH, 'utf8');
   assert.match(source, /@match\s+https:\/\/card\.gudong226\.com\/\*/);
@@ -132,7 +151,8 @@ function createUserscriptContext(source, initialState, requestResult) {
       }
     }
   };
-  vm.runInNewContext(source, context, { filename: 'hyb-card-dashboard-rankings.user.js' });
+  const executableSource = source.replace('const SCRIPT_DISABLED = true;', 'const SCRIPT_DISABLED = false;');
+  vm.runInNewContext(executableSource, context, { filename: 'hyb-card-dashboard-rankings.user.js' });
   return {
     storage,
     listeners,
@@ -266,13 +286,14 @@ test('userscript does not schedule automatic retry state after a manual ordinary
 test('userscript update state changes the install link after a refresh response', async () => {
   const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
-  assert.match(html, /id="rankingsInstallLink"[^>]*>安装用户脚本</);
+  assert.match(html, /id="rankingsInstallLink"[^>]*aria-disabled="true"[^>]*>脚本安装暂时停用</);
   assert.doesNotMatch(html, /rankingsScriptUpdateNotice|rankingsScriptUpdateLink/);
   assert.match(source, /markUserscriptVersion\(data\.scriptVersion\)/);
   assert.match(source, /userscriptUpdateError\(data\.scriptVersion\)/);
   assert.match(source, /function renderUserscriptLink/);
-  assert.match(source, /link\.textContent = state\.scriptUpdateRequired \? '更新脚本' : '安装用户脚本'/);
-  assert.match(source, /link\.classList\.toggle\('is-update-required', state\.scriptUpdateRequired\)/);
+  assert.match(source, /if \(RANKINGS_REFRESH_DISABLED\)/);
+  assert.match(source, /link\.textContent = USERSCRIPT_DISABLED_MESSAGE/);
+  assert.match(source, /link\.classList\.add\('is-disabled'\)/);
   assert.match(source, /code = 'userscript_missing'/);
   assert.doesNotMatch(source, /type === BRIDGE_READY\)[\s\S]*markUserscriptVersion/);
 });

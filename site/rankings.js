@@ -5,6 +5,9 @@
     const BRIDGE_REQUEST = 'HYB_CARD_RANKINGS_REQUEST';
     const BRIDGE_RESPONSE = 'HYB_CARD_RANKINGS_RESPONSE';
     const BRIDGE_TIMEOUT_MS = 22000;
+    const RANKINGS_REFRESH_DISABLED = true;
+    const RANKINGS_REFRESH_DISABLED_MESSAGE = '榜单同步暂时停用';
+    const USERSCRIPT_DISABLED_MESSAGE = '脚本安装暂时停用';
     const DAY_MS = 24 * 60 * 60 * 1000;
     const BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000;
     const RESET_HOUR_MS = 4 * 60 * 60 * 1000;
@@ -488,8 +491,10 @@
         state.busy = Boolean(busy);
         const button = $('#rankingsRefreshButton');
         if (button) {
-            button.disabled = state.busy;
-            button.textContent = state.busy ? '↻ 同步中…' : '↻ 立即刷新';
+            button.disabled = RANKINGS_REFRESH_DISABLED || state.busy;
+            button.textContent = RANKINGS_REFRESH_DISABLED
+                ? '↻ 刷新暂时停用'
+                : state.busy ? '↻ 同步中…' : '↻ 立即刷新';
         }
         renderUploadControls();
     }
@@ -522,10 +527,30 @@
         return error;
     }
 
+    function createRefreshDisabledError() {
+        const error = new Error(RANKINGS_REFRESH_DISABLED_MESSAGE);
+        error.name = 'RefreshDisabled';
+        error.code = 'refresh_disabled';
+        error.retryable = false;
+        return error;
+    }
+
     function renderUserscriptLink() {
         const link = $('#rankingsInstallLink');
         if (!link) return;
+        if (RANKINGS_REFRESH_DISABLED) {
+            link.removeAttribute('href');
+            link.setAttribute('aria-disabled', 'true');
+            link.setAttribute('tabindex', '-1');
+            link.textContent = USERSCRIPT_DISABLED_MESSAGE;
+            link.classList.remove('is-update-required');
+            link.classList.add('is-disabled');
+            return;
+        }
         link.href = apiUrl(USERSCRIPT_URL);
+        link.removeAttribute('aria-disabled');
+        link.removeAttribute('tabindex');
+        link.classList.remove('is-disabled');
         link.textContent = state.scriptUpdateRequired ? '更新脚本' : '安装用户脚本';
         link.classList.toggle('is-update-required', state.scriptUpdateRequired);
     }
@@ -568,6 +593,10 @@
 
     function scheduleRankingsRetry(options = {}) {
         const finalSets = Boolean(options.finalSets || options.setsFinalRetry);
+        if (RANKINGS_REFRESH_DISABLED) {
+            clearRankingsRetry();
+            return false;
+        }
         if (state.scriptUpdateRequired || state.rankingsRetryCount >= MAX_AUTO_RETRIES) {
             state.rankingsRetryPending = false;
             state.rankingsRetryAt = 0;
@@ -607,6 +636,10 @@
     }
 
     function runRankingsRetryNow() {
+        if (RANKINGS_REFRESH_DISABLED) {
+            clearRankingsRetry();
+            return false;
+        }
         if (!state.rankingsRetryPending || state.busy || state.view !== 'rankings') return false;
         if (Date.now() < state.rankingsRetryAt) return false;
         if (state.rankingsRetryTimer) {
@@ -640,17 +673,25 @@
 
     function renderUploadControls() {
         const hourlyToggle = $('#rankingsHourlyRefresh');
-        if (hourlyToggle) hourlyToggle.checked = state.settings.hourlyRefresh === true;
+        if (hourlyToggle) {
+            hourlyToggle.checked = !RANKINGS_REFRESH_DISABLED && state.settings.hourlyRefresh === true;
+            hourlyToggle.disabled = RANKINGS_REFRESH_DISABLED;
+        }
         const toggle = $('#rankingsAutoUpload');
-        if (toggle) toggle.checked = state.settings.autoUpload === true;
+        if (toggle) {
+            toggle.checked = !RANKINGS_REFRESH_DISABLED && state.settings.autoUpload === true;
+            toggle.disabled = RANKINGS_REFRESH_DISABLED;
+        }
         const uploadButton = $('#rankingsUploadButton');
         if (uploadButton) {
-            uploadButton.disabled = state.busy || !hasPendingUploadSnapshot();
+            uploadButton.disabled = RANKINGS_REFRESH_DISABLED || state.busy || !hasPendingUploadSnapshot();
             uploadButton.textContent = '上传云端';
         }
         const localStatus = $('#rankingsUploadStatus');
         if (localStatus) {
-            localStatus.textContent = hasPendingUploadSnapshot()
+            localStatus.textContent = RANKINGS_REFRESH_DISABLED
+                ? `${RANKINGS_REFRESH_DISABLED_MESSAGE}；已有本地快照暂不可上传`
+                : hasPendingUploadSnapshot()
                 ? (state.settings.autoUpload ? '自动上传已开启' : '本次抓取仅保存在当前页面')
                 : '尚无待上传的本地脚本快照，请先点击“立即刷新”';
         }
@@ -2411,6 +2452,7 @@
     window.setDashboardView = setDashboardView;
 
     function requestBridgeSnapshot(options = {}) {
+        if (RANKINGS_REFRESH_DISABLED) return Promise.reject(createRefreshDisabledError());
         if (state.bridgeRequest) return state.bridgeRequest;
         const manual = Boolean(options.manual);
         const finalSets = Boolean(options.finalSets);
@@ -2488,6 +2530,7 @@
     }
 
     async function uploadSnapshot(snapshot, options = {}) {
+        if (RANKINGS_REFRESH_DISABLED) throw createRefreshDisabledError();
         const normalizedSnapshots = normalizeSnapshotsForUpload(snapshot);
         const finalSets = options.finalSets === true;
         const setsFinalRetry = options.setsFinalRetry === true;
@@ -2524,6 +2567,7 @@
     }
 
     async function ensureFreshSnapshot(force = false, retry = false, manual = false, options = {}) {
+        if (RANKINGS_REFRESH_DISABLED && (force || retry)) throw createRefreshDisabledError();
         const finalSets = options.finalSets === true;
         const setsFinalRetry = options.setsFinalRetry === true;
         if (!force && !retry && hasPendingUploadSnapshot() && !state.settings.autoUpload) {
@@ -2692,6 +2736,12 @@
         const finalSets = Boolean(options && options.finalSets);
         const setsFinalRetry = Boolean(options && options.setsFinalRetry);
         const manualRefresh = refresh && !autoRefresh;
+        if (RANKINGS_REFRESH_DISABLED && (refresh || autoRefresh)) {
+            clearRankingsRetry();
+            setStatus(RANKINGS_REFRESH_DISABLED_MESSAGE);
+            renderUploadControls();
+            return { disabled: true };
+        }
         if (state.busy) return;
         setBusy(true);
         setStatus(refresh
@@ -2760,6 +2810,11 @@
     }
 
     async function uploadPendingSnapshot() {
+        if (RANKINGS_REFRESH_DISABLED) {
+            setStatus(`${RANKINGS_REFRESH_DISABLED_MESSAGE}；已有本地快照暂不可上传`);
+            renderUploadControls();
+            return;
+        }
         if (!hasPendingUploadSnapshot() || state.busy) return;
         if (state.scriptUpdateRequired) {
             renderUserscriptLink();
@@ -3193,7 +3248,7 @@
             window.clearTimeout(state.setsFinalRefreshTimer);
             state.setsFinalRefreshTimer = null;
         }
-        if (!state.settings.hourlyRefresh) return;
+        if (RANKINGS_REFRESH_DISABLED || !state.settings.hourlyRefresh) return;
         const now = Date.now();
         const today = beijingDateKey(now);
         const todayFinalAt = (beijingDayStartAt(now) || now) + SETS_FINAL_REFRESH_HOUR_MS;
@@ -3209,7 +3264,7 @@
     }
 
     async function runSetsFinalRefresh() {
-        if (!state.settings.hourlyRefresh) return;
+        if (RANKINGS_REFRESH_DISABLED || !state.settings.hourlyRefresh) return;
         if (state.busy) {
             scheduleSetsFinalRefresh({ delayMs: 1000 });
             return;
@@ -3232,7 +3287,7 @@
             window.clearTimeout(state.hourlyRefreshTimer);
             state.hourlyRefreshTimer = null;
         }
-        if (!state.settings.hourlyRefresh) return;
+        if (RANKINGS_REFRESH_DISABLED || !state.settings.hourlyRefresh) return;
         state.hourlyRefreshTimer = window.setTimeout(() => {
             state.hourlyRefreshTimer = null;
             runHourlyRefresh();
@@ -3240,7 +3295,7 @@
     }
 
     async function runHourlyRefresh() {
-        if (!state.settings.hourlyRefresh) return;
+        if (RANKINGS_REFRESH_DISABLED || !state.settings.hourlyRefresh) return;
         if (state.busy) {
             scheduleHourlyRefresh();
             return;
@@ -3261,7 +3316,7 @@
             window.clearTimeout(state.setsFinalRefreshTimer);
             state.setsFinalRefreshTimer = null;
         }
-        if (!state.settings.hourlyRefresh) return;
+        if (RANKINGS_REFRESH_DISABLED || !state.settings.hourlyRefresh) return;
         scheduleSetsFinalRefresh();
         if (options.runNow) {
             window.setTimeout(() => runHourlyRefresh(), Number(options.delayMs) || 0);
@@ -3316,9 +3371,19 @@
                 if (state.view === 'rankings') loadRankingsView({ refresh: false });
             });
         });
-        $('#rankingsRefreshButton')?.addEventListener('click', () => loadRankingsView({ refresh: true }));
+        $('#rankingsRefreshButton')?.addEventListener('click', () => {
+            if (RANKINGS_REFRESH_DISABLED) {
+                setStatus(RANKINGS_REFRESH_DISABLED_MESSAGE);
+                return;
+            }
+            loadRankingsView({ refresh: true });
+        });
         $('#rankingsUploadButton')?.addEventListener('click', uploadPendingSnapshot);
         $('#rankingsAutoUpload')?.addEventListener('change', (event) => {
+            if (RANKINGS_REFRESH_DISABLED) {
+                renderUploadControls();
+                return;
+            }
             state.settings.autoUpload = Boolean(event.target.checked);
             saveSettings(state.settings);
             setStatus(state.settings.autoUpload
@@ -3327,6 +3392,10 @@
             renderUploadControls();
         });
         $('#rankingsHourlyRefresh')?.addEventListener('change', (event) => {
+            if (RANKINGS_REFRESH_DISABLED) {
+                renderUploadControls();
+                return;
+            }
             state.settings.hourlyRefresh = Boolean(event.target.checked);
             saveSettings(state.settings);
             setStatus(state.settings.hourlyRefresh
@@ -3444,6 +3513,7 @@
         window.addEventListener('message', (event) => {
             if (event.origin !== window.location.origin) return;
             if (event.data && event.data.type === BRIDGE_READY) {
+                if (RANKINGS_REFRESH_DISABLED) return;
                 state.bridgeReady = true;
                 if (state.busy) setStatus('用户脚本已连接，正在请求最新榜单…', false, true);
                 else runRankingsRetryNow();
