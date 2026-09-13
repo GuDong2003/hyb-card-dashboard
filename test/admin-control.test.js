@@ -105,6 +105,16 @@ test('admin route is isolated from the normal homepage and serves only /admin', 
   assert.equal(await home.text(), 'HOME_PAGE');
 });
 
+test('static admin aliases run through the worker before SPA fallback', async () => {
+  const wrangler = JSON.parse(await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));
+  assert.deepEqual(wrangler.assets.run_worker_first, [
+    '/api/*',
+    '/admin',
+    '/admin/',
+    '/admin.html'
+  ]);
+});
+
 test('worker routes site configuration APIs before the asset SPA fallback', async () => {
   let assetCalls = 0;
   const response = await worker.fetch(new Request('https://card.test/api/site-config'), {
