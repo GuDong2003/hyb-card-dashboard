@@ -83,15 +83,18 @@ test('shows the visitor count immediately before the Farm link', async () => {
   assert.match(actions, /累计访客：—/);
 });
 
-test('shows a direct admin entry in the top bar without exposing admin controls on the homepage', async () => {
+test('keeps the admin tab hidden on the homepage and exposes it only on /admin', async () => {
   const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
-  const actionsStart = html.indexOf('<nav class="topbar-actions"');
-  const actionsEnd = html.indexOf('</nav>', actionsStart);
-  assert.ok(actionsStart >= 0 && actionsEnd > actionsStart);
-  const actions = html.slice(actionsStart, actionsEnd);
-  assert.match(actions, /<a class="admin-link" href="\/admin"[^>]*>管理<\/a>/);
-  assert.ok(actions.indexOf('class="admin-link"') < actions.indexOf('class="farm-link"'));
-  assert.doesNotMatch(html, /id="adminConfigPanel"/);
+  const navStart = html.indexOf('<nav class="topbar-nav"');
+  const navEnd = html.indexOf('</nav>', navStart);
+  assert.ok(navStart >= 0 && navEnd > navStart);
+  const nav = html.slice(navStart, navEnd);
+  assert.match(nav, /<button class="topbar-view-btn is-hidden"[^>]*id="adminNavButton"[^>]*data-view="admin"[^>]*>管理<\/button>/);
+  assert.doesNotMatch(html, /class="admin-link"/);
+  assert.match(html, /id="adminView"[^>]*class="dashboard-view is-hidden"/);
+  assert.match(html, /window\.location\.pathname/);
+  assert.match(html, /id="adminLoginForm"/);
+  assert.match(html, /id="adminConfigForm"/);
 });
 
 test('rankings client loads and displays anonymous visitor usage', async () => {
@@ -125,7 +128,15 @@ test('keeps the rankings entry visible and defaults to the rankings view', async
   assert.doesNotMatch(source, /rankingsEntryUnlocked/);
   assert.doesNotMatch(source, /new URLSearchParams\(window\.location\.search\)/);
   assert.doesNotMatch(source, /rankingsNavButton\.classList\.toggle\('is-hidden'/);
-  assert.match(source, /setDashboardView\('rankings'\)/);
+  assert.match(source, /state\.isAdminRoute \? 'admin' : 'rankings'/);
+});
+
+test('admin route does not load the rankings view until selected', async () => {
+  const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
+  assert.match(source, /const ADMIN_ROUTE_PATHS/);
+  assert.match(source, /state\.isAdminRoute/);
+  assert.match(source, /if \(state\.view === 'rankings' && !state\.loaded\) loadRankingsView/);
+  assert.match(source, /if \(state\.isAdminRoute\) void restoreAdminSession\(\)/);
 });
 
 test('rankings view keeps script setup and upload consent controls visible', async () => {
@@ -297,7 +308,7 @@ test('rankings setup keeps script controls aligned to the right', async () => {
   assert.ok(secondaryStart > primaryStart);
   const primary = html.slice(primaryStart, secondaryStart);
   const secondary = html.slice(secondaryStart);
-  assert.match(primary, /id="rankingsRefreshButton"[^>]*disabled[^>]*>↻ 刷新暂时停用</);
+  assert.match(primary, /id="rankingsRefreshButton"[^>]*disabled[^>]*>↻ 正在读取配置…</);
   assert.match(primary, /id="rankingsUploadButton"[^>]*disabled[^>]*>上传云端</);
   assert.match(secondary, /id="rankingsAutoUpload"[^>]*disabled/);
   assert.match(secondary, /id="rankingsHourlyRefresh"[^>]*disabled/);
@@ -306,7 +317,7 @@ test('rankings setup keeps script controls aligned to the right', async () => {
     secondary.indexOf('id="rankingsHourlyRefresh"') < secondary.indexOf('id="rankingsAutoUpload"'),
     '每小时刷新开关应位于自动上传左侧'
   );
-  assert.match(secondary, /id="rankingsInstallLink"[^>]*aria-disabled="true"[^>]*>脚本安装暂时停用</);
+  assert.match(secondary, /id="rankingsInstallLink"[^>]*aria-disabled="true"[^>]*>正在读取配置…</);
   assert.match(secondary, /href="https:\/\/cdk\.hybgzs\.com\/"[^>]*>打开 CDK</);
   assert.doesNotMatch(html, />检查更新</);
   assert.doesNotMatch(html, />安装同步脚本</);
@@ -319,7 +330,7 @@ test('ranking sync controls use safe defaults and runtime site configuration', a
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
   const css = await readFile(new URL('../site/rankings.css', import.meta.url), 'utf8');
 
-  assert.match(html, /id="rankingsRefreshButton"[^>]*disabled[^>]*>↻ 刷新暂时停用</);
+  assert.match(html, /id="rankingsRefreshButton"[^>]*disabled[^>]*>↻ 正在读取配置…</);
   assert.match(html, /class="rankings-upload-toggle is-disabled"[^>]*aria-disabled="true"/);
   assert.match(html, /id="rankingsHourlyRefresh"[^>]*disabled/);
   assert.match(html, /class="btn btn-secondary is-disabled"[^>]*id="rankingsInstallLink"/);
@@ -336,6 +347,8 @@ test('ranking sync controls use safe defaults and runtime site configuration', a
   assert.match(source, /uploadButton\.disabled = !uploadEnabled/);
   assert.match(source, /hourlyToggle\.disabled = !captureEnabled/);
   assert.match(source, /toggle\.disabled = !autoUploadEnabled/);
+  assert.match(source, /loadSiteConfig\(\)/);
+  assert.match(source, /renderUploadControls\(\)/);
   assert.ok(html.includes('id="rankingsSummary"'), '云端榜单数据仍需保留');
 });
 

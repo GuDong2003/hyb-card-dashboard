@@ -27,9 +27,6 @@ await Promise.all([
     copyAsset('og.png'),
     copyAsset('farm-icon.svg'),
     copyAsset('legend-card-icon.svg'),
-    copyAsset('admin.html'),
-    copyAsset('admin.js'),
-    copyAsset('admin.css'),
     copyAsset('userscripts/hyb-card-dashboard-rankings.user.js')
 ]);
 

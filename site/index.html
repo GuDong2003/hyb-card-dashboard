@@ -461,11 +461,11 @@
         <nav class="topbar-nav" aria-label="页面切换">
             <button class="topbar-view-btn is-active" id="rankingsNavButton" type="button" data-view="rankings" onclick="setDashboardView('rankings')" aria-pressed="true">榜单统计</button>
             <button class="topbar-view-btn" type="button" data-view="calculator" onclick="setDashboardView('calculator')" aria-pressed="false">收益表</button>
+            <button class="topbar-view-btn is-hidden" id="adminNavButton" type="button" data-view="admin" onclick="setDashboardView('admin')" aria-pressed="false">管理</button>
             <a class="topbar-view-btn" href="https://gd3210.ccwu.cc/" target="_blank" rel="noopener noreferrer" aria-label="打开收益-简化" title="收益-简化">收益-简化</a>
         </nav>
         <nav class="topbar-actions" aria-label="项目链接与主题">
             <span class="visitor-count" id="rankingsVisitorCount" aria-live="polite" title="匿名浏览器或设备的累计近似数">累计访客：—</span>
-            <a class="admin-link" href="/admin" aria-label="打开管理页面" title="管理">管理</a>
             <a class="farm-link" href="https://hyb.gudong226.com/" target="_blank" rel="noreferrer" aria-label="打开 HYB Farm Dashboard" title="HYB Farm Dashboard">
                 <img src="/farm-icon.svg" alt="" width="20" height="20">
             </a>
@@ -716,9 +716,9 @@
         <section id="rankingsView" class="rankings-view dashboard-view is-hidden" aria-label="榜单统计">
         <section class="panel rankings-setup" id="rankingsSetup" aria-label="榜单同步设置">
             <div class="rankings-primary-actions">
-                <button class="btn" type="button" id="rankingsRefreshButton" title="榜单同步暂时停用" disabled>↻ 刷新暂时停用</button>
-                <button class="btn" type="button" id="rankingsUploadButton" title="榜单同步暂时停用" disabled>上传云端</button>
-                <div class="rankings-source-status" id="rankingsStatus" data-state="idle" aria-live="polite">榜单同步暂时停用</div>
+                <button class="btn" type="button" id="rankingsRefreshButton" title="正在读取配置…" disabled>↻ 正在读取配置…</button>
+                <button class="btn" type="button" id="rankingsUploadButton" title="正在读取配置…" disabled>上传云端</button>
+                <div class="rankings-source-status" id="rankingsStatus" data-state="idle" aria-live="polite">正在读取配置…</div>
                 <span class="rankings-upload-status" id="rankingsUploadStatus">榜单同步暂时停用；已有本地快照暂不可上传</span>
             </div>
             <div class="rankings-secondary-actions">
@@ -730,7 +730,7 @@
                     <span class="rankings-toggle-copy"><strong>自动上传（暂时停用）</strong><small>榜单同步暂时停用</small></span>
                     <span class="rankings-toggle-control"><input id="rankingsAutoUpload" type="checkbox" disabled><span class="rankings-toggle-track"></span></span>
                 </label>
-                <a class="btn btn-secondary is-disabled" id="rankingsInstallLink" aria-disabled="true" tabindex="-1">脚本安装暂时停用</a>
+                <a class="btn btn-secondary is-disabled" id="rankingsInstallLink" aria-disabled="true" tabindex="-1">正在读取配置…</a>
                 <a class="btn btn-secondary" href="https://cdk.hybgzs.com/" target="_blank" rel="noreferrer">打开 CDK</a>
             </div>
         </section>
@@ -904,6 +904,58 @@
 
     </section>
 </div>
+
+    <section id="adminView" class="dashboard-view is-hidden" aria-label="管理设置">
+        <section class="panel admin-panel" aria-labelledby="adminViewTitle">
+            <div class="admin-panel-header">
+                <div>
+                    <span class="admin-kicker">受保护入口</span>
+                    <h2 id="adminViewTitle">管理设置</h2>
+                    <p>仅用于控制站点访问、榜单抓取和云端上传开关。</p>
+                </div>
+                <span class="admin-session-badge is-hidden" id="adminSessionBadge">管理员已登录</span>
+            </div>
+
+            <div id="adminLoginPanel" class="admin-panel-section">
+                <form id="adminLoginForm" class="admin-form" autocomplete="off">
+                    <label class="admin-field" for="adminPassword">管理员密码
+                        <input id="adminPassword" type="password" autocomplete="current-password" required>
+                    </label>
+                    <div class="admin-actions">
+                        <button class="btn" id="adminLoginButton" type="submit">登录</button>
+                        <span class="admin-message" id="adminLoginMessage" role="status" aria-live="polite"></span>
+                    </div>
+                </form>
+            </div>
+
+            <div id="adminConfigPanel" class="admin-panel-section is-hidden">
+                <form id="adminConfigForm" autocomplete="off">
+                    <div class="admin-toggle-grid">
+                        <label class="admin-toggle-row">
+                            <span><strong>站点访问</strong><small>关闭后保留已有数据，只显示维护状态。</small></span>
+                            <input id="adminSiteEnabled" type="checkbox">
+                        </label>
+                        <label class="admin-toggle-row">
+                            <span><strong>榜单抓取</strong><small>关闭后页面和旧脚本都不能请求新榜单。</small></span>
+                            <input id="adminRankingCaptureEnabled" type="checkbox">
+                        </label>
+                        <label class="admin-toggle-row">
+                            <span><strong>云端上传</strong><small>关闭后提交接口不会访问 D1。</small></span>
+                            <input id="adminCloudUploadEnabled" type="checkbox">
+                        </label>
+                    </div>
+                    <label class="admin-field" for="adminMaintenanceMessage">维护提示
+                        <textarea id="adminMaintenanceMessage" maxlength="240" rows="3" placeholder="可选，例如：榜单同步维护中"></textarea>
+                    </label>
+                    <div class="admin-actions">
+                        <button class="btn" id="adminSaveButton" type="submit">保存配置</button>
+                        <button class="btn btn-secondary" id="adminLogoutButton" type="button">退出管理员模式</button>
+                        <span class="admin-message" id="adminConfigMessage" role="status" aria-live="polite"></span>
+                    </div>
+                </form>
+            </div>
+        </section>
+    </section>
 
 <script src="/stardust-rules.js"></script>
 <script src="/calculator-import.js"></script>

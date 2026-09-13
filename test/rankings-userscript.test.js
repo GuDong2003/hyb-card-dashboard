@@ -311,7 +311,7 @@ test('userscript does not schedule automatic retry state after a manual ordinary
 test('userscript update state changes the install link after a refresh response', async () => {
   const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
-  assert.match(html, /id="rankingsInstallLink"[^>]*aria-disabled="true"[^>]*>脚本安装暂时停用</);
+  assert.match(html, /id="rankingsInstallLink"[^>]*aria-disabled="true"[^>]*>正在读取配置…</);
   assert.doesNotMatch(html, /rankingsScriptUpdateNotice|rankingsScriptUpdateLink/);
   assert.match(source, /markUserscriptVersion\(data\.scriptVersion\)/);
   assert.match(source, /userscriptUpdateError\(data\.scriptVersion\)/);

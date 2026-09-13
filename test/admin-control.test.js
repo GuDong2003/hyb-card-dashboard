@@ -88,21 +88,24 @@ function enabledConfig() {
   });
 }
 
-test('admin route is isolated from the normal homepage and serves only /admin', async () => {
+test('admin route serves the shared dashboard shell and keeps admin.html hidden', async () => {
+  const requests = [];
   const assets = {
     async fetch(request) {
       const pathname = new URL(request.url).pathname;
-      return new Response(pathname === '/admin' ? 'ADMIN_PAGE' : 'HOME_PAGE');
+      requests.push(pathname);
+      return new Response(pathname === '/' ? 'DASHBOARD_PAGE' : 'UNEXPECTED_ASSET');
     }
   };
 
   const admin = await worker.fetch(new Request('https://card.test/admin'), { ASSETS: assets });
   const adminSlash = await worker.fetch(new Request('https://card.test/admin/'), { ASSETS: assets });
-  const home = await worker.fetch(new Request('https://card.test/'), { ASSETS: assets });
+  const adminHtml = await worker.fetch(new Request('https://card.test/admin.html'), { ASSETS: assets });
 
-  assert.equal(await admin.text(), 'ADMIN_PAGE');
-  assert.equal(await adminSlash.text(), 'ADMIN_PAGE');
-  assert.equal(await home.text(), 'HOME_PAGE');
+  assert.equal(await admin.text(), 'DASHBOARD_PAGE');
+  assert.equal(await adminSlash.text(), 'DASHBOARD_PAGE');
+  assert.equal(adminHtml.status, 404);
+  assert.deepEqual(requests, ['/', '/']);
 });
 
 test('static admin aliases run through the worker before SPA fallback', async () => {
@@ -140,11 +143,12 @@ test('worker routes site configuration APIs before the asset SPA fallback', asyn
   assert.equal(assetCalls, 0);
 });
 
-test('build includes the isolated admin page assets', async () => {
+test('build keeps the admin view inside the shared dashboard asset', async () => {
   const build = await readFile(new URL('../scripts/build.mjs', import.meta.url), 'utf8');
-  assert.match(build, /copyAsset\('admin\.html'\)/);
-  assert.match(build, /copyAsset\('admin\.js'\)/);
-  assert.match(build, /copyAsset\('admin\.css'\)/);
+  assert.match(build, /copyAsset\('index\.html'\)/);
+  assert.doesNotMatch(build, /copyAsset\('admin\.html'\)/);
+  assert.doesNotMatch(build, /copyAsset\('admin\.js'\)/);
+  assert.doesNotMatch(build, /copyAsset\('admin\.css'\)/);
 });
 
 test('ranking capture controls use the runtime site config instead of a permanent source-code ban', async () => {

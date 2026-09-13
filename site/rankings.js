@@ -6,6 +6,12 @@
     const BRIDGE_RESPONSE = 'HYB_CARD_RANKINGS_RESPONSE';
     const BRIDGE_TIMEOUT_MS = 22000;
     const SITE_CONFIG_ENDPOINT = '/api/site-config';
+    const ADMIN_ROUTE_PATHS = new Set(['/admin', '/admin/']);
+    const ADMIN_LOGIN_ENDPOINT = '/api/admin/login';
+    const ADMIN_SESSION_ENDPOINT = '/api/admin/session';
+    const ADMIN_CONFIG_ENDPOINT = '/api/admin/config';
+    const ADMIN_LOGOUT_ENDPOINT = '/api/admin/logout';
+    const ADMIN_CSRF_HEADER = 'X-HYB-Admin-CSRF';
     const DEFAULT_SITE_CONFIG = Object.freeze({
         siteEnabled: true,
         rankingCaptureEnabled: false,
@@ -142,8 +148,198 @@
                 siteConfigRequest = null;
                 renderUserscriptLink();
                 renderUploadControls();
+                renderAdminPanel();
             });
         return siteConfigRequest;
+    }
+
+    async function adminRequestJson(path, options = {}) {
+        const response = await fetch(apiUrl(path), {
+            credentials: 'same-origin',
+            cache: 'no-store',
+            ...options,
+            headers: {
+                accept: 'application/json',
+                ...(options.body ? { 'content-type': 'application/json' } : {}),
+                ...(options.headers || {})
+            }
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok || body.ok === false) {
+            const error = new Error(body.message || body.error || `HTTP ${response.status}`);
+            error.status = response.status;
+            error.code = body.error || '';
+            error.retryAfter = Number(response.headers.get('retry-after')) || 0;
+            throw error;
+        }
+        return body;
+    }
+
+    function clearAdminSession(message = '') {
+        state.admin.authenticated = false;
+        state.admin.csrfToken = '';
+        state.admin.expiresAt = 0;
+        state.admin.busy = false;
+        state.admin.loginMessage = message;
+        state.admin.configMessage = '';
+    }
+
+    function adminErrorMessage(error, fallback) {
+        if (Number(error && error.status) === 429 && Number(error.retryAfter) > 0) {
+            return `登录暂时锁定，请约 ${Math.ceil(Number(error.retryAfter) / 60)} 分钟后重试。`;
+        }
+        if (Number(error && error.status) === 503) return '管理员服务暂时不可用，请稍后重试。';
+        return fallback;
+    }
+
+    async function restoreAdminSession() {
+        if (!state.isAdminRoute) return false;
+        state.admin.busy = true;
+        renderAdminPanel();
+        try {
+            const data = await adminRequestJson(ADMIN_SESSION_ENDPOINT);
+            state.admin.authenticated = true;
+            state.admin.csrfToken = String(data.csrfToken || '');
+            state.admin.expiresAt = Number(data.expiresAt) || 0;
+            state.admin.busy = false;
+            state.admin.loginMessage = '';
+            state.admin.configMessage = '';
+            if (data.config) state.siteConfig = normalizeSiteConfig(data.config);
+            renderAdminPanel();
+            renderUploadControls();
+            return true;
+        } catch (_) {
+            clearAdminSession();
+            renderAdminPanel();
+            return false;
+        }
+    }
+
+    async function loginAdmin(password) {
+        if (!state.isAdminRoute || state.admin.busy) return false;
+        state.admin.busy = true;
+        state.admin.loginMessage = '正在登录…';
+        state.admin.configMessage = '';
+        renderAdminPanel();
+        try {
+            const data = await adminRequestJson(ADMIN_LOGIN_ENDPOINT, {
+                method: 'POST',
+                body: JSON.stringify({ password: String(password || '') })
+            });
+            state.admin.authenticated = true;
+            state.admin.csrfToken = String(data.csrfToken || '');
+            state.admin.expiresAt = Number(data.expiresAt) || 0;
+            state.admin.busy = false;
+            state.admin.loginMessage = '';
+            state.admin.configMessage = '已登录。';
+            const passwordInput = $('#adminPassword');
+            if (passwordInput) passwordInput.value = '';
+            await loadSiteConfig();
+            renderAdminPanel();
+            return true;
+        } catch (error) {
+            state.admin.busy = false;
+            state.admin.loginMessage = adminErrorMessage(error, '管理员密码错误或登录失败。');
+            renderAdminPanel();
+            return false;
+        }
+    }
+
+    async function saveAdminConfig() {
+        if (!state.isAdminRoute || !state.admin.authenticated || !state.admin.csrfToken || state.admin.busy) return false;
+        const payload = {
+            siteEnabled: Boolean($('#adminSiteEnabled') && $('#adminSiteEnabled').checked),
+            rankingCaptureEnabled: Boolean($('#adminRankingCaptureEnabled') && $('#adminRankingCaptureEnabled').checked),
+            cloudUploadEnabled: Boolean($('#adminCloudUploadEnabled') && $('#adminCloudUploadEnabled').checked),
+            maintenanceMessage: String($('#adminMaintenanceMessage') && $('#adminMaintenanceMessage').value || '').slice(0, 240)
+        };
+        state.admin.busy = true;
+        state.admin.configMessage = '正在保存…';
+        renderAdminPanel();
+        try {
+            const data = await adminRequestJson(ADMIN_CONFIG_ENDPOINT, {
+                method: 'POST',
+                headers: { [ADMIN_CSRF_HEADER]: state.admin.csrfToken },
+                body: JSON.stringify(payload)
+            });
+            state.siteConfig = normalizeSiteConfig(data.config);
+            state.admin.busy = false;
+            state.admin.configMessage = '配置已保存。';
+            renderUploadControls();
+            renderAdminPanel();
+            return true;
+        } catch (error) {
+            if (Number(error && error.status) === 401 || Number(error && error.status) === 403) {
+                clearAdminSession('管理员会话已失效，请重新登录。');
+            } else {
+                state.admin.busy = false;
+                state.admin.configMessage = '配置保存失败，请稍后重试。';
+            }
+            renderAdminPanel();
+            return false;
+        }
+    }
+
+    async function logoutAdmin() {
+        const csrfToken = state.admin.csrfToken;
+        if (csrfToken) {
+            try {
+                await adminRequestJson(ADMIN_LOGOUT_ENDPOINT, {
+                    method: 'POST',
+                    headers: { [ADMIN_CSRF_HEADER]: csrfToken }
+                });
+            } catch (_) {
+                // Clear the local view even when the session has already expired.
+            }
+        }
+        clearAdminSession('已退出管理员模式。');
+        renderAdminPanel();
+    }
+
+    function renderAdminPanel() {
+        const adminButton = $('#adminNavButton');
+        if (adminButton) adminButton.classList.toggle('is-hidden', !state.isAdminRoute);
+        if (!state.isAdminRoute) return;
+
+        const loginPanel = $('#adminLoginPanel');
+        const configPanel = $('#adminConfigPanel');
+        const sessionBadge = $('#adminSessionBadge');
+        const loginButton = $('#adminLoginButton');
+        const saveButton = $('#adminSaveButton');
+        const logoutButton = $('#adminLogoutButton');
+        const passwordInput = $('#adminPassword');
+        const loginMessage = $('#adminLoginMessage');
+        const configMessage = $('#adminConfigMessage');
+        const authenticated = Boolean(state.admin && state.admin.authenticated);
+        const busy = Boolean(state.admin && state.admin.busy);
+
+        if (loginPanel) loginPanel.classList.toggle('is-hidden', authenticated);
+        if (configPanel) configPanel.classList.toggle('is-hidden', !authenticated);
+        if (sessionBadge) sessionBadge.classList.toggle('is-hidden', !authenticated);
+        if (loginButton) loginButton.disabled = busy;
+        if (saveButton) saveButton.disabled = busy;
+        if (logoutButton) logoutButton.disabled = busy;
+        if (passwordInput) passwordInput.disabled = busy;
+        if (loginMessage) {
+            loginMessage.textContent = String(state.admin.loginMessage || '');
+            loginMessage.classList.toggle('is-error', Boolean(state.admin.loginMessage && !authenticated));
+        }
+        if (configMessage) {
+            configMessage.textContent = String(state.admin.configMessage || '');
+            configMessage.classList.toggle('is-error', Boolean(state.admin.configMessage && state.admin.configMessage.includes('失败')));
+            configMessage.classList.toggle('is-success', Boolean(state.admin.configMessage && !state.admin.configMessage.includes('失败')));
+        }
+        if (!authenticated) return;
+        const siteEnabled = $('#adminSiteEnabled');
+        const captureEnabled = $('#adminRankingCaptureEnabled');
+        const uploadEnabled = $('#adminCloudUploadEnabled');
+        const maintenanceMessage = $('#adminMaintenanceMessage');
+        if (siteEnabled) siteEnabled.checked = state.siteConfig.siteEnabled;
+        if (captureEnabled) captureEnabled.checked = state.siteConfig.rankingCaptureEnabled;
+        if (uploadEnabled) uploadEnabled.checked = state.siteConfig.cloudUploadEnabled;
+        if (maintenanceMessage && document.activeElement !== maintenanceMessage) {
+            maintenanceMessage.value = state.siteConfig.maintenanceMessage;
+        }
     }
 
     function pinSeasonKey(seasonId) {
@@ -254,6 +450,7 @@
 
     const initialPinnedState = loadInitialPinnedState();
     const state = {
+        isAdminRoute: ADMIN_ROUTE_PATHS.has(window.location.pathname),
         view: 'calculator',
         board: 'users',
         period: 'total',
@@ -261,6 +458,14 @@
         sortDirection: 'desc',
         settings: loadSettings(),
         siteConfig: { ...DEFAULT_SITE_CONFIG },
+        admin: {
+            authenticated: false,
+            csrfToken: '',
+            expiresAt: 0,
+            busy: false,
+            loginMessage: '',
+            configMessage: ''
+        },
         latest: null,
         seasonId: '',
         pinnedSeasonId: initialPinnedState.seasonId,
@@ -2515,20 +2720,27 @@
     }
 
     function setDashboardView(view) {
-        state.view = view === 'rankings' ? 'rankings' : 'calculator';
+        state.view = view === 'admin' && state.isAdminRoute
+            ? 'admin'
+            : view === 'calculator'
+                ? 'calculator'
+                : 'rankings';
         if (state.view !== 'rankings') {
             clearRankingsRetry();
             closeTrendModal();
         }
         const calculator = $('#calculatorView');
         const rankings = $('#rankingsView');
+        const admin = $('#adminView');
         if (calculator) calculator.classList.toggle('is-hidden', state.view !== 'calculator');
         if (rankings) rankings.classList.toggle('is-hidden', state.view !== 'rankings');
+        if (admin) admin.classList.toggle('is-hidden', state.view !== 'admin');
         document.querySelectorAll('[data-view]').forEach((button) => {
             const active = button.dataset.view === state.view;
             button.classList.toggle('is-active', active);
             button.setAttribute('aria-pressed', String(active));
         });
+        renderAdminPanel();
         if (state.view === 'rankings' && !state.loaded) loadRankingsView({ refresh: false });
     }
 
@@ -3409,6 +3621,18 @@
     }
 
     function bindControls() {
+        $('#adminLoginForm')?.addEventListener('submit', (event) => {
+            event.preventDefault();
+            const password = $('#adminPassword');
+            void loginAdmin(password ? password.value : '');
+        });
+        $('#adminConfigForm')?.addEventListener('submit', (event) => {
+            event.preventDefault();
+            void saveAdminConfig();
+        });
+        $('#adminLogoutButton')?.addEventListener('click', () => {
+            void logoutAdmin();
+        });
         document.querySelectorAll('[data-rank-board]').forEach((button) => {
             button.addEventListener('click', () => {
                 state.board = button.dataset.rankBoard;
@@ -3618,10 +3842,11 @@
         renderTrendPeriodControl();
         renderUploadControls();
         renderRankingBoostNotice();
-        setDashboardView('rankings');
+        renderAdminPanel();
+        setDashboardView(state.isAdminRoute ? 'admin' : 'rankings');
         void loadSiteConfig().then(() => {
-            render();
-            configureHourlyRefresh({ runNow: true, delayMs: 600 });
+            if (state.isAdminRoute) void restoreAdminSession();
+            else configureHourlyRefresh({ runNow: true, delayMs: 600 });
         });
     }
 
