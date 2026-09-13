@@ -8,6 +8,7 @@ import {
 } from '../src/rankings-daily.js';
 import { scheduled } from '../src/index.js';
 import { currentSortValues } from '../src/rankings-user-store.js';
+import { ADMIN_SITE_CONFIG_KEY, DEFAULT_SITE_CONFIG } from '../src/rankings-worker.js';
 
 class FakeStatement {
   constructor(db, sql) {
@@ -98,6 +99,29 @@ class FakeDailyDb {
     return { success: true, meta: { changes: 1 } };
   }
 }
+
+test('paused ranking sync skips scheduled maintenance and does not touch D1', async () => {
+  let d1Calls = 0;
+  const environment = {
+    RANKINGS_HOME_CACHE: {
+      async get(key) {
+        assert.equal(key, ADMIN_SITE_CONFIG_KEY);
+        return JSON.stringify({ ...DEFAULT_SITE_CONFIG, rankingCaptureEnabled: false, cloudUploadEnabled: false });
+      }
+    },
+    RANKINGS_DB: {
+      prepare() {
+        d1Calls += 1;
+        throw new Error('paused sync must not run maintenance');
+      }
+    }
+  };
+
+  const result = await scheduled({ scheduledTime: Date.parse('2026-08-25T04:05:00+08:00') }, environment);
+
+  assert.deepEqual(result, { skipped: true, reason: 'sync_disabled' });
+  assert.equal(d1Calls, 0);
+});
 
 class CompactMaintenanceStatement {
   constructor(db, sql) {

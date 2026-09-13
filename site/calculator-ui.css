@@ -1910,6 +1910,7 @@ body {
 .farm-link,
 .github-link,
 .theme-toggle,
+.admin-link,
 .visitor-count {
     display: inline-grid;
     height: 34px;
@@ -1927,6 +1928,13 @@ body {
 .github-link,
 .theme-toggle {
     width: 34px;
+}
+
+.admin-link {
+    padding: 0 10px;
+    color: var(--muted);
+    font-size: .76rem;
+    font-weight: 750;
 }
 
 .visitor-count {
@@ -1964,7 +1972,8 @@ body {
 
 .farm-link:hover,
 .github-link:hover,
-.theme-toggle:hover {
+.theme-toggle:hover,
+.admin-link:hover {
     background: var(--icon-hover);
 }
 

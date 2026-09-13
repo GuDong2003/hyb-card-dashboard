@@ -292,14 +292,18 @@ test('missing or malformed visitor ids are rejected before KV writes', async () 
   assert.equal(environment.RANKINGS_HOME_CACHE.puts.length, 0);
 });
 
-test('wrangler config binds and migrates the visitor counter durable object', async () => {
+test('wrangler config binds and migrates the visitor counter and admin durable objects', async () => {
   const config = JSON.parse(await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));
   const entrypoint = await readFile(new URL('../src/index.js', import.meta.url), 'utf8');
-  assert.deepEqual(config.durable_objects.bindings, [{
-    name: 'VISITOR_COUNTER',
-    class_name: 'VisitorCounter'
-  }]);
+  assert.ok(config.durable_objects.bindings.some((binding) => (
+    binding.name === 'VISITOR_COUNTER' && binding.class_name === 'VisitorCounter'
+  )));
+  assert.ok(config.durable_objects.bindings.some((binding) => (
+    binding.name === 'ADMIN_AUTH' && binding.class_name === 'AdminAuth'
+  )));
   assert.ok(config.migrations.some((migration) => (
     migration.new_sqlite_classes || []).includes('VisitorCounter')));
-  assert.match(entrypoint, /export \{ VisitorCounter \}/);
+  assert.ok(config.migrations.some((migration) => (
+    migration.new_sqlite_classes || []).includes('AdminAuth')));
+  assert.match(entrypoint, /export \{ AdminAuth, VisitorCounter \}/);
 });

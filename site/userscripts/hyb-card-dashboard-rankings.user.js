@@ -13,15 +13,25 @@
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener
 // @connect      cdk.hybgzs.com
+// @connect      card.gudong226.com
 // ==/UserScript==
 
 (function () {
   'use strict';
 
   const SCRIPT_VERSION = '1.4.0';
-  const SCRIPT_DISABLED = true;
   const CARD_ORIGIN = 'https://card.gudong226.com';
   const CDK_ORIGIN = 'https://cdk.hybgzs.com';
+  const SITE_CONFIG_URL = `${CARD_ORIGIN}/api/site-config`;
+  // The admin switch must take effect on the next capture attempt.
+  const SITE_CONFIG_CACHE_MS = 0;
+  const DEFAULT_SITE_CONFIG = Object.freeze({
+    siteEnabled: true,
+    rankingCaptureEnabled: false,
+    cloudUploadEnabled: false,
+    maintenanceMessage: '',
+    updatedAt: 0
+  });
   const SOURCE_APIS = Object.freeze({
     global: 'https://cdk.hybgzs.com/api/cards/leaderboard?scope=global',
     friends: 'https://cdk.hybgzs.com/api/cards/leaderboard?scope=friends'
@@ -48,6 +58,9 @@
   const RELAY_OWNER_ID = randomId('cdk-tab');
 
   let inFlight = null;
+  let siteConfigCache = null;
+  let siteConfigCachedAt = 0;
+  let siteConfigRequest = null;
   const relayPending = new Map();
 
   function randomId(prefix) {
@@ -64,6 +77,103 @@
     const error = new Error(message);
     Object.assign(error, details);
     return error;
+  }
+
+  function normalizeSiteConfig(value) {
+    const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    return {
+      siteEnabled: typeof source.siteEnabled === 'boolean' ? source.siteEnabled : DEFAULT_SITE_CONFIG.siteEnabled,
+      rankingCaptureEnabled: typeof source.rankingCaptureEnabled === 'boolean' ? source.rankingCaptureEnabled : DEFAULT_SITE_CONFIG.rankingCaptureEnabled,
+      cloudUploadEnabled: typeof source.cloudUploadEnabled === 'boolean' ? source.cloudUploadEnabled : DEFAULT_SITE_CONFIG.cloudUploadEnabled,
+      maintenanceMessage: typeof source.maintenanceMessage === 'string' ? source.maintenanceMessage.slice(0, 240) : DEFAULT_SITE_CONFIG.maintenanceMessage,
+      updatedAt: Number.isFinite(Number(source.updatedAt)) && Number(source.updatedAt) > 0
+        ? Math.floor(Number(source.updatedAt))
+        : DEFAULT_SITE_CONFIG.updatedAt
+    };
+  }
+
+  function syncDisabledError(message = '榜单同步暂时停用') {
+    return makeError(message, { code: 'sync_disabled', retryable: false });
+  }
+
+  function parseSiteConfigPayload(payload, responseText, status) {
+    const numericStatus = Number(status) || 0;
+    if (numericStatus < 200 || numericStatus >= 300) {
+      throw syncDisabledError('榜单同步配置暂时不可用');
+    }
+    let data = payload;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      try {
+        data = JSON.parse(String(responseText || ''));
+      } catch (_) {
+        throw syncDisabledError('榜单同步配置暂时不可用');
+      }
+    }
+    if (!data || data.ok !== true) throw syncDisabledError('榜单同步配置暂时不可用');
+    return normalizeSiteConfig(data.config);
+  }
+
+  function requestSiteConfig() {
+    const now = Date.now();
+    if (siteConfigCache && now - siteConfigCachedAt < SITE_CONFIG_CACHE_MS) {
+      return Promise.resolve(siteConfigCache);
+    }
+    if (siteConfigRequest) return siteConfigRequest;
+
+    siteConfigRequest = new Promise((resolve, reject) => {
+      const finish = (callback, value) => callback(value);
+      if (typeof GM_xmlhttpRequest === 'function') {
+        GM_xmlhttpRequest({
+          method: 'GET',
+          url: SITE_CONFIG_URL,
+          headers: { accept: 'application/json' },
+          responseType: 'json',
+          timeout: REQUEST_TIMEOUT_MS,
+          onload(response) {
+            try {
+              finish(resolve, parseSiteConfigPayload(response.response, response.responseText, response.status));
+            } catch (error) {
+              finish(reject, error);
+            }
+          },
+          onerror() {
+            finish(reject, syncDisabledError('榜单同步配置暂时不可用'));
+          },
+          ontimeout() {
+            finish(reject, syncDisabledError('榜单同步配置暂时不可用'));
+          }
+        });
+        return;
+      }
+      if (location.origin !== CARD_ORIGIN || typeof fetch !== 'function') {
+        finish(reject, syncDisabledError('榜单同步配置暂时不可用'));
+        return;
+      }
+      fetch(SITE_CONFIG_URL, {
+        method: 'GET',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { accept: 'application/json' }
+      }).then(async (response) => {
+        const responseText = await response.text();
+        return parseSiteConfigPayload(null, responseText, response.status);
+      }).then(resolve, () => reject(syncDisabledError('榜单同步配置暂时不可用')));
+    }).then((config) => {
+      siteConfigCache = config;
+      siteConfigCachedAt = Date.now();
+      return config;
+    }).finally(() => {
+      siteConfigRequest = null;
+    });
+    return siteConfigRequest;
+  }
+
+  async function ensureCaptureEnabled() {
+    const config = await requestSiteConfig();
+    if (!config.siteEnabled || !config.rankingCaptureEnabled) {
+      throw syncDisabledError(config.maintenanceMessage || '榜单同步暂时停用');
+    }
+    return config;
   }
 
   function readHeaderValue(headers, name) {
@@ -130,6 +240,7 @@
 
   function friendlyError(error) {
     const status = Number(error && error.status);
+    if (error && error.code === 'sync_disabled') return String(error.message || '榜单同步暂时停用');
     if (error && error.name === 'SourceCooldown') return 'CDK 请求处于冷却期，请稍后再试';
     if (error && (error.blocked || error.kind === 'protected')) return 'CDK 返回限制页或盾页，已暂停自动请求';
     if (status === 401 || status === 403) return '请先登录 cdk.hybgzs.com 后再获取榜单';
@@ -281,7 +392,7 @@
   }
 
   function recordSourceFailure(error, options = {}) {
-    if (!sharedStorageAvailable() || (error && (error.name === 'SourceCooldown' || error.name === 'ScriptUpdateRequired'))) return;
+    if (!sharedStorageAvailable() || (error && (error.name === 'SourceCooldown' || error.name === 'ScriptUpdateRequired' || error.code === 'sync_disabled'))) return;
     const manual = Boolean(options.manual);
     const finalSets = Boolean(options.finalSets);
     const setsFinalRetry = Boolean(options.setsFinalRetry);
@@ -457,6 +568,7 @@
       }
       else pending.reject(Object.assign(new Error(value.error || 'CDK 榜单请求失败'), {
         status: value.status,
+        code: String(value.errorCode || value.code || ''),
         scriptVersion: String(value.scriptVersion || ''),
         blocked: Boolean(value.blocked),
         cooldown: Boolean(value.cooldown),
@@ -497,6 +609,7 @@
     const finalSets = Boolean(options.finalSets);
     const setsFinalRetry = Boolean(options.setsFinalRetry);
     inFlight = (async () => {
+      await ensureCaptureEnabled();
       claimSourceRequest({ manual, finalSets, setsFinalRetry });
       try {
         const relay = requestWithCdkRelay();
@@ -549,6 +662,8 @@
           ok: false,
           scriptVersion: SCRIPT_VERSION,
           status: Number(error && error.status) || 0,
+          errorCode: String(error && (error.code || error.errorCode) || ''),
+          code: String(error && (error.code || error.errorCode) || ''),
           blocked: Boolean(error && error.blocked),
           cooldown: Boolean(error && error.cooldown),
           retryable: !error || error.retryable !== false,
@@ -570,6 +685,7 @@
       const confirmedClaim = typeof GM_getValue === 'function' ? GM_getValue(RELAY_CLAIM_KEY, null) : null;
       if (confirmedClaim && confirmedClaim.requestId === value.requestId && confirmedClaim.ownerId !== RELAY_OWNER_ID) return;
       try {
+        await ensureCaptureEnabled();
         const sources = Array.isArray(value.sources) && value.sources.length
           ? value.sources
           : SOURCE_ENTRIES;
@@ -598,6 +714,8 @@
           ok: false,
           scriptVersion: SCRIPT_VERSION,
           status: Number(error && error.status) || 0,
+          errorCode: String(error && (error.code || error.errorCode) || ''),
+          code: String(error && (error.code || error.errorCode) || ''),
           error: friendlyError(error),
           blocked: Boolean(error && error.blocked),
           cooldown: Boolean(error && error.cooldown),
@@ -609,8 +727,6 @@
     });
     GM_setValue(RELAY_READY_KEY, { readyAt: Date.now(), origin: CDK_ORIGIN, scriptVersion: SCRIPT_VERSION });
   }
-
-  if (SCRIPT_DISABLED) return;
 
   if (location.origin === CARD_ORIGIN) startCardBridge();
   else if (location.origin === CDK_ORIGIN) startCdkRelay();

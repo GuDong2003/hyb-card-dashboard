@@ -83,6 +83,17 @@ test('shows the visitor count immediately before the Farm link', async () => {
   assert.match(actions, /累计访客：—/);
 });
 
+test('shows a direct admin entry in the top bar without exposing admin controls on the homepage', async () => {
+  const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
+  const actionsStart = html.indexOf('<nav class="topbar-actions"');
+  const actionsEnd = html.indexOf('</nav>', actionsStart);
+  assert.ok(actionsStart >= 0 && actionsEnd > actionsStart);
+  const actions = html.slice(actionsStart, actionsEnd);
+  assert.match(actions, /<a class="admin-link" href="\/admin"[^>]*>管理<\/a>/);
+  assert.ok(actions.indexOf('class="admin-link"') < actions.indexOf('class="farm-link"'));
+  assert.doesNotMatch(html, /id="adminConfigPanel"/);
+});
+
 test('rankings client loads and displays anonymous visitor usage', async () => {
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
   assert.match(source, /\/api\/rankings\/usage/);
@@ -303,7 +314,7 @@ test('rankings setup keeps script controls aligned to the right', async () => {
   assert.match(css, /\.rankings-secondary-actions \.btn\.is-update-required\s*\{[\s\S]*border-color:\s*var\(--amber\)/);
 });
 
-test('temporarily disables all ranking sync controls without hiding cloud data', async () => {
+test('ranking sync controls use safe defaults and runtime site configuration', async () => {
   const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
   const css = await readFile(new URL('../site/rankings.css', import.meta.url), 'utf8');
@@ -313,25 +324,31 @@ test('temporarily disables all ranking sync controls without hiding cloud data',
   assert.match(html, /id="rankingsHourlyRefresh"[^>]*disabled/);
   assert.match(html, /class="btn btn-secondary is-disabled"[^>]*id="rankingsInstallLink"/);
   assert.match(html, /id="rankingsInstallLink"[^>]*tabindex="-1"/);
-  assert.match(source, /const RANKINGS_REFRESH_DISABLED\s*=\s*true/);
+  assert.match(source, /const DEFAULT_SITE_CONFIG = Object\.freeze\(\{[\s\S]*rankingCaptureEnabled: false[\s\S]*cloudUploadEnabled: false/);
+  assert.match(source, /function loadSiteConfig\(\)/);
+  assert.doesNotMatch(source, /const RANKINGS_REFRESH_DISABLED\s*=\s*true/);
   assert.match(source, /function createRefreshDisabledError\(\)/);
   assert.match(source, /code\s*=\s*'refresh_disabled'/);
-  assert.match(source, /if \(RANKINGS_REFRESH_DISABLED\) return Promise\.reject\(createRefreshDisabledError\(\)\)/);
-  assert.match(source, /if \(RANKINGS_REFRESH_DISABLED\) \{[\s\S]*?clearRankingsRetry\(\);[\s\S]*?return false;/);
+  assert.match(source, /if \(!rankingCaptureEnabled\(\)\) return Promise\.reject\(createRefreshDisabledError\(\)\)/);
+  assert.match(source, /if \(!rankingCaptureEnabled\(\)\) \{[\s\S]*?clearRankingsRetry\(\);[\s\S]*?return false;/);
   assert.match(css, /\.rankings-upload-toggle\.is-disabled/);
   assert.match(css, /\.rankings-secondary-actions \.btn\.is-disabled/);
-  assert.match(source, /uploadButton\.disabled = RANKINGS_REFRESH_DISABLED/);
-  assert.match(source, /toggle\.disabled = RANKINGS_REFRESH_DISABLED/);
+  assert.match(source, /uploadButton\.disabled = !uploadEnabled/);
+  assert.match(source, /hourlyToggle\.disabled = !captureEnabled/);
+  assert.match(source, /toggle\.disabled = !autoUploadEnabled/);
   assert.ok(html.includes('id="rankingsSummary"'), '云端榜单数据仍需保留');
 });
 
-test('refresh-disabled bridge requests reject before posting to the userscript', async () => {
+test('runtime-disabled bridge requests reject before posting to the userscript', async () => {
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
   const requestBridgeSnapshot = extractFunction(source, 'requestBridgeSnapshot');
   const postedMessages = [];
   const context = {
-    RANKINGS_REFRESH_DISABLED: true,
-    state: { bridgeRequest: null },
+    state: {
+      bridgeRequest: null,
+      siteConfig: { siteEnabled: true, rankingCaptureEnabled: false, cloudUploadEnabled: false }
+    },
+    rankingCaptureEnabled() { return false; },
     createRefreshDisabledError() {
       const error = new Error('榜单刷新暂时停用');
       error.code = 'refresh_disabled';
@@ -869,7 +886,7 @@ test('rankings client uses refresh and cloud upload labels', async () => {
   const source = await readFile(new URL('../site/rankings.js', import.meta.url), 'utf8');
   assert.match(source, /↻ 刷新暂时停用/);
   assert.match(source, /上传云端/);
-  assert.match(source, /RANKINGS_REFRESH_DISABLED\s*\?\s*'↻ 刷新暂时停用'/);
+  assert.match(source, /!rankingCaptureEnabled\(\)\s*\?\s*'↻ 刷新暂时停用'/);
 });
 
 test('ranking upload keeps current observations but strips raw payload fields', async () => {

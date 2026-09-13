@@ -7,6 +7,49 @@ const CACHEABLE_PATHS = new Set([
   '/api/rankings/events'
 ]);
 
+const PURGE_BOARDS = Object.freeze(['users', 'epic', 'spend', 'sets', 'luck']);
+const PURGE_PERIODS = Object.freeze(['today', 'week', 'month', 'total']);
+const PURGE_LIMITS = Object.freeze([50, 100]);
+
+export async function purgeRankingsResponseCaches(
+  request,
+  cacheApi = globalThis.caches
+) {
+  const cache = cacheApi && cacheApi.default;
+  if (!cache || typeof cache.delete !== 'function') return;
+
+  const origin = new URL(request.url).origin;
+  const urls = [
+    new URL('/api/rankings/home', origin).href,
+    new URL('/api/rankings/latest', origin).href
+  ];
+  for (const board of PURGE_BOARDS) {
+    for (const period of PURGE_PERIODS) {
+      const sort = board === 'luck' ? 'probability' : 'legend';
+      for (const limit of PURGE_LIMITS) {
+        const url = new URL('/api/rankings/leaderboard', origin);
+        url.search = new URLSearchParams({
+          board,
+          period,
+          sort,
+          direction: 'desc',
+          limit: String(limit),
+          pinned: ''
+        }).toString();
+        urls.push(url.href);
+      }
+    }
+  }
+
+  await Promise.all(urls.map(async (url) => {
+    try {
+      await cache.delete(new Request(url, { method: 'GET' }));
+    } catch (_) {
+      // Cache invalidation is best effort and must not fail an accepted upload.
+    }
+  }));
+}
+
 export async function fetchWithRankingsCache(
   request,
   env,

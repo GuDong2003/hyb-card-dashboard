@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
-import { handleRankingsRequest } from '../src/rankings-worker.js';
+import { ADMIN_SITE_CONFIG_KEY, handleRankingsRequest } from '../src/rankings-worker.js';
 import {
   COMPACT_BOARD_KEYS,
   USER_CURRENT_COLUMNS,
@@ -108,7 +108,18 @@ class MemoryKv {
 }
 
 function compactEnv() {
-  return { RANKINGS_DB: new CompactD1() };
+  return {
+    RANKINGS_DB: new CompactD1(),
+    RANKINGS_HOME_CACHE: new MemoryKv({
+      'admin:site-config:v1': JSON.stringify({
+        siteEnabled: true,
+        rankingCaptureEnabled: true,
+        cloudUploadEnabled: true,
+        maintenanceMessage: '',
+        updatedAt: 0
+      })
+    })
+  };
 }
 
 function publishedHomePayload() {
@@ -285,7 +296,15 @@ test('published home and latest snapshots work without a D1 binding', async () =
 
 test('accepted snapshots publish one shared home payload to KV', async () => {
   const environment = compactEnv();
-  environment.RANKINGS_HOME_CACHE = new MemoryKv();
+  environment.RANKINGS_HOME_CACHE = new MemoryKv({
+    [ADMIN_SITE_CONFIG_KEY]: JSON.stringify({
+      siteEnabled: true,
+      rankingCaptureEnabled: true,
+      cloudUploadEnabled: true,
+      maintenanceMessage: '',
+      updatedAt: 0
+    })
+  });
   seedSeason(environment, 10_000);
   const response = await postSnapshot(environment, snapshotAt(10_000));
   assert.equal(response.status, 200);

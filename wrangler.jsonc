@@ -26,6 +26,10 @@
       {
         "name": "VISITOR_COUNTER",
         "class_name": "VisitorCounter"
+      },
+      {
+        "name": "ADMIN_AUTH",
+        "class_name": "AdminAuth"
       }
     ]
   },
@@ -33,6 +37,10 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["VisitorCounter"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["AdminAuth"]
     }
   ],
   "routes": [

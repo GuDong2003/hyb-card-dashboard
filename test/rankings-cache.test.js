@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fetchWithRankingsCache } from '../src/rankings-cache.js';
+import { fetchWithRankingsCache, purgeRankingsResponseCaches } from '../src/rankings-cache.js';
 
 class FakeCache {
   constructor() {
@@ -117,4 +117,41 @@ test('visitor usage requests bypass the public edge cache', async () => {
   assert.equal(calls, 2);
   assert.deepEqual(await second.json(), { visitors: 2 });
   assert.equal(cache.entries.size, 0);
+});
+
+test('upload cache purge removes shared ranking responses without scanning arbitrary query keys', async () => {
+  const { api, cache } = context();
+  const expected = [
+    'https://card.test/api/rankings/home',
+    'https://card.test/api/rankings/latest',
+    'https://card.test/api/rankings/leaderboard?board=users&period=total&sort=legend&direction=desc&limit=50&pinned=',
+    'https://card.test/api/rankings/leaderboard?board=users&period=total&sort=legend&direction=desc&limit=100&pinned=',
+    'https://card.test/api/rankings/leaderboard?board=epic&period=total&sort=legend&direction=desc&limit=50&pinned=',
+    'https://card.test/api/rankings/leaderboard?board=spend&period=total&sort=legend&direction=desc&limit=50&pinned=',
+    'https://card.test/api/rankings/leaderboard?board=sets&period=total&sort=legend&direction=desc&limit=50&pinned=',
+    'https://card.test/api/rankings/leaderboard?board=luck&period=total&sort=probability&direction=desc&limit=50&pinned='
+  ];
+  for (const url of expected) await cache.put(new Request(url), new Response('cached'));
+  await cache.put(new Request('https://card.test/api/rankings/leaderboard?board=users&q=alice&cursor=opaque'), new Response('search'));
+  await cache.put(new Request('https://card.test/api/other'), new Response('other'));
+
+  await purgeRankingsResponseCaches(new Request('https://card.test/api/rankings/snapshots', { method: 'POST' }), api);
+
+  for (const url of expected) assert.equal(cache.entries.has(url), false, url);
+  assert.equal(cache.entries.has('https://card.test/api/rankings/leaderboard?board=users&q=alice&cursor=opaque'), true);
+  assert.equal(cache.entries.has('https://card.test/api/other'), true);
+});
+
+test('cache purge failures are isolated from the upload response', async () => {
+  const cache = {
+    async delete(request) {
+      if (new URL(request.url).pathname === '/api/rankings/home') throw new Error('cache unavailable');
+      return true;
+    }
+  };
+
+  await assert.doesNotReject(() => purgeRankingsResponseCaches(
+    new Request('https://card.test/api/rankings/snapshots', { method: 'POST' }),
+    { default: cache }
+  ));
 });

@@ -37,6 +37,25 @@ const VISITOR_COUNTER_NAME = 'global';
 const VISITOR_COUNTER_COUNT_KEY = 'count';
 const VISITOR_COUNTER_VISITOR_PREFIX = 'visitor:';
 const VISITOR_HASH_PATTERN = /^[a-f0-9]{64}$/;
+const ADMIN_AUTH_NAME = 'global';
+const ADMIN_COOKIE_NAME = '__Host-hyb-card-admin';
+const ADMIN_CSRF_HEADER = 'x-hyb-admin-csrf';
+const ADMIN_FAILURE_PREFIX = 'admin-failure:';
+const ADMIN_SESSION_PREFIX = 'admin-session:';
+const ADMIN_FAILURE_WINDOW_MS = 10 * 60 * 1000;
+const ADMIN_FAILURE_THRESHOLD = 5;
+const ADMIN_LOCK_DURATIONS_MS = [60 * 1000, 5 * 60 * 1000, 30 * 60 * 1000];
+const ADMIN_MAX_LOCK_MS = 24 * 60 * 60 * 1000;
+const ADMIN_SESSION_TTL_MS = 30 * 60 * 1000;
+const ADMIN_SESSION_MAX_MS = 2 * 60 * 60 * 1000;
+export const ADMIN_SITE_CONFIG_KEY = 'admin:site-config:v1';
+export const DEFAULT_SITE_CONFIG = Object.freeze({
+  siteEnabled: true,
+  rankingCaptureEnabled: false,
+  cloudUploadEnabled: false,
+  maintenanceMessage: '',
+  updatedAt: 0
+});
 const CACHE_HEADERS = Object.freeze({
   home: { 'cache-control': 'public, max-age=300, stale-while-revalidate=1800' },
   latest: { 'cache-control': 'public, max-age=60, stale-while-revalidate=120' },
@@ -59,14 +78,19 @@ export async function handleRankingsRequest(request, env, executionContext = nul
     if (url.pathname === '/api/rankings/latest' && request.method === 'GET') return await getLatest(env);
     if (url.pathname === '/api/rankings/usage' && request.method === 'GET') return await getUsage(env);
     if (url.pathname === '/api/rankings/usage' && request.method === 'POST') return await postUsage(request, env);
+    if (url.pathname === '/api/site-config' && request.method === 'GET') return await getSiteConfig(env);
+    if (url.pathname === '/api/admin/login' && request.method === 'POST') return await loginAdmin(request, env);
+    if (url.pathname === '/api/admin/session' && request.method === 'GET') return await getAdminSession(request, env);
+    if (url.pathname === '/api/admin/config' && request.method === 'POST') return await updateAdminConfig(request, env);
+    if (url.pathname === '/api/admin/logout' && request.method === 'POST') return await logoutAdmin(request, env);
+    if (url.pathname === '/api/rankings/snapshots' && request.method === 'POST') {
+      return await postSnapshot(request, env, executionContext);
+    }
     if (!env || !env.RANKINGS_DB) return databaseUnavailable(url);
     if (url.pathname === '/api/rankings/leaderboard' && request.method === 'GET') return await getLeaderboard(url, env);
     if (url.pathname === '/api/rankings/history' && request.method === 'GET') return await getHistory(url, env);
     if (url.pathname === '/api/rankings/users' && request.method === 'GET') return await getUsers(url, env);
     if (url.pathname === '/api/rankings/events' && request.method === 'GET') return await getEvents(url, env);
-    if (url.pathname === '/api/rankings/snapshots' && request.method === 'POST') {
-      return await postSnapshot(request, env, executionContext);
-    }
     return jsonResponse({ ok: false, error: 'not_found' }, 404);
   } catch (error) {
     const readRequest = request.method === 'GET' && url.pathname.startsWith('/api/rankings/');
@@ -239,6 +263,397 @@ export class VisitorCounter {
   }
 }
 
+async function getSiteConfig(env) {
+  return jsonResponse({ ok: true, config: await loadSiteConfig(env) }, 200, { 'cache-control': 'no-store' });
+}
+
+async function loginAdmin(request, env) {
+  if (!isSecureRequest(request) || !hasSameOrigin(request)) return adminAuthFailureResponse(403, 'admin_login_failed');
+
+  let body;
+  try {
+    body = await request.json();
+  } catch (_) {
+    return adminAuthFailureResponse(401, 'admin_login_failed');
+  }
+  const password = String(body && body.password != null ? body.password : '');
+  const stub = adminAuthStub(env);
+  if (!stub) return jsonResponse({ ok: false, error: 'admin_auth_unavailable' }, 503, { 'cache-control': 'no-store' });
+
+  try {
+    const response = await stub.fetch(new Request('https://admin-auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        password,
+        ip: String(request.headers.get('cf-connecting-ip') || 'unknown')
+      })
+    }));
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) {
+      const headers = { 'cache-control': 'no-store' };
+      if (response.status === 429 && Number(data.retryAfter) > 0) headers['retry-after'] = String(Math.ceil(Number(data.retryAfter)));
+      return jsonResponse({ ok: false, error: 'admin_login_failed' }, response.status === 429 ? 429 : 401, headers);
+    }
+    return jsonResponse({ ok: true, csrfToken: data.csrfToken, expiresAt: data.expiresAt }, 200, {
+      'cache-control': 'no-store',
+      'set-cookie': adminSessionCookie(data.token)
+    });
+  } catch (error) {
+    console.error('rankings_admin_login_failed', { message: String(error && error.message || error).slice(0, 160) });
+    return jsonResponse({ ok: false, error: 'admin_auth_unavailable' }, 503, { 'cache-control': 'no-store' });
+  }
+}
+
+async function getAdminSession(request, env) {
+  const token = readAdminCookie(request);
+  if (!token) return jsonResponse({ ok: false, error: 'admin_auth_required' }, 401, { 'cache-control': 'no-store' });
+  const stub = adminAuthStub(env);
+  if (!stub) return jsonResponse({ ok: false, error: 'admin_auth_unavailable' }, 503, { 'cache-control': 'no-store' });
+
+  try {
+    const response = await stub.fetch(new Request('https://admin-auth/session', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token })
+    }));
+    const data = await response.json().catch(() => ({}));
+    return jsonResponse(
+      data.ok
+        ? { ok: true, csrfToken: data.csrfToken, expiresAt: data.expiresAt, config: await loadSiteConfig(env) }
+        : { ok: false, error: 'admin_auth_required' },
+      data.ok ? 200 : 401,
+      { 'cache-control': 'no-store' }
+    );
+  } catch (error) {
+    console.error('rankings_admin_session_failed', { message: String(error && error.message || error).slice(0, 160) });
+    return jsonResponse({ ok: false, error: 'admin_auth_unavailable' }, 503, { 'cache-control': 'no-store' });
+  }
+}
+
+async function updateAdminConfig(request, env) {
+  const authorization = await verifyAdminMutation(request, env);
+  if (authorization.response) return authorization.response;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch (_) {
+    return jsonResponse({ ok: false, error: 'invalid_json' }, 400, { 'cache-control': 'no-store' });
+  }
+  const input = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+  for (const field of ['siteEnabled', 'rankingCaptureEnabled', 'cloudUploadEnabled']) {
+    if (Object.prototype.hasOwnProperty.call(input, field) && typeof input[field] !== 'boolean') {
+      return jsonResponse({ ok: false, error: 'invalid_site_config' }, 400, { 'cache-control': 'no-store' });
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(input, 'maintenanceMessage') && typeof input.maintenanceMessage !== 'string') {
+    return jsonResponse({ ok: false, error: 'invalid_site_config' }, 400, { 'cache-control': 'no-store' });
+  }
+
+  const current = await loadSiteConfig(env);
+  const config = normalizeSiteConfig({
+    ...current,
+    siteEnabled: Object.prototype.hasOwnProperty.call(input, 'siteEnabled') ? input.siteEnabled : current.siteEnabled,
+    rankingCaptureEnabled: Object.prototype.hasOwnProperty.call(input, 'rankingCaptureEnabled') ? input.rankingCaptureEnabled : current.rankingCaptureEnabled,
+    cloudUploadEnabled: Object.prototype.hasOwnProperty.call(input, 'cloudUploadEnabled') ? input.cloudUploadEnabled : current.cloudUploadEnabled,
+    maintenanceMessage: Object.prototype.hasOwnProperty.call(input, 'maintenanceMessage') ? input.maintenanceMessage : current.maintenanceMessage,
+    updatedAt: Date.now()
+  });
+
+  try {
+    if (!env || !env.RANKINGS_HOME_CACHE || typeof env.RANKINGS_HOME_CACHE.put !== 'function') {
+      throw new Error('RANKINGS_HOME_CACHE binding is not configured');
+    }
+    await env.RANKINGS_HOME_CACHE.put(ADMIN_SITE_CONFIG_KEY, JSON.stringify(config));
+  } catch (error) {
+    console.error('rankings_admin_config_write_failed', { message: String(error && error.message || error).slice(0, 160) });
+    return jsonResponse({ ok: false, error: 'site_config_unavailable' }, 503, { 'cache-control': 'no-store' });
+  }
+  return jsonResponse({ ok: true, config }, 200, { 'cache-control': 'no-store' });
+}
+
+async function logoutAdmin(request, env) {
+  const authorization = await verifyAdminMutation(request, env);
+  if (authorization.response) return authorization.response;
+  const token = readAdminCookie(request);
+  const csrfToken = String(request.headers.get(ADMIN_CSRF_HEADER) || '');
+  const stub = adminAuthStub(env);
+  if (!stub) return jsonResponse({ ok: false, error: 'admin_auth_unavailable' }, 503, { 'cache-control': 'no-store' });
+
+  try {
+    const response = await stub.fetch(new Request('https://admin-auth/logout', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token, csrfToken })
+    }));
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) {
+      return jsonResponse(
+        { ok: false, error: data.error === 'admin_csrf_invalid' ? 'admin_csrf_invalid' : 'admin_auth_required' },
+        response.status === 403 ? 403 : 401,
+        { 'cache-control': 'no-store' }
+      );
+    }
+    return jsonResponse({ ok: true }, 200, {
+      'cache-control': 'no-store',
+      'set-cookie': expiredAdminSessionCookie()
+    });
+  } catch (error) {
+    console.error('rankings_admin_logout_failed', { message: String(error && error.message || error).slice(0, 160) });
+    return jsonResponse({ ok: false, error: 'admin_auth_unavailable' }, 503, { 'cache-control': 'no-store' });
+  }
+}
+
+async function verifyAdminMutation(request, env) {
+  if (!isSecureRequest(request) || !hasSameOrigin(request)) {
+    return { response: jsonResponse({ ok: false, error: 'admin_origin_invalid' }, 403, { 'cache-control': 'no-store' }) };
+  }
+  const token = readAdminCookie(request);
+  const csrfToken = String(request.headers.get(ADMIN_CSRF_HEADER) || '');
+  if (!token || !csrfToken) {
+    return { response: jsonResponse({ ok: false, error: 'admin_auth_required' }, 401, { 'cache-control': 'no-store' }) };
+  }
+  const stub = adminAuthStub(env);
+  if (!stub) {
+    return { response: jsonResponse({ ok: false, error: 'admin_auth_unavailable' }, 503, { 'cache-control': 'no-store' }) };
+  }
+  try {
+    const response = await stub.fetch(new Request('https://admin-auth/verify', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token, csrfToken })
+    }));
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) {
+      return {
+        response: jsonResponse(
+          { ok: false, error: data.error === 'admin_csrf_invalid' ? 'admin_csrf_invalid' : 'admin_auth_required' },
+          response.status === 403 ? 403 : 401,
+          { 'cache-control': 'no-store' }
+        )
+      };
+    }
+    return { ok: true, expiresAt: data.expiresAt };
+  } catch (error) {
+    console.error('rankings_admin_verify_failed', { message: String(error && error.message || error).slice(0, 160) });
+    return { response: jsonResponse({ ok: false, error: 'admin_auth_unavailable' }, 503, { 'cache-control': 'no-store' }) };
+  }
+}
+
+export async function loadSiteConfig(env) {
+  if (!env || !env.RANKINGS_HOME_CACHE || typeof env.RANKINGS_HOME_CACHE.get !== 'function') return { ...DEFAULT_SITE_CONFIG };
+  try {
+    const raw = await env.RANKINGS_HOME_CACHE.get(ADMIN_SITE_CONFIG_KEY);
+    return normalizeSiteConfig(raw);
+  } catch (_) {
+    return { ...DEFAULT_SITE_CONFIG };
+  }
+}
+
+export function normalizeSiteConfig(value) {
+  let source = value;
+  if (typeof source === 'string') {
+    try {
+      source = JSON.parse(source);
+    } catch (_) {
+      source = null;
+    }
+  }
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return { ...DEFAULT_SITE_CONFIG };
+  return {
+    siteEnabled: typeof source.siteEnabled === 'boolean' ? source.siteEnabled : DEFAULT_SITE_CONFIG.siteEnabled,
+    rankingCaptureEnabled: typeof source.rankingCaptureEnabled === 'boolean' ? source.rankingCaptureEnabled : DEFAULT_SITE_CONFIG.rankingCaptureEnabled,
+    cloudUploadEnabled: typeof source.cloudUploadEnabled === 'boolean' ? source.cloudUploadEnabled : DEFAULT_SITE_CONFIG.cloudUploadEnabled,
+    maintenanceMessage: typeof source.maintenanceMessage === 'string' ? source.maintenanceMessage.slice(0, 240) : DEFAULT_SITE_CONFIG.maintenanceMessage,
+    updatedAt: Number.isFinite(Number(source.updatedAt)) && Number(source.updatedAt) > 0 ? Math.floor(Number(source.updatedAt)) : DEFAULT_SITE_CONFIG.updatedAt
+  };
+}
+
+function adminAuthStub(env) {
+  const namespace = env && env.ADMIN_AUTH;
+  if (!namespace || typeof namespace.idFromName !== 'function' || typeof namespace.get !== 'function') return null;
+  try {
+    return namespace.get(namespace.idFromName(ADMIN_AUTH_NAME));
+  } catch (_) {
+    return null;
+  }
+}
+
+function isSecureRequest(request) {
+  return new URL(request.url).protocol === 'https:';
+}
+
+function hasSameOrigin(request) {
+  const url = new URL(request.url);
+  return String(request.headers.get('origin') || '') === url.origin;
+}
+
+function readAdminCookie(request) {
+  const cookie = String(request.headers.get('cookie') || '');
+  const item = cookie.split(';').map((part) => part.trim()).find((part) => part.startsWith(`${ADMIN_COOKIE_NAME}=`));
+  return item ? item.slice(ADMIN_COOKIE_NAME.length + 1) : '';
+}
+
+function adminSessionCookie(token) {
+  return `${ADMIN_COOKIE_NAME}=${token}; Max-Age=${Math.floor(ADMIN_SESSION_MAX_MS / 1000)}; Path=/; HttpOnly; Secure; SameSite=Strict`;
+}
+
+function expiredAdminSessionCookie() {
+  return `${ADMIN_COOKIE_NAME}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Strict`;
+}
+
+function adminAuthFailureResponse(status, error) {
+  return jsonResponse({ ok: false, error }, status, { 'cache-control': 'no-store' });
+}
+
+export class AdminAuth {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env || {};
+    this.operation = Promise.resolve();
+  }
+
+  fetch(request) {
+    const operation = this.operation.then(
+      () => this.handle(request),
+      () => this.handle(request)
+    );
+    this.operation = operation.catch(() => {});
+    return operation;
+  }
+
+  async handle(request) {
+    const url = new URL(request.url);
+    if (request.method !== 'POST' || !['/login', '/session', '/verify', '/logout'].includes(url.pathname)) {
+      return jsonResponse({ ok: false, error: 'not_found' }, 404, { 'cache-control': 'no-store' });
+    }
+    let body;
+    try {
+      body = await request.json();
+    } catch (_) {
+      return jsonResponse({ ok: false, error: 'invalid_json' }, 400, { 'cache-control': 'no-store' });
+    }
+    if (url.pathname === '/login') return this.login(body);
+    if (url.pathname === '/session') return this.session(body);
+    if (url.pathname === '/verify') return this.verify(body);
+    return this.logout(body);
+  }
+
+  async login(body) {
+    const now = Date.now();
+    const ipHash = await hashAdminValue(String(body && body.ip || 'unknown'));
+    const failureKey = `${ADMIN_FAILURE_PREFIX}${ipHash}`;
+    let failure = await this.state.storage.get(failureKey);
+    if (failure && Number(failure.lockUntil) > now) {
+      return jsonResponse({ ok: false, retryAfter: Math.ceil((Number(failure.lockUntil) - now) / 1000) }, 429, { 'cache-control': 'no-store' });
+    }
+    if (!failure || now - Number(failure.windowStartedAt) >= ADMIN_FAILURE_WINDOW_MS) {
+      failure = {
+        count: 0,
+        windowStartedAt: now,
+        lockLevel: failure && Number.isFinite(Number(failure.lockLevel)) ? Number(failure.lockLevel) : 0,
+        lockUntil: 0
+      };
+    }
+
+    const expected = String(this.env.ADMIN_PASSWORD == null ? '' : this.env.ADMIN_PASSWORD);
+    const supplied = String(body && body.password != null ? body.password : '');
+    if (!timingSafeStringEqual(supplied, expected) || !expected) {
+      failure.count += 1;
+      if (failure.count >= ADMIN_FAILURE_THRESHOLD) {
+        const level = Math.max(0, Number(failure.lockLevel) || 0);
+        const duration = level < ADMIN_LOCK_DURATIONS_MS.length
+          ? ADMIN_LOCK_DURATIONS_MS[level]
+          : ADMIN_MAX_LOCK_MS;
+        failure.lockUntil = now + Math.min(duration, ADMIN_MAX_LOCK_MS);
+        failure.lockLevel = Math.min(level + 1, ADMIN_LOCK_DURATIONS_MS.length);
+        failure.count = 0;
+        failure.windowStartedAt = now;
+      }
+      await this.state.storage.put(failureKey, failure);
+      return jsonResponse({ ok: false, retryAfter: failure.lockUntil > now ? Math.ceil((failure.lockUntil - now) / 1000) : 0 }, 401, { 'cache-control': 'no-store' });
+    }
+
+    await this.state.storage.delete(failureKey);
+    const token = crypto.randomUUID();
+    const csrfToken = crypto.randomUUID();
+    const tokenHash = await hashAdminValue(token);
+    const csrfHash = await hashAdminValue(csrfToken);
+    const expiresAt = now + ADMIN_SESSION_TTL_MS;
+    await this.state.storage.put(`${ADMIN_SESSION_PREFIX}${tokenHash}`, {
+      tokenHash,
+      csrfHash,
+      createdAt: now,
+      expiresAt,
+      absoluteExpiresAt: now + ADMIN_SESSION_MAX_MS
+    });
+    return jsonResponse({ ok: true, token, csrfToken, expiresAt }, 200, { 'cache-control': 'no-store' });
+  }
+
+  async session(body) {
+    const session = await this.readSession(body && body.token);
+    if (!session) return jsonResponse({ ok: false, error: 'admin_auth_required' }, 401, { 'cache-control': 'no-store' });
+    const csrfToken = crypto.randomUUID();
+    const now = Date.now();
+    session.csrfHash = await hashAdminValue(csrfToken);
+    session.expiresAt = Math.min(now + ADMIN_SESSION_TTL_MS, Number(session.absoluteExpiresAt));
+    await this.state.storage.put(`${ADMIN_SESSION_PREFIX}${session.tokenHash}`, session);
+    return jsonResponse({ ok: true, csrfToken, expiresAt: session.expiresAt }, 200, { 'cache-control': 'no-store' });
+  }
+
+  async verify(body) {
+    const session = await this.readSession(body && body.token);
+    if (!session) return jsonResponse({ ok: false, error: 'admin_auth_required' }, 401, { 'cache-control': 'no-store' });
+    const csrfHash = await hashAdminValue(String(body && body.csrfToken || ''));
+    if (!timingSafeStringEqual(csrfHash, String(session.csrfHash || ''))) {
+      return jsonResponse({ ok: false, error: 'admin_csrf_invalid' }, 403, { 'cache-control': 'no-store' });
+    }
+    const now = Date.now();
+    session.expiresAt = Math.min(now + ADMIN_SESSION_TTL_MS, Number(session.absoluteExpiresAt));
+    await this.state.storage.put(`${ADMIN_SESSION_PREFIX}${session.tokenHash}`, session);
+    return jsonResponse({ ok: true, expiresAt: session.expiresAt }, 200, { 'cache-control': 'no-store' });
+  }
+
+  async logout(body) {
+    const session = await this.readSession(body && body.token);
+    if (!session) return jsonResponse({ ok: false, error: 'admin_auth_required' }, 401, { 'cache-control': 'no-store' });
+    const csrfHash = await hashAdminValue(String(body && body.csrfToken || ''));
+    if (!timingSafeStringEqual(csrfHash, String(session.csrfHash || ''))) {
+      return jsonResponse({ ok: false, error: 'admin_csrf_invalid' }, 403, { 'cache-control': 'no-store' });
+    }
+    await this.state.storage.delete(`${ADMIN_SESSION_PREFIX}${session.tokenHash}`);
+    return jsonResponse({ ok: true }, 200, { 'cache-control': 'no-store' });
+  }
+
+  async readSession(token) {
+    const normalized = String(token || '');
+    if (!normalized) return null;
+    const tokenHash = await hashAdminValue(normalized);
+    const key = `${ADMIN_SESSION_PREFIX}${tokenHash}`;
+    const session = await this.state.storage.get(key);
+    if (!session || Number(session.expiresAt) <= Date.now() || Number(session.absoluteExpiresAt) <= Date.now()) {
+      if (session) await this.state.storage.delete(key);
+      return null;
+    }
+    return session;
+  }
+}
+
+async function hashAdminValue(value) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(value)));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function timingSafeStringEqual(left, right) {
+  const leftBytes = new TextEncoder().encode(String(left));
+  const rightBytes = new TextEncoder().encode(String(right));
+  let difference = leftBytes.length ^ rightBytes.length;
+  const length = Math.max(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < length; index += 1) difference |= (leftBytes[index] || 0) ^ (rightBytes[index] || 0);
+  return difference === 0;
+}
+
 async function getLatest(env) {
   const published = await readPublishedHome(env);
   if (published && published.snapshot) {
@@ -251,7 +666,7 @@ async function getLatest(env) {
     }, 200, CACHE_HEADERS.latest);
   }
   if (!env || !env.RANKINGS_DB) return databaseUnavailable(new URL('https://card.internal/api/rankings/latest'));
-  const season = await latestSeason(env);
+  const season = await latestSeason(env, published);
   if (!season) return jsonResponse({ ok: true, snapshot: null, stale: true, boards: [] }, 200, CACHE_HEADERS.latest);
   return jsonResponse({
     ok: true,
@@ -333,6 +748,18 @@ function databaseUnavailable(url) {
 async function postSnapshot(request, env, executionContext = null) {
   const rateLimitResponse = await limitSnapshotWrites(request, env);
   if (rateLimitResponse) return rateLimitResponse;
+
+  const siteConfig = await loadSiteConfig(env);
+  if (!siteConfig.siteEnabled) {
+    return jsonResponse({ ok: false, error: 'site_disabled', retryable: false }, 403, { 'cache-control': 'no-store' });
+  }
+  if (!siteConfig.rankingCaptureEnabled) {
+    return jsonResponse({ ok: false, error: 'sync_disabled', retryable: false }, 403, { 'cache-control': 'no-store' });
+  }
+  if (!siteConfig.cloudUploadEnabled) {
+    return jsonResponse({ ok: false, error: 'cloud_upload_disabled', retryable: false }, 403, { 'cache-control': 'no-store' });
+  }
+  if (!env || !env.RANKINGS_DB) return databaseUnavailable(new URL(request.url));
 
   let body;
   try {
@@ -728,7 +1155,21 @@ function isClosedRange(range, latestCapturedAt) {
     && Number(range.until) < latestDayStartAt;
 }
 
-async function latestSeason(env) {
+async function latestSeason(env, publishedHome = null) {
+  const published = publishedHome || await readPublishedHome(env);
+  const snapshot = published && published.snapshot;
+  const seasonId = String(snapshot && snapshot.seasonId || '').trim();
+  const capturedAt = Number(snapshot && snapshot.capturedAt || 0);
+  if (seasonId && Number.isFinite(capturedAt) && capturedAt > 0) {
+    const lastDayStartAt = Number(snapshot.lastDayStartAt || 0) || dayStartAtForCapturedAt(capturedAt) || 0;
+    return {
+      season_id: seasonId,
+      season_name: String(snapshot.seasonName || ''),
+      last_observed_at: capturedAt,
+      last_day_start_at: lastDayStartAt,
+      updated_at: Number(snapshot.updatedAt || snapshot.createdAt || capturedAt) || capturedAt
+    };
+  }
   return env.RANKINGS_DB.prepare(`
     SELECT season_id, season_name, last_observed_at, last_day_start_at, updated_at
     FROM rank_seasons
@@ -843,16 +1284,20 @@ function buildUserRow(row, period, rank, capturedAt) {
 }
 
 function serializeSeasonSnapshot(row) {
+  const capturedAt = Number(row.last_observed_at || 0);
   return {
     id: null,
     seasonId: String(row.season_id || ''),
     seasonName: String(row.season_name || ''),
     scope: 'global,friends',
-    capturedAt: Number(row.last_observed_at || 0),
+    capturedAt,
     capturedBucket: null,
     source: 'compact-user-observation',
     signature: '',
-    createdAt: Number(row.updated_at || 0)
+    createdAt: Number(row.updated_at || 0),
+    lastObservedAt: capturedAt,
+    lastDayStartAt: Number(row.last_day_start_at || 0) || dayStartAtForCapturedAt(capturedAt) || 0,
+    updatedAt: Number(row.updated_at || 0)
   };
 }
 

@@ -5,10 +5,9 @@ import vm from 'node:vm';
 
 const SCRIPT_PATH = new URL('../site/userscripts/hyb-card-dashboard-rankings.user.js', import.meta.url);
 
-test('userscript installation and capture are temporarily disabled', async () => {
+test('userscript starts the Card bridge and waits for an explicit request', async () => {
   const source = await readFile(SCRIPT_PATH, 'utf8');
-  assert.match(source, /const SCRIPT_DISABLED\s*=\s*true;/);
-  assert.match(source, /if \(SCRIPT_DISABLED\) return;/);
+  assert.doesNotMatch(source, /SCRIPT_DISABLED\s*=\s*true/);
   const listeners = [];
   const postedMessages = [];
   const context = {
@@ -20,8 +19,8 @@ test('userscript installation and capture are temporarily disabled', async () =>
     console
   };
   vm.runInNewContext(source, context, { filename: 'hyb-card-dashboard-rankings.user.js' });
-  assert.deepEqual(listeners, []);
-  assert.deepEqual(postedMessages, []);
+  assert.equal(listeners.length, 1);
+  assert.equal(postedMessages[0].type, 'HYB_CARD_RANKINGS_BRIDGE_READY');
 });
 
 test('userscript matches Card and CDK while keeping the bridge UI on Card', async () => {
@@ -29,6 +28,7 @@ test('userscript matches Card and CDK while keeping the bridge UI on Card', asyn
   assert.match(source, /@match\s+https:\/\/card\.gudong226\.com\/\*/);
   assert.match(source, /@match\s+https:\/\/cdk\.hybgzs\.com\/\*/);
   assert.match(source, /@connect\s+cdk\.hybgzs\.com/);
+  assert.match(source, /@connect\s+card\.gudong226\.com/);
   assert.match(source, /@version\s+1\.4\.0/);
   assert.match(source, /@updateURL\s+https:\/\/card\.gudong226\.com\/userscripts\/hyb-card-dashboard-rankings\.user\.js/);
   assert.match(source, /@downloadURL\s+https:\/\/card\.gudong226\.com\/userscripts\/hyb-card-dashboard-rankings\.user\.js/);
@@ -53,6 +53,19 @@ test('userscript matches Card and CDK while keeping the bridge UI on Card', asyn
   assert.match(source, /looksLikeProtectionPage/);
   assert.match(source, /parseJsonPayload/);
   assert.match(source, /scriptVersion: SCRIPT_VERSION/);
+  assert.match(source, /api\/site-config/);
+});
+
+test('userscript checks the runtime site config before requesting CDK', async () => {
+  const source = await readFile(SCRIPT_PATH, 'utf8');
+  const harness = createUserscriptContext(source, {}, { status: 200 }, {
+    siteConfig: { siteEnabled: true, rankingCaptureEnabled: false, cloudUploadEnabled: true }
+  });
+  const response = await harness.request(true);
+  assert.equal(response.ok, false);
+  assert.equal(response.code, 'sync_disabled');
+  assert.equal(harness.sourceRequestCalls.length, 0);
+  harness.dispose();
 });
 
 test('userscript labels missing upstream timestamps as observations instead of fake source versions', async () => {
@@ -91,8 +104,9 @@ test('userscript separates manual refreshes from automatic cooldowns and retries
   assert.match(source, /loadSnapshot\(\{\s*manual: Boolean\(data\.manual\),\s*finalSets: Boolean\(data\.finalSets\),\s*setsFinalRetry: Boolean\(data\.setsFinalRetry\)\s*\}\)/);
 });
 
-function createUserscriptContext(source, initialState, requestResult) {
+function createUserscriptContext(source, initialState, requestResult, options = {}) {
   const storage = new Map([['hyb-card-rankings-source-state-v1', { ...initialState }]]);
+  const siteConfig = options.siteConfig || { siteEnabled: true, rankingCaptureEnabled: true, cloudUploadEnabled: true };
   const listeners = [];
   const postedMessages = [];
   const requestCalls = [];
@@ -133,6 +147,15 @@ function createUserscriptContext(source, initialState, requestResult) {
     GM_addValueChangeListener() {},
     GM_xmlhttpRequest(options) {
       requestCalls.push(options.url);
+      if (options.url === 'https://card.gudong226.com/api/site-config') {
+        options.onload({
+          status: 200,
+          response: { ok: true, config: siteConfig },
+          responseText: JSON.stringify({ ok: true, config: siteConfig }),
+          responseHeaders: 'content-type: application/json'
+        });
+        return;
+      }
       if (requestResult.status >= 200 && requestResult.status < 300) {
         const payload = requestResult.payload || { capturedAt: Date.now() };
         options.onload({
@@ -151,13 +174,15 @@ function createUserscriptContext(source, initialState, requestResult) {
       }
     }
   };
-  const executableSource = source.replace('const SCRIPT_DISABLED = true;', 'const SCRIPT_DISABLED = false;');
-  vm.runInNewContext(executableSource, context, { filename: 'hyb-card-dashboard-rankings.user.js' });
+  vm.runInNewContext(source, context, { filename: 'hyb-card-dashboard-rankings.user.js' });
   return {
     storage,
     listeners,
     postedMessages,
     requestCalls,
+    get sourceRequestCalls() {
+      return requestCalls.filter((url) => url.includes('cdk.hybgzs.com/api/cards/'));
+    },
     async request(manual, options = {}) {
       const request = {
         origin: 'https://card.gudong226.com',
@@ -190,7 +215,7 @@ test('userscript allows the fixed sets final request to bypass the ordinary thre
 
   const response = await harness.request(false, { finalSets: true });
   assert.equal(response.ok, true);
-  assert.equal(harness.requestCalls.length, 2);
+  assert.equal(harness.sourceRequestCalls.length, 2);
   harness.dispose();
 });
 
@@ -229,7 +254,7 @@ test('userscript lets a manual request bypass ordinary cooldown while retaining 
   const response = await harness.request(true);
   const state = harness.storage.get('hyb-card-rankings-source-state-v1');
   assert.equal(response.ok, true);
-  assert.equal(harness.requestCalls.length, 2);
+  assert.equal(harness.sourceRequestCalls.length, 2);
   assert.ok(state.nextAllowedAt > Date.now());
   assert.equal(state.retryCount, 0);
   harness.dispose();
@@ -247,7 +272,7 @@ test('userscript keeps protection cooldown and request lock in force for manual 
   const protectedResponse = await protectedHarness.request(true);
   assert.equal(protectedResponse.ok, false);
   assert.equal(protectedResponse.blocked, true);
-  assert.equal(protectedHarness.requestCalls.length, 0);
+  assert.equal(protectedHarness.sourceRequestCalls.length, 0);
   protectedHarness.dispose();
 
   const lockHarness = createUserscriptContext(source, {
@@ -258,7 +283,7 @@ test('userscript keeps protection cooldown and request lock in force for manual 
   }, { status: 200 });
   const lockResponse = await lockHarness.request(true);
   assert.equal(lockResponse.ok, false);
-  assert.equal(lockHarness.requestCalls.length, 0);
+  assert.equal(lockHarness.sourceRequestCalls.length, 0);
   lockHarness.dispose();
 });
 
@@ -291,7 +316,7 @@ test('userscript update state changes the install link after a refresh response'
   assert.match(source, /markUserscriptVersion\(data\.scriptVersion\)/);
   assert.match(source, /userscriptUpdateError\(data\.scriptVersion\)/);
   assert.match(source, /function renderUserscriptLink/);
-  assert.match(source, /if \(RANKINGS_REFRESH_DISABLED\)/);
+  assert.match(source, /if \(!rankingCaptureEnabled\(\)/);
   assert.match(source, /link\.textContent = USERSCRIPT_DISABLED_MESSAGE/);
   assert.match(source, /link\.classList\.add\('is-disabled'\)/);
   assert.match(source, /code = 'userscript_missing'/);
