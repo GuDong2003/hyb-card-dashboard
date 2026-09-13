@@ -91,10 +91,26 @@ test('keeps the admin tab hidden on the homepage and exposes it only on /admin',
   const nav = html.slice(navStart, navEnd);
   assert.match(nav, /<button class="topbar-view-btn is-hidden"[^>]*id="adminNavButton"[^>]*data-view="admin"[^>]*>管理<\/button>/);
   assert.doesNotMatch(html, /class="admin-link"/);
-  assert.match(html, /id="adminView"[^>]*class="dashboard-view is-hidden"/);
+  assert.match(html, /id="adminView"[^>]*class="dashboard-view admin-view is-hidden"/);
   assert.match(html, /window\.location\.pathname/);
   assert.match(html, /id="adminLoginForm"/);
   assert.match(html, /id="adminConfigForm"/);
+});
+
+test('places the admin view inside the app shell main content area', async () => {
+  const html = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
+  const shellStart = html.indexOf('<div class="app-shell">');
+  const adminIndex = html.indexOf('<section id="adminView"');
+  const shellClose = html.indexOf('\n</div>\n\n<script src="/stardust-rules.js"', adminIndex);
+  assert.ok(shellStart >= 0 && adminIndex > shellStart);
+  assert.ok(shellClose > adminIndex, 'app shell should close after the admin view');
+  assert.doesNotMatch(html, /<\/div>\s*<section id="adminView"/);
+});
+
+test('gives the admin view the same scrollable main-area layout as the rankings view', async () => {
+  const css = await readFile(new URL('../site/rankings.css', import.meta.url), 'utf8');
+  assert.match(css, /\.admin-view\s*\{[\s\S]*display:\s*flex/);
+  assert.match(css, /\.admin-view\s*\{[\s\S]*overflow-y:\s*auto/);
 });
 
 test('rankings client loads and displays anonymous visitor usage', async () => {

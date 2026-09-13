@@ -2,7 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
-import { ADMIN_SITE_CONFIG_KEY, handleRankingsRequest } from '../src/rankings-worker.js';
+import {
+  ADMIN_SITE_CONFIG_KEY,
+  PUBLISHED_HOME_CACHE_KEY,
+  handleRankingsRequest
+} from '../src/rankings-worker.js';
 import {
   COMPACT_BOARD_KEYS,
   USER_CURRENT_COLUMNS,
@@ -263,7 +267,7 @@ async function postSnapshots(environment, snapshots, options = {}) {
       finalSets: options.finalSets === true,
       setsFinalRetry: options.setsFinalRetry === true
     })
-  }), environment);
+  }), environment, options.executionContext || null);
 }
 
 test('stores one user-day row without snapshots, entries, raw_json, or fingerprint', async () => {
@@ -314,6 +318,67 @@ test('accepted snapshots publish one shared home payload to KV', async () => {
   assert.equal(payload.totalRows, 1);
   assert.equal(payload.rows[0].userId, 'u-1');
   assert.equal(environment.RANKINGS_HOME_CACHE.puts.length, 1);
+});
+
+test('publishing after an upload uses the newest D1 season metadata instead of stale home KV metadata', async () => {
+  const environment = compactEnv();
+  const staleHome = publishedHomePayload();
+  staleHome.snapshot.capturedAt = 9_000;
+  environment.RANKINGS_HOME_CACHE = new MemoryKv({
+    [ADMIN_SITE_CONFIG_KEY]: JSON.stringify({
+      siteEnabled: true,
+      rankingCaptureEnabled: true,
+      cloudUploadEnabled: true,
+      maintenanceMessage: '',
+      updatedAt: 0
+    }),
+    [PUBLISHED_HOME_CACHE_KEY]: JSON.stringify(staleHome)
+  });
+  seedSeason(environment, 11_000);
+
+  const response = await postSnapshots(environment, [snapshotAt(11_000, { epic: 12 })]);
+  assert.equal(response.status, 200);
+  const published = await environment.RANKINGS_HOME_CACHE.get(PUBLISHED_HOME_CACHE_KEY, { type: 'json' });
+  assert.equal(published.snapshot.capturedAt, 11_000);
+});
+
+test('snapshot upload waits for home publication before returning when a worker execution context is present', async () => {
+  const environment = compactEnv();
+  seedSeason(environment, 10_000);
+  let releasePublication;
+  const publicationGate = new Promise((resolve) => {
+    releasePublication = resolve;
+  });
+  const originalPut = environment.RANKINGS_HOME_CACHE.put.bind(environment.RANKINGS_HOME_CACHE);
+  environment.RANKINGS_HOME_CACHE.put = async (key, value, options) => {
+    if (String(key) === PUBLISHED_HOME_CACHE_KEY) await publicationGate;
+    return originalPut(key, value, options);
+  };
+  let notifyWaitUntil;
+  const waitUntilCalled = new Promise((resolve) => {
+    notifyWaitUntil = resolve;
+  });
+  const executionContext = {
+    waitUntil(promise) {
+      this.pending = promise;
+      notifyWaitUntil();
+    }
+  };
+
+  let settled = false;
+  const upload = postSnapshots(environment, [snapshotAt(10_000)], { executionContext });
+  upload.then(() => {
+    settled = true;
+  });
+  await waitUntilCalled;
+  await Promise.resolve();
+  assert.equal(settled, false);
+  assert.ok(executionContext.pending);
+
+  releasePublication();
+  const response = await upload;
+  assert.equal(response.status, 200);
+  await executionContext.pending;
 });
 
 test('automatic uploads share one server-side three-hour gate and manual refresh bypasses it', async () => {

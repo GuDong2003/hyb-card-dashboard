@@ -841,7 +841,6 @@ function scheduleLatestHomePublish(env, executionContext) {
   const pending = publishLatestHome(env);
   if (executionContext && typeof executionContext.waitUntil === 'function') {
     executionContext.waitUntil(pending);
-    return Promise.resolve();
   }
   return pending;
 }
@@ -858,7 +857,9 @@ async function publishLatestHome(env) {
       direction: 'desc',
       limit: String(PAGE_DEFAULT_LIMIT)
     }).toString();
-    const response = await getLeaderboard(url, env);
+    const season = await latestSeason(env, null, { preferDatabase: true });
+    if (!season) return;
+    const response = await getLeaderboard(url, env, { season });
     if (!response.ok) return;
     const payload = await response.json();
     await schedulePublishedHome(env, payload, null);
@@ -880,11 +881,11 @@ async function limitSnapshotWrites(request, env) {
   return jsonResponse({ ok: false, error: 'rate_limited', retryable: true }, 429, { 'retry-after': '60' });
 }
 
-async function getLeaderboard(url, env) {
+async function getLeaderboard(url, env, options = {}) {
   const board = String(url.searchParams.get('board') || 'users').trim();
   const period = String(url.searchParams.get('period') || 'total').trim();
   if (!BOARD_GROUPS.has(board) || !PERIODS.has(period)) return jsonResponse({ ok: false, error: 'invalid_board_or_period' }, 400);
-  const season = await latestSeason(env);
+  const season = options.season || await latestSeason(env, null, options);
   if (!season) {
     return jsonResponse({
       ok: true,
@@ -1155,8 +1156,10 @@ function isClosedRange(range, latestCapturedAt) {
     && Number(range.until) < latestDayStartAt;
 }
 
-async function latestSeason(env, publishedHome = null) {
-  const published = publishedHome || await readPublishedHome(env);
+async function latestSeason(env, publishedHome = null, options = {}) {
+  const published = options.preferDatabase === true
+    ? null
+    : publishedHome || await readPublishedHome(env);
   const snapshot = published && published.snapshot;
   const seasonId = String(snapshot && snapshot.seasonId || '').trim();
   const capturedAt = Number(snapshot && snapshot.capturedAt || 0);
