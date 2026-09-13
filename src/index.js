@@ -51,6 +51,9 @@ const worker = {
       }
       return response;
     }
+    if (url.pathname.startsWith('/api/')) {
+      return handleRankingsRequest(request, env, ctx);
+    }
         return env.ASSETS.fetch(request);
     },
     scheduled

@@ -105,6 +105,31 @@ test('admin route is isolated from the normal homepage and serves only /admin', 
   assert.equal(await home.text(), 'HOME_PAGE');
 });
 
+test('worker routes site configuration APIs before the asset SPA fallback', async () => {
+  let assetCalls = 0;
+  const response = await worker.fetch(new Request('https://card.test/api/site-config'), {
+    RANKINGS_HOME_CACHE: {
+      async get() {
+        return JSON.stringify({ ...DEFAULT_SITE_CONFIG, rankingCaptureEnabled: false, cloudUploadEnabled: false });
+      }
+    },
+    ASSETS: {
+      async fetch() {
+        assetCalls += 1;
+        return new Response('ASSET_FALLBACK');
+      }
+    }
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).config, {
+    ...DEFAULT_SITE_CONFIG,
+    rankingCaptureEnabled: false,
+    cloudUploadEnabled: false
+  });
+  assert.equal(assetCalls, 0);
+});
+
 test('build includes the isolated admin page assets', async () => {
   const build = await readFile(new URL('../scripts/build.mjs', import.meta.url), 'utf8');
   assert.match(build, /copyAsset\('admin\.html'\)/);
