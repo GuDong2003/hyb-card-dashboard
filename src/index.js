@@ -33,7 +33,7 @@ const worker = {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (request.method === 'GET' && (url.pathname === '/admin' || url.pathname === '/admin/')) {
-      const adminUrl = new URL('/admin.html', request.url);
+      const adminUrl = new URL('/admin', request.url);
       return env.ASSETS.fetch(new Request(adminUrl, request));
     }
     if (request.method === 'GET' && url.pathname === '/admin.html') {

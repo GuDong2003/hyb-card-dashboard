@@ -92,7 +92,7 @@ test('admin route is isolated from the normal homepage and serves only /admin', 
   const assets = {
     async fetch(request) {
       const pathname = new URL(request.url).pathname;
-      return new Response(pathname === '/admin.html' ? 'ADMIN_PAGE' : 'HOME_PAGE');
+      return new Response(pathname === '/admin' ? 'ADMIN_PAGE' : 'HOME_PAGE');
     }
   };
 
